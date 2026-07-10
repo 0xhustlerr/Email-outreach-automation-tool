@@ -1,0 +1,85 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+
+
+  <PropertyGroup>
+
+    <OutputType>WinExe</OutputType>
+
+    <TargetFramework>net8.0-windows</TargetFramework>
+
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <Nullable>enable</Nullable>
+
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <ApplicationIcon>..\icon.ico</ApplicationIcon>
+
+    <AssemblyName>Email Finder</AssemblyName>
+
+    <RootNamespace>EmailFinderTray</RootNamespace>
+
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <Version>1.0.0</Version>
+
+    <Company>Email Finder</Company>
+
+    <Product>Email Finder Launcher</Product>
+
+    <Description>Tray launcher for the GitHub Email Finder Next.js app</Description>
+
+    <DefaultItemExcludes>$(DefaultItemExcludes);EmailFinderTray\**;publish\**</DefaultItemExcludes>
+
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <PublishSingleFile>true</PublishSingleFile>
+
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+
+  </PropertyGroup>
+
+
+
+  <ItemGroup>
+
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+
+    <PackageReference Include="System.Management" Version="8.0.0" />
+
+    <Content Include="..\icon.ico" Link="icon.ico" />
+
+    <None Update="notification-bg.png">
+
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+
+    </None>
+
+    <EmbeddedResource Include="notification-bg.png" />
+
+  </ItemGroup>
+
+
+
+  <ItemGroup>
+
+    <Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll" Condition="Exists('$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll')">
+
+      <Link>WebView2Loader.dll</Link>
+
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+
+    </Content>
+
+  </ItemGroup>
+
+
+
+</Project>
+
+

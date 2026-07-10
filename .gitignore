@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
+next-env.d.ts
+tsconfig.tsbuildinfo
+.vercel
+
+# Environment (secrets: SMTP passwords, OAuth tokens, webhook URLs)
+.env
+.env*.local
+
+# Local runtime state (SQLite DB, avatar cache, tray sync state)
+.data/
+.dev-port
+
+# Packaged portable app (built by build-portable.ps1)
+dist/
+
+# Launcher (.NET) build output
+launcher/bin/
+launcher/obj/
+launcher/publish/
+launcher/publish-portable/
+
+# Generated icons / artifacts copied next to the exe
+Email Finder.exe
+WebView2Loader.dll
+app.ico
+tray-icon.png
+notification-bg.png
+
+# WebView2 browser user-data folder (created at runtime)
+Email Finder.exe.WebView2/
+
+# Cloudflare Worker local dev state
+tracking-worker/.wrangler/
+
+# Logs
+*.log
+email-finder-launcher.state.json
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.lnk
+
+# Misc temp
+*.tmp.*

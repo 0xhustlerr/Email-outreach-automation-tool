@@ -1,0 +1,9 @@
+name = "open-tracking"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Created by: wrangler kv namespace create OPENS
+# Paste the printed id below (and the preview_id if you use `wrangler dev`).
+kv_namespaces = [
+  { binding = "OPENS", id = "51cdfc61b5b44e51ab8d777d85f3ac1b" }
+]

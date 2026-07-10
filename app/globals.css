@@ -1,0 +1,348 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #04070e;
+  color: #e6edf3;
+  overflow: hidden;
+  font-feature-settings:
+    "cv11",
+    "ss01",
+    "ss03";
+}
+
+/* Starfield + single cyan glow backdrop ---------------------------- */
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #04070e;
+  overflow: hidden;
+}
+.app-bg::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgba(255, 255, 255, 0.9) 50%, transparent 50%),
+    radial-gradient(1px 1px at 42% 8%, rgba(255, 255, 255, 0.5) 50%, transparent 50%),
+    radial-gradient(1px 1px at 78% 24%, rgba(255, 255, 255, 0.7) 50%, transparent 50%),
+    radial-gradient(1px 1px at 22% 62%, rgba(255, 255, 255, 0.4) 50%, transparent 50%),
+    radial-gradient(1px 1px at 60% 48%, rgba(255, 255, 255, 0.55) 50%, transparent 50%),
+    radial-gradient(1px 1px at 34% 88%, rgba(255, 255, 255, 0.6) 50%, transparent 50%),
+    radial-gradient(1px 1px at 88% 74%, rgba(255, 255, 255, 0.45) 50%, transparent 50%),
+    radial-gradient(1px 1px at 6% 44%, rgba(255, 255, 255, 0.3) 50%, transparent 50%);
+  background-size: 520px 520px;
+  background-repeat: repeat;
+  opacity: 0.85;
+}
+.app-bg::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  width: 80vw;
+  height: 80vw;
+  max-width: 1200px;
+  max-height: 1200px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    circle at center,
+    rgba(34, 211, 238, 0.22),
+    rgba(34, 211, 238, 0.08) 35%,
+    transparent 60%
+  );
+  filter: blur(20px);
+  animation: glow-breathe 8s ease-in-out infinite;
+}
+@keyframes glow-breathe {
+  0%,
+  100% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+}
+
+/* Entry animations ------------------------------------------------- */
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.slide-in {
+  animation: slide-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.fade-in {
+  animation: fade-in 220ms ease-out both;
+}
+
+/* Stop button pulse ring ------------------------------------------ */
+@keyframes pulse-ring {
+  0% {
+    box-shadow:
+      0 0 0 0 rgba(244, 63, 94, 0.55),
+      0 0 40px rgba(244, 63, 94, 0.4);
+  }
+  70% {
+    box-shadow:
+      0 0 0 22px rgba(244, 63, 94, 0),
+      0 0 40px rgba(244, 63, 94, 0.25);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 rgba(244, 63, 94, 0),
+      0 0 40px rgba(244, 63, 94, 0.1);
+  }
+}
+.pulse-ring {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+/* Glass surface ---------------------------------------------------- */
+.glass {
+  background: rgba(8, 14, 28, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+}
+.glass-soft {
+  background: rgba(8, 14, 28, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Hero title ------------------------------------------------------- */
+.hero-title {
+  font-feature-settings: "ss01", "cv11";
+}
+.hero-accent {
+  background: linear-gradient(
+    90deg,
+    #22d3ee 0%,
+    #67e8f9 45%,
+    #38bdf8 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 60px rgba(34, 211, 238, 0.45);
+  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.35));
+}
+
+/* Typewriter cursor ----------------------------------------------- */
+@keyframes tw-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.tw-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  animation: tw-blink 1s step-end infinite;
+}
+
+/* Button press feedback ------------------------------------------- */
+.btn-press {
+  transition:
+    transform 120ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    border-color 160ms ease;
+}
+.btn-press:active {
+  transform: scale(0.96);
+}
+
+/* History modal - active row highlight ----------------------------- */
+@keyframes history-active-glow {
+  0%,
+  100% {
+    background: linear-gradient(
+      90deg,
+      rgba(34, 211, 238, 0.12) 0%,
+      rgba(52, 211, 153, 0.05) 40%,
+      transparent 100%
+    );
+    box-shadow: inset 3px 0 0 rgba(34, 211, 238, 0.75);
+  }
+  50% {
+    background: linear-gradient(
+      90deg,
+      rgba(52, 211, 153, 0.16) 0%,
+      rgba(34, 211, 238, 0.08) 40%,
+      transparent 100%
+    );
+    box-shadow: inset 3px 0 0 rgba(52, 211, 153, 0.95);
+  }
+}
+.history-row-active {
+  animation: history-active-glow 3s ease-in-out infinite;
+}
+.history-row-active:hover {
+  background: linear-gradient(
+    90deg,
+    rgba(34, 211, 238, 0.18) 0%,
+    rgba(52, 211, 153, 0.1) 40%,
+    rgba(34, 211, 238, 0.02) 100%
+  );
+}
+
+/* Hide scrollbar but keep scrollability ---------------------------- */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Nav tools - grouped segments + calm chips ------------------------ */
+.nav-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 9999px;
+  padding: 3px;
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+.nav-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  padding: 0.32rem 0.72rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  font-weight: 500;
+  color: #94a3b8; /* slate-400 - calm resting state */
+  white-space: nowrap;
+  transition:
+    transform 120ms ease,
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+.nav-chip:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(34, 211, 238, 0.45);
+}
+.nav-chip:active:not(:disabled) {
+  transform: scale(0.95);
+}
+.nav-chip-active {
+  color: #67e8f9;
+  background: rgba(34, 211, 238, 0.14);
+  border-color: rgba(34, 211, 238, 0.45);
+}
+.nav-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  background: rgba(34, 211, 238, 0.25);
+  padding: 0 0.4rem;
+  font-size: 10px;
+  font-weight: 600;
+  color: #cffafe;
+}
+
+/* Setup dropdown menu items ---------------------------------------- */
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  border-radius: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #cbd5e1;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+.menu-item:hover {
+  background: rgba(34, 211, 238, 0.1);
+  color: #fff;
+}
+
+/* Primary "Compose & Send" CTA ------------------------------------- */
+.btn-send-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  padding: 0.6rem 1.3rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: #04070e;
+  background: linear-gradient(135deg, #22d3ee 0%, #38bdf8 55%, #22d3ee 100%);
+  box-shadow:
+    0 0 14px rgba(34, 211, 238, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  transition:
+    transform 120ms ease,
+    box-shadow 200ms ease,
+    filter 200ms ease;
+}
+.btn-send-primary:hover {
+  filter: brightness(1.06);
+  box-shadow:
+    0 0 24px rgba(34, 211, 238, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.btn-send-primary:active {
+  transform: scale(0.97);
+}
+
+/* Custom scrollbar ------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.16);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.4);
+}
