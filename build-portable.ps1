@@ -24,7 +24,10 @@ $launcherProj = Join-Path $projectRoot 'launcher\EmailFinderTray.csproj'
 $standalone = Join-Path $projectRoot '.next\standalone'
 $staticDir = Join-Path $projectRoot '.next\static'
 $publicDir = Join-Path $projectRoot 'public'
-$nodeExe = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+# Prefer the node.exe on PATH (the one better-sqlite3 was built against);
+# fall back to the default install location.
+$nodeCmd = Get-Command node.exe -ErrorAction SilentlyContinue
+$nodeExe = if ($nodeCmd) { $nodeCmd.Source } else { Join-Path $env:ProgramFiles 'nodejs\node.exe' }
 $distDir = Join-Path $projectRoot 'dist'
 $bundleName = 'Cold Outreach Command Center'
 $bundleDir = Join-Path $distDir $bundleName

@@ -2458,6 +2458,10 @@ function SendModal({
   const [toEmail, setToEmail] = useState(contact.value);
   const [name, setName] = useState(prefill?.name?.trim() ?? "");
   const [url, setUrl] = useState(prefill?.url?.trim() ?? "");
+  const [urlLinkedin, setUrlLinkedin] = useState("");
+  const [urlGithub, setUrlGithub] = useState(() =>
+    githubUser ? `https://github.com/${githubUser}` : "",
+  );
   const { templates, openers, followups, templatesLoaded, saveContentDebounced } =
     useTemplates();
   const lsGet = (k: string) =>
@@ -2637,6 +2641,8 @@ function SendModal({
   }, []);
 
   const cleanUrl = trimUrlAtQuery(url.trim());
+  const cleanLinkedin = trimUrlAtQuery(urlLinkedin.trim());
+  const cleanGithub = trimUrlAtQuery(urlGithub.trim());
   // When auto-rotating, the preview just uses the first account for {{sender}};
   // the server fills it with whichever account actually sends.
   const pickedSender = autoRotateSender
@@ -2645,15 +2651,22 @@ function SendModal({
   // Preview shows the chosen account's name/email. Stored & sent copies keep the
   // {{sender}} tokens so the SERVER fills them from the account that actually
   // sends — correct even when the queue rotates senders.
+  // {{url}} stays an alias of the Upwork URL so older templates keep working.
+  const urlPlaceholderVars = {
+    url: cleanUrl || "",
+    url_upwork: cleanUrl || "",
+    url_linkedin: cleanLinkedin || "",
+    url_github: cleanGithub || "",
+  };
   const previewVars = {
     name: name.trim() || "there",
-    url: cleanUrl || "",
+    ...urlPlaceholderVars,
     sender: pickedSender?.name || "",
     sender_email: pickedSender?.email || fromEmail || "",
   };
   const storeVars = {
     name: name.trim() || "there",
-    url: cleanUrl || "",
+    ...urlPlaceholderVars,
     sender: "{{sender}}",
     sender_email: "{{sender_email}}",
   };
@@ -2708,6 +2721,8 @@ function SendModal({
           // modal field (Upwork profile, etc.), *not* the GitHub profile URL.
           name: name.trim(),
           link: cleanUrl,
+          linkLinkedin: cleanLinkedin,
+          linkGithub: cleanGithub,
           username: githubUser ?? "",
           country,
           commitOffsetMin,
@@ -2769,6 +2784,8 @@ function SendModal({
               fromEmail: autoRotateSender ? "" : picked?.email ?? "",
               name: name.trim(),
               link: cleanUrl,
+              linkLinkedin: cleanLinkedin,
+              linkGithub: cleanGithub,
               username: githubUser ?? "",
               country,
               commitOffsetMin,
@@ -2947,7 +2964,7 @@ function SendModal({
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                URL
+                Upwork URL
               </label>
               <input
                 type="text"
@@ -2964,6 +2981,30 @@ function SendModal({
                   </span>
                 </p>
               )}
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+                LinkedIn URL
+              </label>
+              <input
+                type="text"
+                value={urlLinkedin}
+                onChange={(e) => setUrlLinkedin(e.target.value)}
+                placeholder="https://www.linkedin.com/in/…"
+                className="w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+                GitHub URL
+              </label>
+              <input
+                type="text"
+                value={urlGithub}
+                onChange={(e) => setUrlGithub(e.target.value)}
+                placeholder="https://github.com/…"
+                className="w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
+              />
             </div>
           </div>
 
@@ -3116,9 +3157,13 @@ function SendModal({
             <p className="mt-2 text-[11px] text-slate-500">
               Placeholders:{" "}
               <code className="text-cyan-300">{"{{name}}"}</code>{" "}
-              <code className="text-cyan-300">{"{{url}}"}</code>{" "}
+              <code className="text-cyan-300">{"{{url_upwork}}"}</code>{" "}
+              <code className="text-cyan-300">{"{{url_linkedin}}"}</code>{" "}
+              <code className="text-cyan-300">{"{{url_github}}"}</code>{" "}
               <code className="text-cyan-300">{"{{sender}}"}</code>{" "}
-              <code className="text-cyan-300">{"{{sender_email}}"}</code>
+              <code className="text-cyan-300">{"{{sender_email}}"}</code>{" "}
+              — <code className="text-cyan-300">{"{{url}}"}</code> ={" "}
+              <code className="text-cyan-300">{"{{url_upwork}}"}</code>
             </p>
           </div>
           )}

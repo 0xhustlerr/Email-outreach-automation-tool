@@ -15,6 +15,8 @@ type Body = {
   body?: string;
   name?: string;
   link?: string;
+  linkLinkedin?: string;
+  linkGithub?: string;
   username?: string;
   country?: string;
   // Location signals for scheduling (stored on the sequence).
@@ -78,6 +80,8 @@ export async function POST(req: Request) {
     fromEmail: result.sender,
     name: parsed.name,
     link: parsed.link,
+    linkLinkedin: parsed.linkLinkedin,
+    linkGithub: parsed.linkGithub,
     username: parsed.username,
     country: parsed.country,
     commitOffsetMin: parsed.commitOffsetMin,

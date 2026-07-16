@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
 import { getSettings } from "@/lib/queue-store";
-import { displayName, enqueueSequence } from "@/lib/sequences-store";
+import { displayName, enqueueSequence, urlVars } from "@/lib/sequences-store";
 import {
   candidatesForEmails,
   listHistoryCandidates,
@@ -106,7 +106,10 @@ export async function POST(req: Request) {
   let added = 0;
   const skipped: { email: string; reason: string }[] = [];
   candidates.forEach((c, i) => {
-    const vars = { name: displayName(c.name), url: c.link };
+    const vars = {
+      name: displayName(c.name),
+      ...urlVars({ upwork: c.link, username: c.username }),
+    };
     // Round-robin the opener across contacts so each template is used evenly.
     // FIFO drip + even assignment => ~(dailyCap / openerCount) sends per
     // template per day.
@@ -118,7 +121,7 @@ export async function POST(req: Request) {
         name: c.name,
         link: c.link,
         country: c.country,
-        username: "",
+        username: c.username,
         opSubject: substitute(op.subject, vars),
         opBody: substitute(op.body, vars),
         followUp: hasFollow

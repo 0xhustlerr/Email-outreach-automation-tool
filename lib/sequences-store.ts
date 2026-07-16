@@ -24,6 +24,8 @@ export type Sequence = {
   fromEmail: string;
   name: string;
   link: string;
+  linkLinkedin: string;
+  linkGithub: string;
   username: string;
   country: string;
   countryStd: string;
@@ -56,6 +58,8 @@ type Row = {
   from_email: string;
   name: string;
   link: string;
+  link_linkedin: string;
+  link_github: string;
   username: string;
   country: string;
   country_std: string;
@@ -89,6 +93,8 @@ function toSeq(r: Row): Sequence {
     fromEmail: r.from_email,
     name: r.name,
     link: r.link,
+    linkLinkedin: r.link_linkedin ?? "",
+    linkGithub: r.link_github ?? "",
     username: r.username,
     country: r.country,
     countryStd: r.country_std,
@@ -120,6 +126,8 @@ export type SequenceInput = {
   fromEmail: string;
   name?: string;
   link?: string;
+  linkLinkedin?: string;
+  linkGithub?: string;
   username?: string;
   country?: string;
   opSubject: string;
@@ -148,14 +156,14 @@ function resolveSeqLocation(input: SequenceInput) {
 const insertStmt = () =>
   db.prepare(
     `INSERT INTO sequences (
-       lane, to_email, from_email, name, link, username, country,
-       country_std, timezone, tz_source,
+       lane, to_email, from_email, name, link, link_linkedin, link_github,
+       username, country, country_std, timezone, tz_source,
        op_subject, op_body, op_status, op_message_id, op_sent_at, op_send_after,
        has_follow, fu_subject, fu_body, fu_delay_min, fu_status, fu_send_after,
        created_at
      ) VALUES (
-       @lane, @toEmail, @fromEmail, @name, @link, @username, @country,
-       @countryStd, @timezone, @tzSource,
+       @lane, @toEmail, @fromEmail, @name, @link, @linkLinkedin, @linkGithub,
+       @username, @country, @countryStd, @timezone, @tzSource,
        @opSubject, @opBody, @opStatus, @opMessageId, @opSentAt, @opSendAfter,
        @hasFollow, @fuSubject, @fuBody, @fuDelayMin, @fuStatus, @fuSendAfter,
        @createdAt
@@ -179,6 +187,8 @@ export function recordSentSequence(
     fromEmail: input.fromEmail,
     name: input.name ?? "",
     link: input.link ?? "",
+    linkLinkedin: input.linkLinkedin ?? "",
+    linkGithub: input.linkGithub ?? "",
     username: input.username ?? "",
     country: input.country ?? "",
     countryStd: loc.countryStd,
@@ -232,6 +242,8 @@ export function enqueueSequence(
     fromEmail: input.fromEmail,
     name: input.name ?? "",
     link: input.link ?? "",
+    linkLinkedin: input.linkLinkedin ?? "",
+    linkGithub: input.linkGithub ?? "",
     username: input.username ?? "",
     country: input.country ?? "",
     countryStd: loc.countryStd,
@@ -689,10 +701,17 @@ export function rotateQueuedOpeners(
 
   const rows = db
     .prepare(
-      `SELECT id, name, link FROM sequences
+      `SELECT id, name, link, link_linkedin, link_github, username FROM sequences
        WHERE lane = 'queue' AND op_status = 'pending' ORDER BY id ASC`,
     )
-    .all() as { id: number; name: string; link: string }[];
+    .all() as {
+    id: number;
+    name: string;
+    link: string;
+    link_linkedin: string;
+    link_github: string;
+    username: string;
+  }[];
 
   const sub = (t: string, vars: Record<string, string>) =>
     t.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
@@ -702,12 +721,43 @@ export function rotateQueuedOpeners(
   const tx = db.transaction(() => {
     rows.forEach((r, i) => {
       const op = list[i % list.length];
-      const vars = { name: displayName(r.name), url: r.link || "" };
+      const vars = {
+        name: displayName(r.name),
+        ...urlVars({
+          upwork: r.link,
+          linkedin: r.link_linkedin,
+          github: r.link_github,
+          username: r.username,
+        }),
+      };
       upd.run(sub(op.subject, vars), sub(op.body, vars), r.id);
     });
   });
   tx();
   return rows.length;
+}
+
+/** Template vars for the URL placeholders. {{url}} stays an alias of the
+ *  Upwork link (pre-existing templates keep working); {{url_github}} falls
+ *  back to the profile URL derived from the GitHub username. */
+export function urlVars(links: {
+  upwork?: string;
+  linkedin?: string;
+  github?: string;
+  username?: string;
+}): Record<string, string> {
+  const upwork = (links.upwork ?? "").trim();
+  const github =
+    (links.github ?? "").trim() ||
+    ((links.username ?? "").trim()
+      ? `https://github.com/${(links.username ?? "").trim()}`
+      : "");
+  return {
+    url: upwork,
+    url_upwork: upwork,
+    url_linkedin: (links.linkedin ?? "").trim(),
+    url_github: github,
+  };
 }
 
 /** A safe first name for {{name}}: falls back to "there" when the stored name

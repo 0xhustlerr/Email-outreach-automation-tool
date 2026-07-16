@@ -11,6 +11,7 @@ export type HistoryCandidate = {
   link: string;
   sender: string;
   country: string;
+  username: string;
 };
 
 function primaryEmail(contact: string): string {
@@ -25,7 +26,7 @@ export function candidatesForEmails(emails: string[]): HistoryCandidate[] {
   const out: HistoryCandidate[] = [];
   const seen = new Set<string>();
   const lookup = db.prepare(
-    `SELECT contact, name, link, sender, country FROM send_log
+    `SELECT contact, name, link, sender, country, username FROM send_log
      WHERE lower(contact) LIKE ? ORDER BY date DESC LIMIT 1`,
   );
   for (const raw of emails) {
@@ -33,7 +34,14 @@ export function candidatesForEmails(emails: string[]): HistoryCandidate[] {
     if (!email.includes("@") || seen.has(email)) continue;
     seen.add(email);
     const r = lookup.get(`%${email}%`) as
-      | { contact: string; name: string; link: string; sender: string; country: string }
+      | {
+          contact: string;
+          name: string;
+          link: string;
+          sender: string;
+          country: string;
+          username: string;
+        }
       | undefined;
     out.push({
       email,
@@ -41,6 +49,7 @@ export function candidatesForEmails(emails: string[]): HistoryCandidate[] {
       link: (r?.link ?? "").trim(),
       sender: (r?.sender ?? "").trim(),
       country: (r?.country ?? "").trim(),
+      username: (r?.username ?? "").trim(),
     });
   }
   return out;
@@ -55,7 +64,7 @@ export function listHistoryCandidates(
 ): HistoryCandidate[] {
   const rows = db
     .prepare(
-      `SELECT contact, name, link, sender, country, active, replied
+      `SELECT contact, name, link, sender, country, username, active, replied
        FROM send_log
        WHERE date >= ? AND date <= ? AND contact LIKE '%@%'
        ORDER BY date DESC`,
@@ -66,6 +75,7 @@ export function listHistoryCandidates(
     link: string;
     sender: string;
     country: string;
+    username: string;
     active: number;
     replied: number;
   }[];
@@ -85,6 +95,7 @@ export function listHistoryCandidates(
       link: (r.link ?? "").trim(),
       sender: (r.sender ?? "").trim(),
       country: (r.country ?? "").trim(),
+      username: (r.username ?? "").trim(),
     });
   }
   return out;

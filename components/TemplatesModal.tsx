@@ -293,9 +293,13 @@ export default function TemplatesModal({ onClose }: { onClose: () => void }) {
                 <span className="text-[11px] text-slate-500">
                   Placeholders:{" "}
                   <code className="text-cyan-300">{"{{name}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{url}}"}</code>{" "}
+                  <code className="text-cyan-300">{"{{url_upwork}}"}</code>{" "}
+                  <code className="text-cyan-300">{"{{url_linkedin}}"}</code>{" "}
+                  <code className="text-cyan-300">{"{{url_github}}"}</code>{" "}
                   <code className="text-cyan-300">{"{{sender}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{sender_email}}"}</code>
+                  <code className="text-cyan-300">{"{{sender_email}}"}</code>{" "}
+                  — <code className="text-cyan-300">{"{{url}}"}</code> ={" "}
+                  <code className="text-cyan-300">{"{{url_upwork}}"}</code>
                 </span>
               </div>
               <textarea

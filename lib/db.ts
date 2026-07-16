@@ -323,6 +323,15 @@ function ensureSchema(db: Database.Database): void {
   if (!seqCols.includes("bump_sent_at")) {
     db.exec(`ALTER TABLE sequences ADD COLUMN bump_sent_at TEXT`);
   }
+  // Per-profile URLs for the {{url_linkedin}} / {{url_github}} placeholders
+  // ({{url}} / {{url_upwork}} keep using `link`). Stored so opener re-rotation
+  // can re-render them after the item is queued.
+  if (!seqCols.includes("link_linkedin")) {
+    db.exec(`ALTER TABLE sequences ADD COLUMN link_linkedin TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!seqCols.includes("link_github")) {
+    db.exec(`ALTER TABLE sequences ADD COLUMN link_github TEXT NOT NULL DEFAULT ''`);
+  }
 
   const contactCols = (
     db.prepare(`PRAGMA table_info(contacts)`).all() as { name: string }[]

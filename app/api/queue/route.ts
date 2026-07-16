@@ -38,6 +38,8 @@ export async function POST(req: Request) {
       fromEmail?: string;
       name?: string;
       link?: string;
+      linkLinkedin?: string;
+      linkGithub?: string;
       username?: string;
       country?: string;
       commitOffsetMin?: number | null;
@@ -77,6 +79,8 @@ export async function POST(req: Request) {
         fromEmail: it.fromEmail ?? "",
         name: it.name,
         link: it.link,
+        linkLinkedin: it.linkLinkedin,
+        linkGithub: it.linkGithub,
         username: it.username,
         country: it.country,
         commitOffsetMin: it.commitOffsetMin,
