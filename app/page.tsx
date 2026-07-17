@@ -9,14 +9,10 @@ import HistoryModal from "@/components/HistoryModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
 import { resolveLocation } from "@/lib/country";
-import InsightsModal, {
-  InsightsDashboard,
-  computeInsights,
-} from "@/components/InsightsModal";
+import InsightsModal, { computeInsights } from "@/components/InsightsModal";
 import { primaryEmail } from "@/lib/sheet-active";
 import KnockAppShell from "@/components/knock/KnockAppShell";
 import ReplyNotificationsBell from "@/components/ReplyNotificationsBell";
-import TrueFocus from "@/components/TrueFocus";
 import { useNewReplies } from "@/hooks/useNewReplies";
 import { useReplyCustomTabs } from "@/hooks/useReplyCustomTabs";
 import { useSheetHistory } from "@/hooks/useSheetHistory";
@@ -198,9 +194,6 @@ export default function Page() {
     fromEmail?: string;
     country?: string;
   } | null>(null);
-  // Set after a successful send; clears the URL on the next focus of the
-  // profile input so the user can immediately type the next target.
-  const [clearUrlOnFocus, setClearUrlOnFocus] = useState(false);
   // Lowercased emails we've successfully sent to this session - drives the
   // "sent ✓" state on contact cards.
   const [sentEmails, setSentEmails] = useState<Set<string>>(() => new Set());
@@ -316,12 +309,6 @@ export default function Page() {
 
     return () => clearTimeout(handle);
   }, [profileUrl]);
-
-  // After any completed scan — even one that found no emails — clear the profile
-  // input on the next click so the user can immediately type the next target.
-  useEffect(() => {
-    if (phase === "done" || phase === "error") setClearUrlOnFocus(true);
-  }, [phase]);
 
   // Poll the open-tracking service so History/Insights reflect opens. No-ops
   // when tracking isn't configured; the Worker retains opens so a poll always
@@ -887,10 +874,6 @@ export default function Page() {
     return computeInsights(sheetHistory.rows, { fromMs: from.getTime() });
   }, [sheetHistory.rows]);
 
-  // Show the insights dashboard in the right pane whenever we're not actively
-  // presenting scan results, so the landing view is a useful dashboard.
-  const showInsightsPane = sheetsConfigured && contacts.length === 0;
-
   return (
     <KnockAppShell
       onReplyNotification={() => {
@@ -1142,15 +1125,7 @@ export default function Page() {
         <section className="flex min-h-0 w-full flex-col gap-5 overflow-auto px-2 pb-2 pt-2 md:w-1/2 md:px-4">
           <header className="fade-in relative z-10 pt-2">
             <h1 className="hero-title text-[34px] font-bold leading-[1] tracking-tight text-slate-50 md:text-5xl">
-              <TrueFocus
-                sentence="Cold Outreach Command Center"
-                manualMode={false}
-                blurAmount={1.2}
-                borderColor="#22d3ee"
-                glowColor="rgba(34, 211, 238, 0.6)"
-                animationDuration={0.3}
-                pauseBetweenAnimations={1}
-              />
+              Cold Outreach Command Center
             </h1>
             <p className="mt-3 flex items-center gap-2 text-sm font-medium text-cyan-300/90">
               <PinIcon className="h-4 w-4" />
@@ -1178,12 +1153,6 @@ export default function Page() {
                 type="text"
                 value={profileUrl}
                 onChange={(e) => setProfileUrl(e.target.value)}
-                onFocus={() => {
-                  if (clearUrlOnFocus) {
-                    setProfileUrl("");
-                    setClearUrlOnFocus(false);
-                  }
-                }}
                 placeholder="github.com/user · stackoverflow.com/users/…"
                 className="w-full rounded-full border border-white/10 bg-slate-950/70 py-2 pl-10 pr-4 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
                 spellCheck={false}
@@ -1372,17 +1341,9 @@ export default function Page() {
           </div>
         </section>
 
-        {/* RIGHT - insights dashboard (idle) / contacts (after a scan) ---- */}
+        {/* RIGHT - contacts (after a scan). Insights live behind the nav
+            button (InsightsModal) only. */}
         <section className="no-scrollbar flex min-h-0 w-full flex-col overflow-y-auto overflow-x-hidden px-8 py-8 md:w-1/2 md:px-10">
-          {showInsightsPane && (
-            <InsightsDashboard
-              rows={sheetHistory.rows}
-              replies={sheetHistory.replyNotifications}
-              loading={sheetHistory.loading}
-              onRefresh={() => void sheetHistory.refresh()}
-              className="slide-in"
-            />
-          )}
           {contacts.length > 0 && (
             <div className="slide-in mb-5 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
               <span className="text-slate-500">Contacts</span>
@@ -1621,7 +1582,6 @@ export default function Page() {
             setSendPrefill(null);
           }}
           onSent={(email, link) => {
-            setClearUrlOnFocus(true);
             // A send from the current scan's found results (not from
             // History or manual compose) records the special-contact
             // snapshot: this email + every phone/telegram found.

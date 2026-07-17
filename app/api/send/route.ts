@@ -55,6 +55,8 @@ export async function POST(req: Request) {
     fromName: parsed.from?.name ?? "",
     name: parsed.name,
     link: parsed.link,
+    linkLinkedin: parsed.linkLinkedin,
+    linkGithub: parsed.linkGithub,
     username: parsed.username,
     country: parsed.country,
   });

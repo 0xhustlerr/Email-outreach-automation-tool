@@ -15,6 +15,8 @@ export type SendContext = {
   fromName?: string;
   name?: string;
   link?: string;
+  linkLinkedin?: string;
+  linkGithub?: string;
   username?: string;
   country?: string;
   /** RFC Message-ID of the message being replied to (threads the follow-up). */
@@ -77,20 +79,26 @@ export async function performSend(ctx: SendContext): Promise<SendResult> {
     });
 
     const link = (ctx.link ?? "").trim();
+    const linkLinkedin = (ctx.linkLinkedin ?? "").trim();
+    const linkGithub = (ctx.linkGithub ?? "").trim();
     const logEntry = {
       date: new Date().toISOString(),
       name: (ctx.name ?? "").trim(),
       username: (ctx.username ?? "").trim(),
       country: (ctx.country ?? "").trim(),
-      site: deriveSite(link),
+      // Site falls back to the LinkedIn/GitHub URL so it isn't blank when the
+      // main link field was left empty.
+      site: deriveSite(link || linkLinkedin || linkGithub),
       contact: to,
       link,
       sender: match.email,
       mailSent: true,
       trackToken,
     };
+    // The DB insert binds named parameters, so it only gets the columns it
+    // stores; the extra profile links go to the sheet only.
     logSendToDb(logEntry);
-    void logSendToSheet(logEntry);
+    void logSendToSheet({ ...logEntry, linkLinkedin, linkGithub });
 
     return { ok: true, messageId: info.messageId, sender: match.email };
   } catch (err) {

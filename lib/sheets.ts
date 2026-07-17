@@ -15,6 +15,8 @@ export type SheetHistoryRow = {
   site: string;
   contact: string;
   link: string;
+  linkLinkedin?: string;
+  linkGithub?: string;
   sender: string;
   mailSent: string;
   active?: string;
@@ -52,6 +54,10 @@ export type SendLogEntry = {
   // The URL pasted into the modal (Upwork profile, etc.) - *not* the GitHub
   // profile URL. This matches the Link column in the sheet.
   link: string;
+  // LinkedIn / GitHub profile URLs from the modal. Land in the sheet's
+  // "LinkedIn" and "GitHub" columns (see HEADER_TO_FIELD in sheet-logger.gs).
+  linkLinkedin?: string;
+  linkGithub?: string;
   // Sender identity that was picked in the From: dropdown.
   sender: string;
   // true when SMTP reported success. The script fills "Yes" in the "mail
