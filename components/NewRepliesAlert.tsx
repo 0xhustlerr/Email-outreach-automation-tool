@@ -22,7 +22,7 @@ export default function NewRepliesAlert({ count, onClick }: Props) {
           exit={{ opacity: 0, y: -8, scale: 0.95 }}
           transition={{ type: "spring", stiffness: 420, damping: 28 }}
           onClick={onClick}
-          className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-2xl border border-emerald-400/40 bg-emerald-500/15 px-5 py-3 text-left shadow-[0_0_32px_rgba(52,211,153,0.25)] backdrop-blur-md transition hover:border-emerald-300/60 hover:bg-emerald-500/25"
+          className="group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-2xl border border-emerald-400/40 bg-emerald-500/15 px-5 py-3 text-left shadow-[0_0_32px_rgba(52,211,153,0.25)] transition hover:border-emerald-300/60 hover:bg-emerald-500/25"
         >
           <motion.span
             className="absolute inset-0 bg-gradient-to-r from-emerald-500/0 via-emerald-400/20 to-emerald-500/0"

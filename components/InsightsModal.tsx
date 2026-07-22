@@ -769,7 +769,7 @@ export default function InsightsModal({
 
   return (
     <div
-      className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -1175,7 +1175,7 @@ function SentimentBar({
       {segs.map((s) => (
         <div
           key={s.key}
-          className="h-full rounded-[3px] transition-all duration-500"
+          className="h-full rounded-[3px] transition-[width] duration-500"
           style={{ width: `${(s.value / total) * 100}%`, backgroundColor: s.color }}
           title={`${s.key}: ${s.value}`}
         />
@@ -1233,7 +1233,7 @@ function Funnel({
           </span>
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800/60">
             <div
-              className="h-full rounded-full transition-all duration-500"
+              className="h-full rounded-full transition-[width] duration-500"
               style={{ width: `${(r.value / base) * 100}%`, backgroundColor: r.color }}
             />
           </div>
@@ -1449,7 +1449,7 @@ function Breakdown({
           </span>
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800/60">
             <div
-              className="h-full rounded-full transition-all"
+              className="h-full rounded-full transition-[width]"
               style={{
                 width: `${(it.value / max) * 100}%`,
                 backgroundColor: it.color,

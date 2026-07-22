@@ -1,10 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import ElectricBorder from "@/components/ElectricBorder";
-import FluidBackground from "@/components/FluidBackground";
-import Particles from "@/components/Particles";
-import Radar from "@/components/Radar";
 import HistoryModal from "@/components/HistoryModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
@@ -21,6 +17,7 @@ import { EMAIL_TEMPLATES } from "@/lib/email-templates";
 import TemplatesModal from "@/components/TemplatesModal";
 import ContactsModal from "@/components/ContactsModal";
 import QueueModal from "@/components/QueueModal";
+import ImportCsvModal from "@/components/ImportCsvModal";
 import SendersModal from "@/components/SendersModal";
 import {
   loadSelectedTemplateIdRaw,
@@ -168,6 +165,7 @@ export default function Page() {
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [contactsOpen, setContactsOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [sendersOpen, setSendersOpen] = useState(false);
   // When the Setup menu's "GitHub token" item opens Accounts, jump straight to
   // that section instead of the top of the config hub.
@@ -881,32 +879,27 @@ export default function Page() {
       }}
     >
     <>
+      {/* Backdrop is pure CSS (static gradient + starfield). The WebGL fluid
+          simulation and particle field that used to live here ran two 60fps
+          contexts for the whole session — all cost, no information. */}
       <div className="app-bg" />
-      <div className="pointer-events-none fixed inset-0 z-[1]" aria-hidden>
-        <Particles
-          particleCount={260}
-          particleSpread={12}
-          speed={0.12}
-          particleColors={["#22d3ee", "#38bdf8", "#67e8f9", "#ffffff"]}
-          particleBaseSize={90}
-          sizeRandomness={1}
-          alphaParticles={true}
-          moveParticlesOnHover={false}
-          disableRotation={false}
-        />
-      </div>
-      <FluidBackground />
 
       <div className="relative z-10 flex h-screen w-screen flex-col">
         {/* TOP NAV ----------------------------------------------------- */}
         <nav className="fade-in relative z-40 flex items-center justify-center px-4 pt-4 md:px-8 md:pt-6">
-          <div className="glass grid w-full grid-cols-[auto_1fr_auto] items-center gap-4 rounded-full px-5 py-2.5 md:px-7 md:py-3">
-            <div className="flex items-center gap-2">
-              <LogoMark className="h-5 w-5" />
-              <span className="hidden text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 xl:inline">
+          {/* Flex (not grid) with explicit shrink rules: the brand and the action
+              chips keep their intrinsic width, and only the middle stats block
+              gives way. Previously a grid `auto 1fr auto` let the brand column be
+              compressed until the title wrapped onto four lines. */}
+          <div className="glass flex w-full items-center gap-3 rounded-full px-4 py-2.5 md:gap-4 md:px-7 md:py-3">
+            <div className="flex shrink-0 items-center gap-2">
+              <LogoMark className="h-5 w-5 shrink-0" />
+              {/* Full name only where it actually fits; a short form otherwise;
+                  the logo alone on narrow windows. All non-wrapping. */}
+              <span className="hidden whitespace-nowrap text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 2xl:inline">
                 Cold Outreach Command Center
               </span>
-              <span className="text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 xl:hidden">
+              <span className="hidden whitespace-nowrap text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 sm:inline 2xl:hidden">
                 Command Center
               </span>
             </div>
@@ -918,9 +911,12 @@ export default function Page() {
                   setInsightsOpen(true);
                 }}
                 title="Open insights — last 7 days"
-                className="hidden items-center justify-center gap-4 text-xs text-slate-300 transition hover:text-white md:flex"
+                /* The only flexible item: min-w-0 lets it shrink and
+                   overflow-hidden makes it clip rather than overlap the brand
+                   or the chips if it ever runs out of room. */
+                className="hidden min-w-0 flex-1 items-center justify-center gap-2.5 overflow-hidden text-xs text-slate-300 transition hover:text-white xl:flex min-[1800px]:gap-4"
               >
-                <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                <span className="hidden whitespace-nowrap text-[10px] uppercase tracking-[0.2em] text-slate-500 min-[1800px]:inline">
                   7&#8209;day
                 </span>
                 <NavStat value={sheetInsights.sent} label="sent" color="text-slate-100" />
@@ -944,11 +940,13 @@ export default function Page() {
                 />
               </button>
             ) : (
-              <span className="hidden truncate text-center text-xs text-slate-500 md:block">
+              <span className="hidden min-w-0 flex-1 truncate text-center text-xs text-slate-500 xl:block">
                 Find every lead. Reach them right.
               </span>
             )}
-            <div className="flex items-center justify-end gap-2 text-xs text-slate-400">
+            {/* shrink-0 + ml-auto: the controls always keep their full size and
+                stay pinned right, whatever the middle does. */}
+            <div className="ml-auto flex shrink-0 items-center justify-end gap-1.5 text-xs text-slate-400 md:gap-2">
               {sheetsConfigured && (
                 <ReplyNotificationsBell
                   displayRows={newReplies.displayRows}
@@ -991,8 +989,8 @@ export default function Page() {
                       : "Set SHEETS_WEBHOOK_URL in .env.local to enable insights"
                   }
                 >
-                  <InsightsIcon className="h-3.5 w-3.5" />
-                  Insights
+                  <InsightsIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden lg:inline">Insights</span>
                 </button>
                 <button
                   type="button"
@@ -1013,15 +1011,15 @@ export default function Page() {
                       : "Set SHEETS_WEBHOOK_URL in .env.local to enable history"
                   }
                 >
-                  <HistoryIcon className="h-3.5 w-3.5" />
-                  History
+                  <HistoryIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden lg:inline">History</span>
                   {sheetHistory.loading && !sheetHistory.ready && (
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
                   )}
                 </button>
               </div>
 
-              <span className="h-6 w-px bg-white/10" aria-hidden />
+              <span className="hidden h-6 w-px bg-white/10 sm:block" aria-hidden />
 
               {/* Active-pipeline group */}
               <div className="nav-segment">
@@ -1032,8 +1030,8 @@ export default function Page() {
                   className="nav-chip"
                   title="Special contacts — emailed or saved profiles with phone/telegram fallbacks"
                 >
-                  <ContactsStarIcon className="h-3.5 w-3.5" />
-                  Contacts
+                  <ContactsStarIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden lg:inline">Contacts</span>
                 </button>
                 <button
                   type="button"
@@ -1042,13 +1040,23 @@ export default function Page() {
                   className="nav-chip"
                   title="Scheduled send queue — drip emails out automatically"
                 >
-                  <QueueIcon className="h-3.5 w-3.5" />
-                  Queue
+                  <QueueIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden lg:inline">Queue</span>
                   {queuedCount > 0 && <span className="nav-badge">{queuedCount}</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(true)}
+                  data-ripple
+                  className="nav-chip"
+                  title="Import a CSV of leads — finds each contact's best email and queues a two-step sequence"
+                >
+                  <ImportIcon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="hidden lg:inline">Import CSV</span>
                 </button>
               </div>
 
-              <span className="h-6 w-px bg-white/10" aria-hidden />
+              <span className="hidden h-6 w-px bg-white/10 sm:block" aria-hidden />
 
               {/* Setup menu - templates, accounts, token */}
               <SetupMenu
@@ -1130,16 +1138,6 @@ export default function Page() {
             <p className="mt-3 flex items-center gap-2 text-sm font-medium text-cyan-300/90">
               <PinIcon className="h-4 w-4" />
               GitHub · Stack Overflow · Personal sites
-            </p>
-            <p className="mt-5 text-lg font-bold uppercase tracking-[0.22em] text-slate-200 md:text-xl">
-              <Typewriter
-                phrases={[
-                  "DISCOVERY",
-                  "OUTREACH",
-                  "INTELLIGENCE",
-                  "AUTOMATION",
-                ]}
-              />
             </p>
           </header>
 
@@ -1251,9 +1249,11 @@ export default function Page() {
                   </span>
                 </div>
                 <div className="h-1 w-full overflow-hidden rounded-full bg-slate-800/60">
+                  {/* scaleX, not width: this bar updates on every commit, and
+                      animating width relayouts the row each time. */}
                   <div
-                    className="h-full bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.7)] transition-all duration-300"
-                    style={{ width: `${progressPct}%` }}
+                    className="h-full w-full origin-left bg-cyan-400 transition-transform duration-300"
+                    style={{ transform: `scaleX(${progressPct / 100})` }}
                   />
                 </div>
               </div>
@@ -1274,31 +1274,9 @@ export default function Page() {
           )}
 
           <div className="slide-in relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            {phase === "scanning" && (
-              <div
-                className="fade-in pointer-events-none absolute inset-0 z-0"
-                style={{ mixBlendMode: "screen", opacity: 0.55 }}
-                aria-hidden
-              >
-                <Radar
-                  speed={1.4}
-                  scale={0.6}
-                  ringCount={9}
-                  spokeCount={12}
-                  ringThickness={0.04}
-                  spokeThickness={0.008}
-                  sweepSpeed={1.2}
-                  sweepWidth={2}
-                  sweepLobes={1}
-                  color="#22d3ee"
-                  backgroundColor="#000000"
-                  falloff={2.2}
-                  brightness={0.9}
-                  enableMouseInteraction={true}
-                  mouseInfluence={0.06}
-                />
-              </div>
-            )}
+            {/* The scan's feedback is the streaming log below — the full-screen
+                radar shader that used to overlay it was decoration on top of
+                real information, running a per-pixel shader the whole scan. */}
             <div className="relative z-10 flex items-center justify-between border-b border-white/5 px-2 py-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
               <span className="flex items-center gap-2">
                 <ActivityIcon className="h-3.5 w-3.5 text-cyan-400" />
@@ -1366,16 +1344,11 @@ export default function Page() {
               {contacts.map((c) => {
                 const isSent = c.kind === "email" && sentEmails.has(c.value);
                 return (
-                  <li
-                    key={`${c.kind}:${c.value}`}
-                    className="slide-in"
-                  >
-                    <ElectricBorder
-                      color="#22d3ee"
-                      speed={0.9}
-                      chaos={0.1}
-                      borderRadius={16}
-                    >
+                  <li key={`${c.kind}:${c.value}`}>
+                    {/* Static card. This used to be an <ElectricBorder>, i.e. a
+                        canvas + rAF noise loop and three glow layers PER
+                        CONTACT — the cost scaled with the result count. */}
+                    <div className="contact-card">
                       <div className="group px-5 py-4">
                     <div className="flex items-center gap-3">
                       <span className="relative shrink-0">
@@ -1551,7 +1524,7 @@ export default function Page() {
                       </div>
                     )}
                       </div>
-                    </ElectricBorder>
+                    </div>
                   </li>
                 );
               })}
@@ -1659,6 +1632,16 @@ export default function Page() {
         />
       )}
 
+      {importOpen && (
+        <ImportCsvModal
+          onQueued={() => void refreshQueueCount()}
+          onClose={() => {
+            setImportOpen(false);
+            void refreshQueueCount();
+          }}
+        />
+      )}
+
       {sendersOpen && (
         <SendersModal
           focusSection={sendersFocus}
@@ -1672,7 +1655,7 @@ export default function Page() {
 
       {directSaveOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-4"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) {
               setDirectSaveOpen(false);
@@ -1914,10 +1897,13 @@ function NavStat({
   label: string;
   color: string;
 }) {
+  // Below 2xl only the number shows (the word label roughly doubles this
+  // stat's width, and four of them together were enough to push the nav into
+  // overlapping itself). The title keeps the meaning available on hover.
   return (
-    <span className="inline-flex items-baseline gap-1.5">
+    <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap" title={label}>
       <span className={"text-sm font-bold " + color}>{value}</span>
-      <span className="text-[10px] uppercase tracking-wider text-slate-500">
+      <span className="hidden text-[10px] uppercase tracking-wider text-slate-500 min-[1800px]:inline">
         {label}
       </span>
     </span>
@@ -2015,6 +2001,16 @@ function QueueIcon({ className }: IconProps) {
   );
 }
 
+function ImportIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M17 8l-5-5-5 5" />
+      <path d="M12 3v12" />
+    </svg>
+  );
+}
+
 function AccountsIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -2085,8 +2081,8 @@ function SetupMenu({
         className={"nav-chip" + (open ? " nav-chip-active" : "")}
         title="Setup - templates, sending accounts, GitHub token"
       >
-        <SettingsIcon className="h-3.5 w-3.5" />
-        Setup
+        <SettingsIcon className="h-3.5 w-3.5 shrink-0" />
+        <span className="hidden lg:inline">Setup</span>
         <ChevronDownIcon
           className={"h-3 w-3 transition-transform " + (open ? "rotate-180" : "")}
         />
@@ -2323,7 +2319,7 @@ function ContactAvatar({ contact }: { contact: Contact }) {
     <div
       title={label}
       aria-label={label}
-      className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border transition-all duration-200 group-hover:scale-[1.04]"
+      className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border transition-transform duration-200 group-hover:scale-[1.04]"
       style={{
         color,
         borderColor: `${color}66`,
@@ -2342,7 +2338,7 @@ function ContactAvatar({ contact }: { contact: Contact }) {
       <GmailAvatar
         email={contact.value}
         size={48}
-        className="rounded-2xl border border-white/10 transition-all duration-200 group-hover:scale-[1.04]"
+        className="rounded-2xl border border-white/10 transition-transform duration-200 group-hover:scale-[1.04]"
         fallback={glyphTile}
       />
     );
@@ -2433,6 +2429,45 @@ function SendModal({
   const [autoRotateSender, setAutoRotateSender] = useState(
     () => lsGet("mail.autoRotateSender") === "1",
   );
+
+  // Per-account daily cap usage (from the queue worker status) so auto-rotate
+  // steers away from capped accounts and a warning shows when the chosen
+  // account is at its cap. Manual sends are never blocked.
+  const [capStatus, setCapStatus] = useState<{
+    sentBySender: Record<string, number>;
+    capBySender: Record<string, number>;
+  } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void fetch("/api/queue")
+      .then((r) => r.json())
+      .then(
+        (d: {
+          status?: {
+            sentBySender?: Record<string, number>;
+            capBySender?: Record<string, number>;
+          };
+        }) => {
+          if (!alive) return;
+          setCapStatus({
+            sentBySender: d.status?.sentBySender ?? {},
+            capBySender: d.status?.capBySender ?? {},
+          });
+        },
+      )
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const capInfoFor = (email: string) => {
+    if (!capStatus) return null;
+    const e = email.trim().toLowerCase();
+    const cap = capStatus.capBySender[e] ?? 0;
+    const used = capStatus.sentBySender[e] ?? 0;
+    return { cap, used, atCap: cap > 0 && used >= cap };
+  };
+  const underCapSenders = senders.filter((s) => !capInfoFor(s.email)?.atCap);
 
   // Mode: "single" = one plain email (normal send); "twostep" = cold-email
   // opener + threaded follow-up. Manual compose (editable recipient, e.g. the
@@ -2660,9 +2695,11 @@ function SendModal({
   const send = async () => {
     if (!canSend) return;
     // Immediate send needs a concrete account; auto-rotate picks one at random
-    // so consecutive manual sends spread across accounts.
+    // so consecutive manual sends spread across accounts — skipping accounts
+    // at their daily cap (all-capped falls back to all, send never blocked).
+    const rotatePool = underCapSenders.length > 0 ? underCapSenders : senders;
     const picked = autoRotateSender
-      ? senders[Math.floor(Math.random() * senders.length)]
+      ? rotatePool[Math.floor(Math.random() * rotatePool.length)]
       : senders.find((s) => s.email === fromEmail);
     if (!picked) return;
     setSending(true);
@@ -2786,7 +2823,7 @@ function SendModal({
 
   return (
     <div
-      className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -2892,7 +2929,10 @@ function SendModal({
             </div>
             {autoRotateSender ? (
               <div className="w-full rounded-full border border-cyan-400/30 bg-cyan-500/5 px-4 py-2.5 text-sm text-cyan-200">
-                Auto-rotating across {senders.length} account{senders.length === 1 ? "" : "s"} — one is chosen per send.
+                Auto-rotating across{" "}
+                {underCapSenders.length || senders.length} account
+                {(underCapSenders.length || senders.length) === 1 ? "" : "s"} —
+                one is chosen per send.
               </div>
             ) : (
               <select
@@ -2907,6 +2947,29 @@ function SendModal({
                 ))}
               </select>
             )}
+            {(() => {
+              // Amber cap warning: informs, never blocks. Auto-rotate already
+              // steers to under-cap accounts, so warn only when ALL are capped
+              // (rotate mode) or when the picked account itself is capped.
+              if (autoRotateSender) {
+                if (senders.length === 0 || underCapSenders.length > 0)
+                  return null;
+                return (
+                  <p className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
+                    ⚠ Every account reached its daily cap — sending anyway
+                    exceeds warm-up limits.
+                  </p>
+                );
+              }
+              const info = capInfoFor(fromEmail);
+              if (!info?.atCap) return null;
+              return (
+                <p className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
+                  ⚠ {fromEmail} reached its daily cap ({info.used}/{info.cap})
+                  — sending anyway exceeds its warm-up limit.
+                </p>
+              );
+            })()}
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -3211,54 +3274,3 @@ function SendModal({
   );
 }
 
-// --- Typewriter -------------------------------------------------------
-// Types each phrase character-by-character, pauses, deletes, moves to the
-// next one. Cursor blinks via CSS. Pure DOM-free state, no timers leak.
-function Typewriter({
-  phrases,
-  typingMs = 90,
-  deletingMs = 45,
-  pauseMs = 1400,
-}: {
-  phrases: string[];
-  typingMs?: number;
-  deletingMs?: number;
-  pauseMs?: number;
-}) {
-  const [text, setText] = useState("");
-  const [index, setIndex] = useState(0);
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    if (phrases.length === 0) return;
-    const current = phrases[index % phrases.length];
-
-    if (!deleting && text === current) {
-      const t = window.setTimeout(() => setDeleting(true), pauseMs);
-      return () => window.clearTimeout(t);
-    }
-    if (deleting && text === "") {
-      setDeleting(false);
-      setIndex((i) => (i + 1) % phrases.length);
-      return;
-    }
-    const t = window.setTimeout(
-      () => {
-        setText(
-          deleting
-            ? current.slice(0, text.length - 1)
-            : current.slice(0, text.length + 1),
-        );
-      },
-      deleting ? deletingMs : typingMs,
-    );
-    return () => window.clearTimeout(t);
-  }, [text, deleting, index, phrases, typingMs, deletingMs, pauseMs]);
-
-  return (
-    <span>
-      {text}
-      <span className="tw-cursor text-cyan-400">|</span>
-    </span>
-  );
-}

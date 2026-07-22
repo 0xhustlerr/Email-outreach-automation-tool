@@ -22,6 +22,8 @@ export type QueueItem = {
   id: number;
   lane: "send" | "queue";
   toEmail: string;
+  /** Second recipient the CSV import CC'd (near-tie on the email score). */
+  ccEmail: string;
   name: string;
   countryStd: string;
   timezone: string;
@@ -50,7 +52,9 @@ type QueueSettings = {
   localStart: string;
   localEnd: string;
   senderPool: string[];
-  perSenderCap: number;
+  // Each account's daily cap (lowercased email -> cap). Absent = uncapped.
+  // A patch replaces the whole map.
+  senderCaps: Record<string, number>;
   bumpEnabled: boolean;
   bumpAfterDays: number;
 };
@@ -65,11 +69,27 @@ type QueueStatus = {
   startAt: string | null;
   lastError: string;
   lastSentAt: string | null;
-  perSenderCap?: number;
   senderPool?: string[];
   sentBySender?: Record<string, number>;
+  // Resolved daily cap per pooled account (0 = unlimited).
+  capBySender?: Record<string, number>;
   waitingForSender?: number;
 };
+
+// An account's own daily cap from senderCaps. 0 = unlimited.
+function effCapFor(s: QueueSettings, email: string): number {
+  return s.senderCaps?.[email] ?? 0;
+}
+
+// Overall day ceiling = sum of each active account's cap; legacy total
+// dailyCap when any active account is uncapped. Mirrors the server's
+// effectiveDailyCap in lib/queue-worker.ts.
+function computeTotalDailyCap(s: QueueSettings, activeEmails: string[]): number {
+  const caps = activeEmails.map((e) => effCapFor(s, e));
+  return caps.length > 0 && caps.every((c) => c > 0)
+    ? caps.reduce((a, b) => a + b, 0)
+    : s.dailyCap;
+}
 
 // 12-hour label for an "HH:MM" 24h value.
 function label12h(hhmm: string): string {
@@ -271,6 +291,9 @@ export default function QueueModal({
   const [intervalUnit, setIntervalUnit] = useState<"sec" | "min">("sec");
   // Settings are collapsed by default so the queued contacts stay visible.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // In-progress per-account cap edits, committed on blur/Enter so each
+  // keystroke doesn't fire a PATCH (a senderCaps patch replaces the map).
+  const [capDrafts, setCapDrafts] = useState<Record<string, string>>({});
   // Opener rotation: rewrite the queued items' openers in place, round-robin
   // across the selected templates (no items removed).
   const { openers, templatesLoaded } = useTemplates();
@@ -319,20 +342,16 @@ export default function QueueModal({
     }
   }, [status]);
 
-  // …and tick it down every second between polls. Display-only — this never
-  // touches the running queue worker.
-  const counting = countdown !== null;
+  // ONE display clock drives both the next-send countdown and the per-item
+  // ETAs. These were two separate 1s intervals, so every second cost two full
+  // re-renders of this modal (and its whole queue list) instead of one.
+  // Display-only — this never touches the running queue worker.
   useEffect(() => {
-    if (!counting) return;
     const id = window.setInterval(() => {
+      setNow(Date.now());
+      // Unchanged when null, so React bails out instead of re-rendering.
       setCountdown((c) => (c === null ? null : Math.max(0, c - 1)));
     }, 1000);
-    return () => window.clearInterval(id);
-  }, [counting]);
-
-  // Ticking clock for per-item countdowns (display only).
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -465,7 +484,7 @@ export default function QueueModal({
       const nd = new Date(t);
       nd.setDate(nd.getDate() + 1);
       t = winStartOf(nd);
-      capSendsToday = Math.round(settings.dailyCap * avg);
+      capSendsToday = Math.round(status.dailyCap * avg);
     }
     return remaining === 0 ? t : null;
   }, [items, settings, status, remainingSends, now]);
@@ -489,11 +508,14 @@ export default function QueueModal({
   const settingsSummary = useMemo(() => {
     if (!settings) return "";
     const poolCount = settings.senderPool?.length ?? 0;
-    const accts = (poolCount || senders.length) || 1;
-    const cap =
-      settings.perSenderCap > 0
-        ? `${settings.perSenderCap}/sender (${accts} accts)`
-        : `${settings.dailyCap}/day`;
+    const emails =
+      poolCount > 0
+        ? settings.senderPool
+        : senders.map((x) => x.email.toLowerCase());
+    const hasCaps = emails.some((e) => (settings.senderCaps?.[e] ?? 0) > 0);
+    const cap = hasCaps
+      ? `per-account caps · ${computeTotalDailyCap(settings, emails)}/day`
+      : `${settings.dailyCap}/day`;
     return [
       `${label12h(settings.windowStart)}–${label12h(settings.windowEnd)}`,
       `${settings.intervalSec}s`,
@@ -502,7 +524,7 @@ export default function QueueModal({
     ]
       .filter(Boolean)
       .join("  ·  ");
-  }, [settings, senders.length]);
+  }, [settings, senders]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -599,14 +621,16 @@ export default function QueueModal({
   }, [rotateIds]);
 
   // Active sending accounts (the selected pool, or all identities if none).
-  const activeSenders =
-    ((settings?.senderPool?.length ?? 0) || senders.length) || 1;
-  // The overall day ceiling = per-sender cap × active accounts (legacy total
-  // when no per-sender cap is set).
+  const activeEmails = useMemo(() => {
+    const pool = settings?.senderPool ?? [];
+    return pool.length > 0
+      ? pool
+      : senders.map((s) => s.email.toLowerCase());
+  }, [settings?.senderPool, senders]);
+  // The overall day ceiling = sum of each active account's own cap (legacy
+  // total when any account is uncapped).
   const totalDailyCap = settings
-    ? settings.perSenderCap > 0
-      ? settings.perSenderCap * activeSenders
-      : settings.dailyCap
+    ? computeTotalDailyCap(settings, activeEmails)
     : 0;
 
   const selectedRotate = openers.filter((o) => rotateIds.includes(o.id));
@@ -657,7 +681,7 @@ export default function QueueModal({
 
   return (
     <div
-      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -761,7 +785,7 @@ export default function QueueModal({
               <div className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-800/70">
                 <div
                   className={
-                    "h-full rounded-full transition-all duration-500 " +
+                    "h-full rounded-full transition-[width] duration-500 " +
                     (status.capReached ? "bg-amber-400" : "bg-cyan-400")
                   }
                   style={{
@@ -819,7 +843,7 @@ export default function QueueModal({
         )}
         {settings && settingsOpen && (
           <div
-            className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+            className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"
             onMouseDown={(e) => {
               if (e.target === e.currentTarget) setSettingsOpen(false);
             }}
@@ -961,26 +985,6 @@ export default function QueueModal({
                     className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                   />
                 </label>
-                <label className="text-[11px] text-slate-400">
-                  Daily cap / sender
-                  <input
-                    type="number"
-                    min={1}
-                    value={settings.perSenderCap}
-                    onChange={(e) =>
-                      void patchSettings({ perSenderCap: Number(e.target.value) })
-                    }
-                    className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
-                  />
-                  <span className="mt-0.5 block text-[10px] text-slate-600">
-                    per Gmail sender
-                    {activeSenders > 1
-                      ? ` · ×${activeSenders} = ${
-                          settings.perSenderCap * activeSenders
-                        }/day`
-                      : ""}
-                  </span>
-                </label>
                 <label className="col-span-2 text-[11px] text-slate-400">
                   Default follow-up delay (min)
                   <input
@@ -1061,7 +1065,23 @@ export default function QueueModal({
                       const pool = settings.senderPool ?? [];
                       const inPool = pool.includes(email);
                       const used = status?.sentBySender?.[email];
-                      const cap = settings.perSenderCap;
+                      const cap =
+                        status?.capBySender?.[email] ??
+                        effCapFor(settings, email);
+                      const commitCap = () => {
+                        const draft = capDrafts[email];
+                        if (draft === undefined) return;
+                        setCapDrafts((d) => {
+                          const n = { ...d };
+                          delete n[email];
+                          return n;
+                        });
+                        const v = Math.round(Number(draft));
+                        const next = { ...(settings.senderCaps ?? {}) };
+                        if (Number.isFinite(v) && v > 0) next[email] = v;
+                        else delete next[email];
+                        void patchSettings({ senderCaps: next });
+                      };
                       return (
                         <label
                           key={email}
@@ -1079,16 +1099,43 @@ export default function QueueModal({
                             className="accent-cyan-500"
                           />
                           <span className="flex-1 truncate font-mono">{id.email}</span>
-                          {inPool && cap > 0 && used !== undefined && (
+                          {inPool && used !== undefined && (
                             <span
                               className={
                                 "shrink-0 tabular-nums text-[10px] " +
-                                (used >= cap ? "text-rose-300" : "text-slate-500")
+                                (cap > 0 && used >= cap
+                                  ? "text-rose-300"
+                                  : "text-slate-500")
                               }
                             >
-                              {used}/{cap} today
+                              {cap > 0 ? `${used}/${cap}` : used} today
                             </span>
                           )}
+                          <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">
+                            cap
+                            <input
+                              type="number"
+                              min={0}
+                              value={
+                                capDrafts[email] ??
+                                (settings.senderCaps?.[email] || "")
+                              }
+                              placeholder="∞"
+                              onChange={(e) =>
+                                setCapDrafts((d) => ({
+                                  ...d,
+                                  [email]: e.target.value,
+                                }))
+                              }
+                              onBlur={commitCap}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter")
+                                  (e.target as HTMLInputElement).blur();
+                              }}
+                              title="This account's own daily cap (blank = no limit)"
+                              className="w-14 rounded-md border border-white/10 bg-slate-950 px-1.5 py-0.5 text-center text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/40"
+                            />
+                          </span>
                         </label>
                       );
                     })}
@@ -1096,9 +1143,9 @@ export default function QueueModal({
                 )}
                 <div className="mt-3 border-t border-white/5 pt-3">
                   <p className="mb-2 text-[10px] text-slate-600">
-                    Each account&apos;s daily limit is the{" "}
-                    <span className="text-slate-400">Daily cap / sender</span> set
-                    under Rate &amp; limits (meters above).
+                    The <span className="text-slate-400">cap</span> box sets an
+                    account&apos;s own daily limit, to match its warm-up status.
+                    Blank = no limit for that account.
                   </p>
                   <label className="flex flex-col justify-start text-[11px] text-slate-400">
                     <span className="flex items-center gap-2 text-slate-300">
@@ -1237,7 +1284,17 @@ export default function QueueModal({
                     {(it.name.trim()[0] || it.toEmail.trim()[0] || "?").toUpperCase()}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-slate-100">{it.toEmail}</p>
+                    <p className="flex min-w-0 items-center gap-1.5 text-sm text-slate-100">
+                      <span className="truncate">{it.toEmail}</span>
+                      {it.ccEmail && (
+                        <span
+                          className="shrink-0 rounded border border-white/10 bg-white/5 px-1 py-px text-[10px] uppercase tracking-wide text-slate-400"
+                          title={`Also CC'd: ${it.ccEmail}`}
+                        >
+                          cc
+                        </span>
+                      )}
+                    </p>
                     <p className="truncate text-[11px] text-slate-500">
                       {(it.countryStd || it.timezone) && (
                         <span className="text-slate-400">

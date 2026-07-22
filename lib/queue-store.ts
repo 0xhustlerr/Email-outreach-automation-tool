@@ -38,7 +38,13 @@ export type QueueSettings = {
   localStart: string; // recipient-local window "HH:MM"
   localEnd: string;
   senderPool: string[]; // if non-empty, openers send ONLY from these accounts
-  perSenderCap: number; // distinct contacts per account per day (0 = no limit)
+  // Legacy uniform per-sender cap. No longer enforced or shown — each account
+  // carries its own cap in senderCaps. Kept so the existing column/row and old
+  // clients keep working.
+  perSenderCap: number;
+  // Each account's daily cap (lowercased email -> distinct contacts per day).
+  // No entry = that account is uncapped. A patch REPLACES the whole map.
+  senderCaps: Record<string, number>;
   bumpEnabled: boolean; // send a link-free bump to non-repliers
   bumpAfterDays: number; // days after the opener to send the bump
 };
@@ -262,6 +268,7 @@ type SettingsRow = {
   per_sender_cap: number;
   bump_enabled: number;
   bump_after_days: number;
+  sender_caps: string;
 };
 
 function parseSenderPool(raw: string | null | undefined): string[] {
@@ -279,6 +286,27 @@ function parseSenderPool(raw: string | null | undefined): string[] {
     ];
   } catch {
     return [];
+  }
+}
+
+function normalizeSenderCaps(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const email = k.trim().toLowerCase();
+    const cap = Math.round(Number(v));
+    if (!email.includes("@") || !Number.isFinite(cap) || cap < 1) continue;
+    out[email] = Math.min(1000, cap);
+  }
+  return out;
+}
+
+function parseSenderCaps(raw: string | null | undefined): Record<string, number> {
+  if (!raw) return {};
+  try {
+    return normalizeSenderCaps(JSON.parse(raw));
+  } catch {
+    return {};
   }
 }
 
@@ -303,6 +331,7 @@ export function getSettings(): QueueSettings {
     perSenderCap: r.per_sender_cap,
     bumpEnabled: r.bump_enabled === 1,
     bumpAfterDays: r.bump_after_days,
+    senderCaps: parseSenderCaps(r.sender_caps),
   };
 }
 
@@ -324,6 +353,7 @@ export function saveSettings(patch: Partial<QueueSettings>): QueueSettings {
         .filter((e) => e.includes("@")),
     ),
   ];
+  next.senderCaps = normalizeSenderCaps(next.senderCaps);
   db.prepare(
     `UPDATE queue_settings SET
        enabled = @enabled, window_start = @windowStart, window_end = @windowEnd,
@@ -333,7 +363,7 @@ export function saveSettings(patch: Partial<QueueSettings>): QueueSettings {
        local_time_send = @localTimeSend, local_start = @localStart,
        local_end = @localEnd, sender_pool = @senderPool,
        per_sender_cap = @perSenderCap, bump_enabled = @bumpEnabled,
-       bump_after_days = @bumpAfterDays
+       bump_after_days = @bumpAfterDays, sender_caps = @senderCaps
      WHERE id = 1`,
   ).run({
     enabled: next.enabled ? 1 : 0,
@@ -352,6 +382,7 @@ export function saveSettings(patch: Partial<QueueSettings>): QueueSettings {
     perSenderCap: next.perSenderCap,
     bumpEnabled: next.bumpEnabled ? 1 : 0,
     bumpAfterDays: next.bumpAfterDays,
+    senderCaps: JSON.stringify(next.senderCaps),
   });
   return next;
 }

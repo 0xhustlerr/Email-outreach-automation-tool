@@ -21,6 +21,7 @@ export type Sequence = {
   id: number;
   lane: "send" | "queue";
   toEmail: string;
+  ccEmail: string;
   fromEmail: string;
   name: string;
   link: string;
@@ -55,6 +56,7 @@ type Row = {
   id: number;
   lane: "send" | "queue";
   to_email: string;
+  cc_email: string;
   from_email: string;
   name: string;
   link: string;
@@ -90,6 +92,7 @@ function toSeq(r: Row): Sequence {
     id: r.id,
     lane: r.lane,
     toEmail: r.to_email,
+    ccEmail: r.cc_email ?? "",
     fromEmail: r.from_email,
     name: r.name,
     link: r.link,
@@ -123,6 +126,8 @@ function toSeq(r: Row): Sequence {
 
 export type SequenceInput = {
   toEmail: string;
+  /** Optional second recipient, CC'd on the opener and the follow-up. */
+  ccEmail?: string;
   fromEmail: string;
   name?: string;
   link?: string;
@@ -156,13 +161,13 @@ function resolveSeqLocation(input: SequenceInput) {
 const insertStmt = () =>
   db.prepare(
     `INSERT INTO sequences (
-       lane, to_email, from_email, name, link, link_linkedin, link_github,
+       lane, to_email, cc_email, from_email, name, link, link_linkedin, link_github,
        username, country, country_std, timezone, tz_source,
        op_subject, op_body, op_status, op_message_id, op_sent_at, op_send_after,
        has_follow, fu_subject, fu_body, fu_delay_min, fu_status, fu_send_after,
        created_at
      ) VALUES (
-       @lane, @toEmail, @fromEmail, @name, @link, @linkLinkedin, @linkGithub,
+       @lane, @toEmail, @ccEmail, @fromEmail, @name, @link, @linkLinkedin, @linkGithub,
        @username, @country, @countryStd, @timezone, @tzSource,
        @opSubject, @opBody, @opStatus, @opMessageId, @opSentAt, @opSendAfter,
        @hasFollow, @fuSubject, @fuBody, @fuDelayMin, @fuStatus, @fuSendAfter,
@@ -184,6 +189,7 @@ export function recordSentSequence(
   const info = insertStmt().run({
     lane: "send",
     toEmail: input.toEmail.trim().toLowerCase(),
+    ccEmail: (input.ccEmail ?? "").trim().toLowerCase(),
     fromEmail: input.fromEmail,
     name: input.name ?? "",
     link: input.link ?? "",
@@ -239,6 +245,7 @@ export function enqueueSequence(
   const info = insertStmt().run({
     lane: "queue",
     toEmail: to,
+    ccEmail: (input.ccEmail ?? "").trim().toLowerCase(),
     fromEmail: input.fromEmail,
     name: input.name ?? "",
     link: input.link ?? "",

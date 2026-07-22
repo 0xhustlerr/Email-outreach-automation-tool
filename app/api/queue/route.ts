@@ -35,6 +35,7 @@ export async function POST(req: Request) {
   let body: {
     items?: {
       toEmail?: string;
+      ccEmail?: string;
       fromEmail?: string;
       name?: string;
       link?: string;
@@ -76,6 +77,7 @@ export async function POST(req: Request) {
     const res = enqueueSequence(
       {
         toEmail,
+        ccEmail: it.ccEmail ?? "",
         fromEmail: it.fromEmail ?? "",
         name: it.name,
         link: it.link,

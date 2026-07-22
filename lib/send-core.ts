@@ -9,6 +9,9 @@ import { isTrackingEnabled, newTrackToken, pixelUrl } from "./tracking";
 
 export type SendContext = {
   to: string;
+  /** Optional second recipient. Silently dropped when invalid or equal to `to`
+   *  — a bad CC must never cost us the send to the primary address. */
+  cc?: string;
   subject: string;
   body: string;
   fromEmail: string;
@@ -67,10 +70,17 @@ export async function performSend(ctx: SendContext): Promise<SendResult> {
   const trackToken = isTrackingEnabled() ? newTrackToken() : "";
   const trackPixelUrl = trackToken ? pixelUrl(trackToken) ?? undefined : undefined;
 
+  const ccRaw = (ctx.cc ?? "").trim();
+  const cc =
+    ccRaw && isValidEmail(ccRaw) && ccRaw.toLowerCase() !== to.toLowerCase()
+      ? ccRaw
+      : undefined;
+
   try {
     const info = await sendMail({
       from: { name: (ctx.fromName ?? "").trim() || match.name, email: match.email },
       to,
+      cc,
       subject,
       body,
       inReplyTo: ctx.inReplyTo,

@@ -262,6 +262,12 @@ function ensureSchema(db: Database.Database): void {
   if (!qsCols.includes("bump_after_days")) {
     db.exec(`ALTER TABLE queue_settings ADD COLUMN bump_after_days INTEGER NOT NULL DEFAULT 2`);
   }
+  // Per-account daily cap overrides (JSON object: lowercased email -> cap).
+  // Accounts absent from the map fall back to per_sender_cap. Lets each
+  // account get its own limit to match its warm-up status.
+  if (!qsCols.includes("sender_caps")) {
+    db.exec(`ALTER TABLE queue_settings ADD COLUMN sender_caps TEXT NOT NULL DEFAULT '{}'`);
+  }
 
   // Columns added after the table first shipped - ALTER is idempotent-guarded
   // because SQLite has no "ADD COLUMN IF NOT EXISTS".
@@ -331,6 +337,12 @@ function ensureSchema(db: Database.Database): void {
   }
   if (!seqCols.includes("link_github")) {
     db.exec(`ALTER TABLE sequences ADD COLUMN link_github TEXT NOT NULL DEFAULT ''`);
+  }
+  // Secondary recipient, CC'd on both steps. Set by the CSV import when two
+  // discovered addresses score nearly the same and we can't tell which inbox
+  // the contact actually reads. '' = no CC.
+  if (!seqCols.includes("cc_email")) {
+    db.exec(`ALTER TABLE sequences ADD COLUMN cc_email TEXT NOT NULL DEFAULT ''`);
   }
 
   const contactCols = (

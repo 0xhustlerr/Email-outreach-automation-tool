@@ -1,5 +1,6 @@
 import type { CommitSummary, Repo } from "./types";
 import { getGithubToken } from "./identities-store";
+import { extractCommitTzOffset } from "./patch";
 
 const API_BASE = "https://api.github.com";
 
@@ -193,6 +194,116 @@ export async function listCommits(
       date: date ?? null,
     };
   });
+}
+
+export type CommitAuthorRecord = {
+  /** Author email exactly as recorded in the commit. */
+  email: string;
+  name: string;
+  /** Author date, NORMALIZED TO UTC by the API (no original offset - use
+   *  fetchCommitTzOffset with the sha when the real offset matters). */
+  date: string | null;
+  sha: string;
+  repo: string;
+  owner: string;
+};
+
+/** Author identities on a user's own commits in one repo. The commits API
+ *  already carries commit.author.{name,email,date}, so this needs ONE request
+ *  per repo — no per-commit .patch downloads (see /api/scan for that heavier
+ *  path). Used by the CSV import's email discovery. */
+export async function listCommitAuthors(
+  owner: string,
+  repo: string,
+  login: string,
+  limit = 30,
+): Promise<CommitAuthorRecord[]> {
+  const perPage = Math.min(Math.max(limit, 1), 100);
+  let res: Response;
+  try {
+    res = await ghFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits` +
+        `?author=${encodeURIComponent(login)}&per_page=${perPage}`,
+    );
+  } catch (err) {
+    // 404 (gone/private) and 409 (empty repo) are normal here; only a rate
+    // limit is worth aborting the whole import for.
+    if (err instanceof GitHubError && err.rateLimited) throw err;
+    return [];
+  }
+  const raw = (await res.json()) as Array<Record<string, unknown>>;
+  const out: CommitAuthorRecord[] = [];
+  for (const c of raw) {
+    const commit =
+      (c.commit as {
+        author?: { name?: string; email?: string; date?: string } | null;
+      } | null) ?? {};
+    const email = (commit.author?.email ?? "").trim();
+    if (!email) continue;
+    out.push({
+      email,
+      name: (commit.author?.name ?? "").trim(),
+      date: commit.author?.date ?? null,
+      sha: String(c.sha ?? ""),
+      repo,
+      owner,
+    });
+  }
+  return out;
+}
+
+// Enough of a .patch to cover the mail-style header block; the "Date:" line is
+// within the first few hundred bytes.
+const PATCH_HEADER_BYTES = 8 * 1024;
+
+/** The author's real UTC offset for one commit, in minutes. The commits API
+ *  normalizes dates to UTC, so the offset only survives in the raw .patch
+ *  header — we stream it and stop after the header instead of pulling down a
+ *  potentially huge diff. Null when it can't be read. */
+export async function fetchCommitTzOffset(
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<number | null> {
+  if (!sha) return null;
+  const headers: Record<string, string> = {
+    "User-Agent": "email-auto-sending-automation",
+    Accept: "text/plain,*/*",
+  };
+  const token = getGithubToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 10_000);
+  try {
+    const res = await fetch(buildPatchUrl(owner, repo, sha), {
+      headers,
+      cache: "no-store",
+      redirect: "follow",
+      signal: ac.signal,
+    });
+    if (!res.ok || !res.body) return null;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    let text = "";
+    while (text.length < PATCH_HEADER_BYTES) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      // The header ends at the first blank line — everything after is diff.
+      if (text.includes("\n\n")) break;
+    }
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed */
+    }
+    return extractCommitTzOffset(text);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function buildPatchUrl(owner: string, repo: string, sha: string): string {

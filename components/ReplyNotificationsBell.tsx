@@ -753,7 +753,7 @@ export default function ReplyNotificationsBell({
             width: panelPos.width,
             maxHeight: panelPos.maxHeight,
           }}
-          className="fixed z-[300] flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/15 bg-slate-950/98 shadow-[0_16px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+          className="fixed z-[300] flex min-h-0 flex-col overflow-hidden rounded-2xl border border-white/15 bg-slate-950 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
           role="dialog"
           aria-label="Reply notifications"
           onMouseDown={(e) => e.stopPropagation()}

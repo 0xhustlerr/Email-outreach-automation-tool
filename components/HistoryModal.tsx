@@ -41,8 +41,10 @@ function RowStatus({
         className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
         title="This contact replied"
       >
+        {/* Static: this badge renders once PER REPLIED ROW, so a pulsing dot
+            here meant one infinite animation per row in a long history. */}
         <span
-          className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]"
+          className="h-1.5 w-1.5 rounded-full bg-emerald-400"
           aria-hidden
         />
         Replied
@@ -1289,7 +1291,7 @@ export default function HistoryModal({
 
   return (
     <div
-      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -1488,7 +1490,7 @@ export default function HistoryModal({
                     <col className="w-[18%]" />
                     <col className="w-[12%]" />
                   </colgroup>
-                  <thead className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur-sm">
+                  <thead className="sticky top-0 z-10 bg-slate-950">
                     <tr className="border-b border-white/5 text-[10px] font-medium uppercase tracking-[0.12em] text-slate-500">
                       <th className="px-3 py-3">
                         <input

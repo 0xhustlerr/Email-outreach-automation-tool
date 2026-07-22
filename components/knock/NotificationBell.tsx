@@ -118,7 +118,7 @@ export default function NotificationBell({ onReplyClick }: Props) {
 
       {open && (
         <div
-          className="absolute right-0 top-full z-[200] mt-2 w-[min(380px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-white/15 bg-slate-950/98 shadow-[0_16px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+          className="absolute right-0 top-full z-[200] mt-2 w-[min(380px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-white/15 bg-slate-950 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
           role="dialog"
           aria-label="Notifications"
         >

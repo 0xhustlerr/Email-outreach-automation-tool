@@ -100,7 +100,7 @@ export default function NewRepliesModal({ rows, onClose, onMarkSeen }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="new-replies-title"

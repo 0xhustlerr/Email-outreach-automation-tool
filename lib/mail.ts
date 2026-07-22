@@ -183,6 +183,8 @@ function bodyToTrackedHtml(text: string, pixelUrl: string): string {
 export async function sendMail(args: {
   from: MailIdentity;
   to: string;
+  /** Optional second recipient on the visible Cc line. */
+  cc?: string;
   subject: string;
   body: string;
   /** RFC Message-ID of the message being replied to. */
@@ -221,9 +223,11 @@ export async function sendMail(args: {
   const finalBody = resolveSender(args.body);
   const pixel = args.trackPixelUrl?.trim();
 
+  const cc = args.cc?.trim();
   const info = await transportFor(identity).sendMail({
     from: fromHeader,
     to: args.to,
+    ...(cc ? { cc } : {}),
     subject: finalSubject,
     text: finalBody,
     ...(pixel ? { html: bodyToTrackedHtml(finalBody, pixel) } : {}),

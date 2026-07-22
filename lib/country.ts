@@ -57,6 +57,9 @@ const KNOWN_COUNTRIES = new Set<string>([
   "Singapore","Tunisia","Rwanda","Jamaica","Nicaragua","Bolivia","Guatemala",
   "Philippines","United Arab Emirates","Iran","Bahamas","Switzerland",
   "Slovakia","Georgia","Vietnam","India","Norway","Malaysia",
+  // European countries added for the CSV-import region filter.
+  "Latvia","Luxembourg","Malta","Cyprus","Iceland","Monaco","Andorra",
+  "Liechtenstein","San Marino","Armenia",
 ]);
 
 const US_STATES = new Set<string>([
@@ -160,6 +163,11 @@ const COUNTRY_TZ: Record<string, string> = {
   Slovakia: "Europe/Bratislava", Georgia: "Asia/Tbilisi",
   Vietnam: "Asia/Ho_Chi_Minh", India: "Asia/Kolkata", Norway: "Europe/Oslo",
   Malaysia: "Asia/Kuala_Lumpur",
+  Latvia: "Europe/Riga", Luxembourg: "Europe/Luxembourg",
+  Malta: "Europe/Malta", Cyprus: "Asia/Nicosia",
+  Iceland: "Atlantic/Reykjavik", Monaco: "Europe/Monaco",
+  Andorra: "Europe/Andorra", Liechtenstein: "Europe/Vaduz",
+  "San Marino": "Europe/San_Marino", Armenia: "Asia/Yerevan",
 };
 
 // Canonical country name -> ISO 3166-1 alpha-2 (for flag lookup).
@@ -189,7 +197,8 @@ const COUNTRY_ISO2: Record<string, string> = {
   "Dominican Republic": "DO", Honduras: "HN", "El Salvador": "SV",
   Morocco: "MA", Algeria: "DZ", Ghana: "GH", Latvia: "LV", Iceland: "IS",
   Luxembourg: "LU", Cyprus: "CY", Armenia: "AM", Azerbaijan: "AZ",
-  Kazakhstan: "KZ",
+  Kazakhstan: "KZ", Malta: "MT", Monaco: "MC", Andorra: "AD",
+  Liechtenstein: "LI", "San Marino": "SM",
 };
 
 /** Canonical country name (or free-form) -> ISO 3166-1 alpha-2, or null. */
@@ -272,7 +281,9 @@ const DIAL_CODES: Record<string, string> = {
   "372": "Estonia", "373": "Moldova", "375": "Belarus", "358": "Finland",
   "46": "Sweden", "47": "Norway", "45": "Denmark", "353": "Ireland",
   "41": "Switzerland", "43": "Austria", "32": "Belgium", "94": "Sri Lanka",
-  "995": "Georgia",
+  "995": "Georgia", "371": "Latvia", "352": "Luxembourg", "356": "Malta",
+  "357": "Cyprus", "354": "Iceland", "374": "Armenia", "377": "Monaco",
+  "376": "Andorra", "423": "Liechtenstein", "378": "San Marino",
 };
 
 /** Country from a phone number's international dial code (longest-prefix). */
@@ -400,6 +411,60 @@ export function countryFromUtcOffset(
     }
   }
   return bestDiff <= 45 ? best : null;
+}
+
+// --- target region (CSV import filter) -------------------------------------
+
+// "All of Europe" for the CSV-import region filter: the EU-27 plus the rest of
+// the continent we actually do outreach in. Deliberately excludes Russia and
+// Belarus. Edit this one set to change who passes the filter.
+export const EUROPE_COUNTRIES = new Set<string>([
+  "Albania","Andorra","Austria","Belgium","Bosnia and Herzegovina","Bulgaria",
+  "Croatia","Cyprus","Czech Republic","Denmark","Estonia","Finland","France",
+  "Germany","Greece","Hungary","Iceland","Ireland","Italy","Kosovo","Latvia",
+  "Liechtenstein","Lithuania","Luxembourg","Malta","Moldova","Monaco",
+  "Montenegro","Netherlands","North Macedonia","Norway","Poland","Portugal",
+  "Romania","San Marino","Serbia","Slovakia","Slovenia","Spain","Sweden",
+  "Switzerland","Turkey","Ukraine","United Kingdom",
+]);
+
+/** Does this (canonical) country pass the outreach region filter — the US,
+ *  Canada, or anywhere in Europe? */
+export function isTargetRegion(country: string | null | undefined): boolean {
+  if (!country) return false;
+  const canon = KNOWN_COUNTRIES.has(country)
+    ? country
+    : (normalizeCountry(country) ?? "");
+  if (!canon) return false;
+  return (
+    canon === "United States" || canon === "Canada" || EUROPE_COUNTRIES.has(canon)
+  );
+}
+
+export type CountryDecision = {
+  country: string;
+  source: "csv" | "github" | "phone";
+};
+
+/** Decide a contact's country for the region filter, strongest signal first:
+ *  the CSV column, then the GitHub profile location, then a phone dial code.
+ *  Returns null when nothing resolves — a commit UTC offset is deliberately
+ *  NOT accepted here (an offset spans many countries, so it's too weak to
+ *  filter on; it still feeds timezone scheduling via resolveLocation). */
+export function decideCountry(input: {
+  csvCountry?: string | null;
+  githubLocation?: string | null;
+  phones?: string[];
+}): CountryDecision | null {
+  const fromCsv = normalizeCountry(input.csvCountry);
+  if (fromCsv) return { country: fromCsv, source: "csv" };
+  const fromGithub = normalizeCountry(input.githubLocation);
+  if (fromGithub) return { country: fromGithub, source: "github" };
+  for (const p of input.phones ?? []) {
+    const c = countryFromPhone(p);
+    if (c) return { country: c, source: "phone" };
+  }
+  return null;
 }
 
 export function resolveLocation(input: {

@@ -61,19 +61,11 @@ body {
     rgba(34, 211, 238, 0.08) 35%,
     transparent 60%
   );
+  /* Static. This element is a 1200px blurred radial gradient; animating its
+     transform + opacity forever meant re-compositing a huge blurred layer on
+     every frame for a glow nobody looks at. */
   filter: blur(20px);
-  animation: glow-breathe 8s ease-in-out infinite;
-}
-@keyframes glow-breathe {
-  0%,
-  100% {
-    opacity: 0.9;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1.05);
-  }
+  opacity: 0.95;
 }
 
 /* Entry animations ------------------------------------------------- */
@@ -103,40 +95,32 @@ body {
   animation: fade-in 220ms ease-out both;
 }
 
-/* Stop button pulse ring ------------------------------------------ */
-@keyframes pulse-ring {
-  0% {
-    box-shadow:
-      0 0 0 0 rgba(244, 63, 94, 0.55),
-      0 0 40px rgba(244, 63, 94, 0.4);
-  }
-  70% {
-    box-shadow:
-      0 0 0 22px rgba(244, 63, 94, 0),
-      0 0 40px rgba(244, 63, 94, 0.25);
-  }
-  100% {
-    box-shadow:
-      0 0 0 0 rgba(244, 63, 94, 0),
-      0 0 40px rgba(244, 63, 94, 0.1);
-  }
-}
-.pulse-ring {
-  animation: pulse-ring 1.8s ease-out infinite;
-}
-
-/* Glass surface ---------------------------------------------------- */
+/* Panel surface ---------------------------------------------------- */
+/* These were backdrop-filter: blur() surfaces. Every one of them forced the
+   compositor to re-blur the pixels behind it, and the app stacks many of them
+   (nav, cards, modals). Over a now-static backdrop a slightly more opaque
+   tint is visually equivalent and costs nothing. */
 .glass {
-  background: rgba(8, 14, 28, 0.55);
+  background: rgb(11 18 34 / 0.92);
   border: 1px solid rgba(148, 163, 184, 0.1);
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
 }
 .glass-soft {
-  background: rgba(8, 14, 28, 0.35);
+  background: rgb(10 16 30 / 0.8);
   border: 1px solid rgba(148, 163, 184, 0.08);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+}
+
+/* Contact result card ---------------------------------------------- */
+.contact-card {
+  border-radius: 16px;
+  background: rgb(10 16 30 / 0.72);
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+.contact-card:hover {
+  border-color: rgba(34, 211, 238, 0.45);
+  background: rgb(12 20 36 / 0.85);
 }
 
 /* Hero title ------------------------------------------------------- */
@@ -157,17 +141,6 @@ body {
   filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.35));
 }
 
-/* Typewriter cursor ----------------------------------------------- */
-@keyframes tw-blink {
-  0%, 49% { opacity: 1; }
-  50%, 100% { opacity: 0; }
-}
-.tw-cursor {
-  display: inline-block;
-  margin-left: 2px;
-  animation: tw-blink 1s step-end infinite;
-}
-
 /* Button press feedback ------------------------------------------- */
 .btn-press {
   transition:
@@ -182,29 +155,17 @@ body {
 }
 
 /* History modal - active row highlight ----------------------------- */
-@keyframes history-active-glow {
-  0%,
-  100% {
-    background: linear-gradient(
-      90deg,
-      rgba(34, 211, 238, 0.12) 0%,
-      rgba(52, 211, 153, 0.05) 40%,
-      transparent 100%
-    );
-    box-shadow: inset 3px 0 0 rgba(34, 211, 238, 0.75);
-  }
-  50% {
-    background: linear-gradient(
-      90deg,
-      rgba(52, 211, 153, 0.16) 0%,
-      rgba(34, 211, 238, 0.08) 40%,
-      transparent 100%
-    );
-    box-shadow: inset 3px 0 0 rgba(52, 211, 153, 0.95);
-  }
-}
+/* Static marker instead of a 3s infinite gradient+shadow animation. The left
+   bar already identifies an active row; pulsing it repainted every such row
+   forever, and a long history has many. */
 .history-row-active {
-  animation: history-active-glow 3s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    rgba(34, 211, 238, 0.12) 0%,
+    rgba(52, 211, 153, 0.05) 40%,
+    transparent 100%
+  );
+  box-shadow: inset 3px 0 0 rgba(34, 211, 238, 0.8);
 }
 .history-row-active:hover {
   background: linear-gradient(
@@ -345,4 +306,18 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(34, 211, 238, 0.4);
+}
+
+/* Reduced motion --------------------------------------------------- */
+/* Everything left is either a one-shot entry animation or short hover
+   feedback, but honour the OS setting: no motion at all when asked. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

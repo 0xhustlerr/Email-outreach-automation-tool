@@ -102,19 +102,35 @@ function pickSender(itemFrom: string): string {
   return email;
 }
 
-// How many accounts are actually sending: the configured pool, or all
-// configured identities when no pool is set.
-function activeSenderCount(s: QueueSettings): number {
-  const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
-  const pool = s.senderPool.filter((e) => configured.has(e));
-  return Math.max(1, pool.length || configured.size);
+// An account's own daily cap from senderCaps; no entry = unlimited.
+// Different accounts have different warm-up status, so each carries its
+// own limit. (The legacy global per_sender_cap column is ignored.)
+function capFor(s: QueueSettings, email: string): number {
+  const own = s.senderCaps[email];
+  return own && own > 0 ? own : Infinity;
 }
 
-// The daily cap is PER GMAIL SENDER; the overall ceiling for the day is that
-// per-sender cap times the number of active accounts. (When no per-sender cap
-// is set, fall back to the legacy total dailyCap.)
+// The accounts actually sending: the configured pool, or all configured
+// identities when no pool is set. Always lowercased + deduped.
+function activeSenderEmails(s: QueueSettings): string[] {
+  const configured = [
+    ...new Set(listIdentities().map((i) => i.email.toLowerCase())),
+  ];
+  const pool = s.senderPool.filter((e) => configured.includes(e));
+  return pool.length > 0 ? pool : configured;
+}
+
+function activeSenderCount(s: QueueSettings): number {
+  return Math.max(1, activeSenderEmails(s).length);
+}
+
+// The daily cap is PER GMAIL SENDER; the overall ceiling for the day is the
+// sum of each active account's own cap. When any account is uncapped the sum
+// is meaningless, so fall back to the legacy total dailyCap.
 function effectiveDailyCap(s: QueueSettings): number {
-  return s.perSenderCap > 0 ? s.perSenderCap * activeSenderCount(s) : s.dailyCap;
+  const caps = activeSenderEmails(s).map((e) => capFor(s, e));
+  if (caps.length === 0 || !caps.every(Number.isFinite)) return s.dailyCap;
+  return caps.reduce((a, b) => a + b, 0);
 }
 
 // Cheap gate used before claiming an opener:
@@ -126,8 +142,7 @@ function pooledEligibility(s: QueueSettings): "none" | "capped" | "ok" {
   const pool = s.senderPool.filter((e) => configured.has(e));
   if (pool.length === 0) return "none";
   const load = sentTodayBySender();
-  const cap = s.perSenderCap > 0 ? s.perSenderCap : Infinity;
-  return pool.some((e) => (load[e] ?? 0) < cap) ? "ok" : "capped";
+  return pool.some((e) => (load[e] ?? 0) < capFor(s, e)) ? "ok" : "capped";
 }
 
 // Under-cap pool accounts, optionally excluding one address.
@@ -138,9 +153,8 @@ function eligiblePoolSenders(
 ): string[] {
   const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
-  const cap = s.perSenderCap > 0 ? s.perSenderCap : Infinity;
   const avoid = avoidEmail.trim().toLowerCase();
-  return pool.filter((e) => (load[e] ?? 0) < cap && e !== avoid);
+  return pool.filter((e) => (load[e] ?? 0) < capFor(s, e) && e !== avoid);
 }
 
 // Is there a free account DIFFERENT from `avoidEmail`? Pure check (no side
@@ -205,6 +219,8 @@ async function sendFollowup(fu: Sequence): Promise<void> {
   const sender = pickSender(fu.fromEmail);
   const result = await performSend({
     to: fu.toEmail,
+    // Keep the same Cc as the opener so the thread stays consistent.
+    cc: fu.ccEmail,
     subject: replySubject(fu.opSubject),
     body: fu.fuBody,
     fromEmail: sender,
@@ -242,6 +258,7 @@ async function sendBump(seq: Sequence): Promise<void> {
   const sender = pickSender(seq.fromEmail);
   const result = await performSend({
     to: seq.toEmail,
+    cc: seq.ccEmail,
     subject: replySubject(seq.opSubject),
     body,
     fromEmail: sender,
@@ -356,6 +373,7 @@ async function loop(): Promise<void> {
       }
       const result = await performSend({
         to: op.toEmail,
+        cc: op.ccEmail,
         subject: op.opSubject,
         body: op.opBody,
         fromEmail: sender,
@@ -408,8 +426,7 @@ export function queueWorkerStatus() {
   // is almost always 0.
   const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
-  const perCap = s.perSenderCap > 0 ? s.perSenderCap : Infinity;
-  const freeAccounts = pool.filter((e) => (load[e] ?? 0) < perCap);
+  const freeAccounts = pool.filter((e) => (load[e] ?? 0) < capFor(s, e));
   const waitingForSender =
     pool.length > 0 && freeAccounts.length === 1
       ? pendingOpenersLastSentBy(freeAccounts[0])
@@ -418,18 +435,30 @@ export function queueWorkerStatus() {
     enabled: s.enabled,
     withinWindow: withinWindow(s),
     sentToday,
-    dailyCap: totalCap, // overall ceiling = per-sender cap × active accounts
+    dailyCap: totalCap, // overall ceiling = sum of each active account's cap
     capReached: sentToday >= totalCap,
     nextInSec,
     startAt: s.startAt,
     lastError: state.lastError,
     lastSentAt: state.lastSentAt,
-    perSenderCap: s.perSenderCap,
+    senderCaps: s.senderCaps,
     senderPool: s.senderPool,
     waitingForSender,
-    // Distinct contacts each pooled account has sent today (for the UI meters).
-    sentBySender: s.senderPool.reduce<Record<string, number>>((acc, e) => {
+    // Distinct contacts each account has sent today (for the UI meters and
+    // the Send modal's cap warning). Covers pool + all configured identities.
+    sentBySender: [...new Set([...s.senderPool, ...configured])].reduce<
+      Record<string, number>
+    >((acc, e) => {
       acc[e] = load[e] ?? 0;
+      return acc;
+    }, {}),
+    // Each account's resolved daily cap (0 = unlimited; JSON can't carry
+    // Infinity), so meters/warnings can show per-account limits.
+    capBySender: [...new Set([...s.senderPool, ...configured])].reduce<
+      Record<string, number>
+    >((acc, e) => {
+      const c = capFor(s, e);
+      acc[e] = Number.isFinite(c) ? c : 0;
       return acc;
     }, {}),
   };
