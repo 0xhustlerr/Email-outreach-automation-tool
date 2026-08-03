@@ -8,7 +8,12 @@ import { decideCountry, isTargetRegion } from "@/lib/country";
 import { GitHubError, parseGitHubUsername } from "@/lib/github";
 import { discoverLeadEmails } from "@/lib/lead-discovery";
 import { getSettings } from "@/lib/queue-store";
-import { displayName, enqueueSequence, urlVars } from "@/lib/sequences-store";
+import {
+  displayName,
+  enqueueSequence,
+  senderVars,
+  urlVars,
+} from "@/lib/sequences-store";
 import type { CsvLead } from "@/lib/csv";
 
 export const runtime = "nodejs";
@@ -198,6 +203,7 @@ export async function POST(req: Request) {
           const cc = discovery.choice.cc;
           const vars = {
             name: displayName(lead.name || discovery.name),
+            ...senderVars(),
             ...urlVars({
               upwork: lead.upworkUrl,
               linkedin: lead.linkedinUrl,

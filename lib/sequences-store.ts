@@ -730,6 +730,7 @@ export function rotateQueuedOpeners(
       const op = list[i % list.length];
       const vars = {
         name: displayName(r.name),
+        ...senderVars(),
         ...urlVars({
           upwork: r.link,
           linkedin: r.link_linkedin,
@@ -742,6 +743,16 @@ export function rotateQueuedOpeners(
   });
   tx();
   return rows.length;
+}
+
+/** Template vars that keep the sender placeholders INTACT when a body is
+ *  rendered at queue time. The mailer is the single choke point that fills
+ *  them (from the account that actually sends), so anything that renders a
+ *  template before the send must map them back to themselves — otherwise
+ *  `substitute` treats them as unknown and blanks them, and the email goes out
+ *  signed with nothing. */
+export function senderVars(): Record<string, string> {
+  return { sender: "{{sender}}", sender_email: "{{sender_email}}" };
 }
 
 /** Template vars for the URL placeholders. {{url}} stays an alias of the

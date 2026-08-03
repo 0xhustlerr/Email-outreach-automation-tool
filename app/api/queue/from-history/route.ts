@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
 import { getSettings } from "@/lib/queue-store";
-import { displayName, enqueueSequence, urlVars } from "@/lib/sequences-store";
+import {
+  displayName,
+  enqueueSequence,
+  senderVars,
+  urlVars,
+} from "@/lib/sequences-store";
 import {
   candidatesForEmails,
   listHistoryCandidates,
@@ -108,6 +113,7 @@ export async function POST(req: Request) {
   candidates.forEach((c, i) => {
     const vars = {
       name: displayName(c.name),
+      ...senderVars(),
       ...urlVars({ upwork: c.link, username: c.username }),
     };
     // Round-robin the opener across contacts so each template is used evenly.
