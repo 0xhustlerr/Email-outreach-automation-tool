@@ -31,6 +31,7 @@ import {
   setTrackingEnabled,
 } from "@/lib/tracking";
 import { isSheetsLoggerConfigured } from "@/lib/sheets";
+import { listActiveBlocks } from "@/lib/sender-blocks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,6 +62,10 @@ function snapshot() {
         stored.map((i) => [i.email, i.email.toLowerCase() in activeSync]),
       ) as Record<string, boolean>,
     },
+    // Accounts Gmail policy-blocked; they resume on their own at `until` (the
+    // next local midnight). An ARRAY, not a map, so the C# tray DTO stays a
+    // plain List<T> — the tray reads this on the poll it already makes.
+    senderBlocks: listActiveBlocks(),
     github: { tokenSet: isGithubTokenSet() },
     tracking: {
       urlSet: isTrackingUrlSet(),

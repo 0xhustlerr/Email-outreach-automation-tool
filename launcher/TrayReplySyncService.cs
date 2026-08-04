@@ -31,6 +31,9 @@ internal sealed class TrayReplySyncService : IDisposable
     /// <summary>Raised on the UI thread with replies not seen in prior sessions.</summary>
     public event Action<IReadOnlyList<TrayReplyNotification>>? NewReplies;
 
+    /// <summary>Raised on the UI thread when a sending account is newly blocked by Gmail.</summary>
+    public event Action<IReadOnlyList<TraySenderBlock>>? SenderBlocked;
+
     public TrayReplySyncService(
         HttpClient http,
         string appUrl,
@@ -137,7 +140,24 @@ internal sealed class TrayReplySyncService : IDisposable
 
         try
         {
-            if (!await IsSyncConfiguredAsync())
+            var senders = await FetchSendersAsync();
+
+            // Gmail blocks toast regardless of whether reply sync / Sheets are
+            // configured — they are independent features sharing one poll, and
+            // gating them behind the reply-sync check would leave a Sheets-less
+            // install with no warning that an account stopped sending.
+            //
+            // Only on a SUCCESSFUL poll: a null response means we don't know the
+            // block state, and treating that as "nothing blocked" would both
+            // clear ToastedBlocks for still-active blocks (re-toasting them on
+            // the next good poll) and, on a first run while the server is still
+            // booting, mark the seed done against an empty list.
+            if (senders != null)
+            {
+                HandleSenderBlocks(senders.SenderBlocks);
+            }
+
+            if (senders is not { SheetsConfigured: true, GmailReplySyncConfigured: true })
             {
                 return;
             }
@@ -183,22 +203,104 @@ internal sealed class TrayReplySyncService : IDisposable
         }
     }
 
-    private async Task<bool> IsSyncConfiguredAsync()
+    private async Task<TraySendersResponse?> FetchSendersAsync()
     {
         try
         {
             using var res = await _http.GetAsync($"{_appUrl}/api/senders");
             if (!res.IsSuccessStatusCode)
             {
-                return false;
+                return null;
             }
 
-            var data = await res.Content.ReadFromJsonAsync<TraySendersResponse>(JsonOptions);
-            return data is { SheetsConfigured: true, GmailReplySyncConfigured: true };
+            return await res.Content.ReadFromJsonAsync<TraySendersResponse>(JsonOptions);
         }
         catch
         {
-            return false;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Toast accounts newly blocked by Gmail. Dedups on DetectedAt rather than
+    /// the day, so a "Resume now" followed by a second block the same day is
+    /// treated as the genuinely new event it is.
+    /// </summary>
+    private void HandleSenderBlocks(IReadOnlyList<TraySenderBlock> blocks)
+    {
+        var state = LoadUiState();
+
+        // First run: remember what is already blocked without popping up.
+        if (!state.BlocksSeeded)
+        {
+            state.BlocksSeeded = true;
+            state.ToastedBlocks.Clear();
+            foreach (var b in blocks)
+            {
+                if (!string.IsNullOrEmpty(b.Sender))
+                {
+                    state.ToastedBlocks[b.Sender] = b.DetectedAt;
+                }
+            }
+
+            SaveUiState(state);
+            if (blocks.Count > 0)
+            {
+                LauncherLog.Write($"Tray sender blocks seeded ({blocks.Count} existing; no popups).");
+            }
+
+            return;
+        }
+
+        var fresh = new List<TraySenderBlock>();
+        foreach (var b in blocks)
+        {
+            if (string.IsNullOrEmpty(b.Sender))
+            {
+                continue;
+            }
+
+            if (state.ToastedBlocks.TryGetValue(b.Sender, out var prev) &&
+                string.Equals(prev, b.DetectedAt, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            fresh.Add(b);
+            state.ToastedBlocks[b.Sender] = b.DetectedAt;
+        }
+
+        // Forget accounts that are no longer blocked, so tomorrow's block on the
+        // same account is seen as new.
+        var active = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var b in blocks)
+        {
+            active.Add(b.Sender);
+        }
+
+        var stale = new List<string>();
+        foreach (var key in state.ToastedBlocks.Keys)
+        {
+            if (!active.Contains(key))
+            {
+                stale.Add(key);
+            }
+        }
+
+        foreach (var key in stale)
+        {
+            state.ToastedBlocks.Remove(key);
+        }
+
+        if (fresh.Count == 0 && stale.Count == 0)
+        {
+            return;
+        }
+
+        SaveUiState(state);
+        if (fresh.Count > 0)
+        {
+            _ui.Post(_ => SenderBlocked?.Invoke(fresh), null);
         }
     }
 

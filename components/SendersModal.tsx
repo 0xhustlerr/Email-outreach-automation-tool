@@ -9,6 +9,14 @@ import ReplySyncModal from "@/components/ReplySyncModal";
 // sync (reading replies) is configured per account in its own modal. A GitHub
 // token (for scan rate limits) is also set here.
 
+// Mirrors SenderBlock in lib/sender-blocks.ts — `sender` is always lowercased.
+type SenderBlock = {
+  sender: string;
+  reason: string;
+  detail: string;
+  until: string;
+};
+
 type SendersState = {
   identities: MailIdentity[];
   stored: string[];
@@ -16,6 +24,8 @@ type SendersState = {
   replySync?: { clientConfigured: boolean; accounts: Record<string, boolean> };
   github?: { tokenSet: boolean };
   tracking?: { urlSet: boolean; enabled: boolean; url: string };
+  /** Accounts Gmail policy-blocked; they resume at the next local midnight. */
+  senderBlocks?: SenderBlock[];
 };
 
 type RemovedCounts = { history: number; queued: number; sequences: number };
@@ -73,6 +83,10 @@ export default function SendersModal({
 
   useEffect(() => {
     void refresh();
+    // A Gmail block can land while this modal is open, so keep it live —
+    // slower than the queue modal, since nothing else here changes on its own.
+    const id = window.setInterval(refresh, 20000);
+    return () => window.clearInterval(id);
   }, [refresh]);
 
   useEffect(() => {
@@ -96,6 +110,9 @@ export default function SendersModal({
 
   const clientConfigured = !!data?.replySync?.clientConfigured;
   const syncAccounts = data?.replySync?.accounts ?? {};
+  const blockByEmail = new Map(
+    (data?.senderBlocks ?? []).map((b) => [b.sender, b]),
+  );
   const githubTokenSet = !!data?.github?.tokenSet;
   const trackingUrlSet = !!data?.tracking?.urlSet;
   const trackingEnabled = !!data?.tracking?.enabled;
@@ -291,6 +308,7 @@ export default function SendersModal({
               )}
               {(data?.identities ?? []).map((id) => {
                 const syncOn = !!syncAccounts[id.email.toLowerCase()];
+                const block = blockByEmail.get(id.email.toLowerCase());
                 return (
                   <div
                     key={id.email}
@@ -301,7 +319,22 @@ export default function SendersModal({
                         <AccountAvatar name={id.name} email={id.email} />
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
-                          <div className="truncate font-mono text-[11px] text-slate-400">{id.email}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="truncate font-mono text-[11px] text-slate-400">{id.email}</span>
+                            {block && (
+                              // No time shown: this modal polls slowly, so a
+                              // live-looking clock would read stale. The title
+                              // carries the detail; Resume lives in the queue.
+                              <span
+                                title={`Gmail bounced this account with a policy block${
+                                  block.detail ? `: ${block.detail}` : ""
+                                }. Outreach skips it until the next local midnight, then resumes on its own. Open the Queue to resume it early.`}
+                                className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+                              >
+                                Paused — Gmail block
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">

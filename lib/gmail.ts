@@ -165,7 +165,10 @@ export function isGmailReplySyncConfigured(): boolean {
   return Object.keys(parseGmailAccounts()).length > 0;
 }
 
-async function getAccessToken(senderEmail: string): Promise<string | null> {
+/** Exported for bounce-watch, which scans the same inboxes for mailer-daemon
+ *  DSNs. Throws when the refresh exchange fails; returns null for an unknown
+ *  account. */
+export async function getAccessToken(senderEmail: string): Promise<string | null> {
   const key = senderEmail.toLowerCase();
   const account = parseGmailAccounts()[key];
   if (!account) return null;
@@ -269,7 +272,7 @@ export type GmailReplyMessage = {
   bodyHtml: string;
 };
 
-function parseReceivedAt(
+export function parseReceivedAt(
   dateHeader: string,
   internalDateMs?: string,
 ): string {
@@ -300,13 +303,14 @@ function latestReplyBody(
   return stripQuotedReplyBody(snippet);
 }
 
-type GmailMessagePart = {
+export type GmailMessagePart = {
   mimeType?: string;
+  headers?: { name?: string; value?: string }[];
   body?: { data?: string; size?: number };
   parts?: GmailMessagePart[];
 };
 
-function decodeBase64Url(data: string): string {
+export function decodeBase64Url(data: string): string {
   const padded = data.replace(/-/g, "+").replace(/_/g, "/");
   const pad = padded.length % 4;
   const normalized = pad ? padded + "=".repeat(4 - pad) : padded;
@@ -331,7 +335,7 @@ function extractBodies(payload: GmailMessagePart): { text: string; html: string 
   return { text, html };
 }
 
-function headerValue(
+export function headerValue(
   headers: { name?: string; value?: string }[] | undefined,
   name: string,
 ): string {

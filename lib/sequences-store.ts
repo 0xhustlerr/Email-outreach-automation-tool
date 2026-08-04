@@ -327,6 +327,23 @@ export function revertOpenerToPending(id: number): void {
   ).run(id);
 }
 
+/** Put a claimed follow-up back to 'scheduled' — the follow-up twin of
+ *  revertOpenerToPending, for when the send was abandoned for a reason that is
+ *  about the ACCOUNT (blocked for the day) rather than this contact, so no
+ *  attempt should be burned toward the permanent 'failed' state. */
+export function revertFollowupToScheduled(id: number): void {
+  db.prepare(
+    `UPDATE sequences SET fu_status = 'scheduled' WHERE id = ? AND fu_status = 'sending'`,
+  ).run(id);
+}
+
+/** Un-stamp an optimistically-claimed bump so it can fire later. claimDueBump
+ *  sets bump_sent_at BEFORE the send and only ever claims rows where it is
+ *  NULL, so without this a failed bump is silently lost forever. */
+export function revertBump(id: number): void {
+  db.prepare(`UPDATE sequences SET bump_sent_at = NULL WHERE id = ?`).run(id);
+}
+
 /** Claim a follow-up whose delay has elapsed AND passes `eligible`. */
 export function claimDueFollowup(
   eligible?: (s: Sequence) => boolean,

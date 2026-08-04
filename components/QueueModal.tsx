@@ -59,6 +59,21 @@ type QueueSettings = {
   bumpAfterDays: number;
 };
 
+// An account Gmail policy-blocked ("Message blocked" bounce). Mirrors
+// SenderBlock in lib/sender-blocks.ts — `sender` is always lowercased.
+type SenderBlock = {
+  sender: string;
+  reason: string;
+  detail: string;
+  blockedDay: string;
+  detectedAt: string;
+  /** ISO of the next local midnight, when the block lifts itself. */
+  until: string;
+  source: string;
+  statusCode: string;
+  recipient: string;
+};
+
 type QueueStatus = {
   enabled: boolean;
   withinWindow: boolean;
@@ -74,6 +89,10 @@ type QueueStatus = {
   // Resolved daily cap per pooled account (0 = unlimited).
   capBySender?: Record<string, number>;
   waitingForSender?: number;
+  // Accounts paused for today by a Gmail block; they resume on their own.
+  blockedSenders?: SenderBlock[];
+  // Every eligible account is blocked — nothing can send until tomorrow.
+  allSendersBlocked?: boolean;
 };
 
 // An account's own daily cap from senderCaps. 0 = unlimited.
@@ -89,6 +108,14 @@ function computeTotalDailyCap(s: QueueSettings, activeEmails: string[]): number 
   return caps.length > 0 && caps.every((c) => c > 0)
     ? caps.reduce((a, b) => a + b, 0)
     : s.dailyCap;
+}
+
+// "12:00 AM" from a block's ISO `until`. label12h below only takes "HH:MM".
+function resumeAt(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? "tomorrow"
+    : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 // 12-hour label for an "HH:MM" 24h value.
@@ -334,6 +361,7 @@ export default function QueueModal({
       status &&
       status.enabled &&
       !status.capReached &&
+      !status.allSendersBlocked &&
       status.nextInSec !== null
     ) {
       setCountdown(status.nextInSec);
@@ -375,6 +403,7 @@ export default function QueueModal({
     if (item.opStatus === "pending") {
       // When paused, the header already says so — don't repeat it on every row.
       if (!status.enabled) return null;
+      if (status.allSendersBlocked) return "after the block lifts";
       if (status.capReached) return "after cap resets";
       if (!status.withinWindow) return "next window";
       const startMs = item.opSendAfter
@@ -388,6 +417,9 @@ export default function QueueModal({
     }
     return null;
   };
+
+  const blocks = status?.blockedSenders ?? [];
+  const blockByEmail = new Map(blocks.map((b) => [b.sender, b]));
 
   // Precompute drip order for the estimate.
   const pendingOpenerIds = items
@@ -562,6 +594,30 @@ export default function QueueModal({
   };
 
   const num = (v: string) => (counts[v] ?? 0);
+
+  // Lift a Gmail block early. The server keeps the resume for the rest of the
+  // local day, so this can't flap back on the next bounce.
+  const resumeSender = async (email: string) => {
+    try {
+      const res = await fetch(
+        `/api/queue?action=resume-sender&email=${encodeURIComponent(email)}`,
+        { method: "PATCH" },
+      );
+      const data = (await res.json()) as { ok?: boolean; resumed?: boolean };
+      if (!res.ok || !data.ok) {
+        toast.error(`Couldn't resume ${email}.`);
+      } else if (data.resumed) {
+        toast.success(`${email} resumed — the queue can send from it again.`);
+      } else {
+        // Nothing to lift (already resumed, or the block expired between the
+        // render and the click) — don't claim we did something.
+        toast.info(`${email} wasn't blocked.`);
+      }
+    } catch {
+      toast.error(`Couldn't resume ${email}.`);
+    }
+    void refresh();
+  };
 
   const cancelAllQueued = async () => {
     const n = num("queued");
@@ -757,10 +813,25 @@ export default function QueueModal({
                 <b className="text-amber-300">{status.waitingForSender}</b>
               </span>
             )}
+            {blocks.length > 0 && (
+              <span
+                title={
+                  "Gmail bounced these accounts with a policy/reputation block, so the queue skips them for the rest of today:\n" +
+                  blocks
+                    .map((b) => `• ${b.sender} — ${b.detail || b.reason}`)
+                    .join("\n") +
+                  `\n\nThey resume automatically at ${resumeAt(blocks[0].until)}.`
+                }
+              >
+                Blocked accounts <b className="text-amber-300">{blocks.length}</b>
+              </span>
+            )}
             <span className="ml-auto tabular-nums">
               {!status.enabled
                 ? "Paused"
-                : status.capReached
+                : status.allSendersBlocked
+                  ? `Paused — Gmail block · resumes ${resumeAt(blocks[0]?.until ?? "")}`
+                  : status.capReached
                   ? "Daily cap reached — resumes tomorrow"
                   : status.startAt && new Date(status.startAt) > new Date()
                     ? `Starts ${new Date(status.startAt).toLocaleString()}`
@@ -822,6 +893,41 @@ export default function QueueModal({
           <p className="border-b border-white/10 bg-rose-500/10 px-5 py-2 text-xs text-rose-300">
             Last error: {status.lastError}
           </p>
+        )}
+
+        {/* Gmail blocks. Lives here rather than only on the per-account rows
+            because the settings panel is collapsed by default. */}
+        {blocks.length > 0 && (
+          <div className="border-b border-white/10 bg-amber-500/10 px-5 py-2 text-xs text-amber-200">
+            <p className="mb-1">
+              Gmail blocked{" "}
+              {blocks.length === 1 ? "an account" : `${blocks.length} accounts`} —
+              the queue skips {blocks.length === 1 ? "it" : "them"} until tomorrow.
+            </p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {blocks.map((b) => (
+                <span key={b.sender} className="inline-flex items-center gap-1.5">
+                  <span
+                    className="font-mono text-[11px] text-amber-100"
+                    title={b.detail || b.reason}
+                  >
+                    {b.sender}
+                  </span>
+                  <span className="text-amber-300/60">
+                    · resumes {resumeAt(b.until)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void resumeSender(b.sender)}
+                    title={`Let the queue use ${b.sender} again right away. The resume holds for the rest of today — a further bounce won't silently re-pause it.`}
+                    className="rounded-lg border border-amber-400/40 px-2 py-0.5 text-[10px] font-medium text-amber-200 transition hover:bg-amber-400/15"
+                  >
+                    Resume now
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* Settings — opens a modal so the queued contacts stay in view */}
@@ -1068,6 +1174,7 @@ export default function QueueModal({
                       const cap =
                         status?.capBySender?.[email] ??
                         effCapFor(settings, email);
+                      const block = blockByEmail.get(email);
                       const commitCap = () => {
                         const draft = capDrafts[email];
                         if (draft === undefined) return;
@@ -1109,6 +1216,20 @@ export default function QueueModal({
                               }
                             >
                               {cap > 0 ? `${used}/${cap}` : used} today
+                            </span>
+                          )}
+                          {block && (
+                            // No Resume button here: this row is a <label>, so a
+                            // nested button would toggle the pool checkbox. It
+                            // lives in the banner above instead.
+                            <span
+                              title={`Gmail bounced this account with a policy block${
+                                block.detail ? `: ${block.detail}` : ""
+                              }. The queue skips it until ${resumeAt(block.until)}.`}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+                            >
+                              <PauseIcon className="h-2.5 w-2.5" />
+                              Blocked · resumes {resumeAt(block.until)}
                             </span>
                           )}
                           <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">

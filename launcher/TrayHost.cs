@@ -450,7 +450,40 @@ internal sealed class TrayHost : ApplicationContext
 
         _replySync = new TrayReplySyncService(_http, _appUrl, _projectRoot, _ui);
         _replySync.NewReplies += OnNewReplies;
+        _replySync.SenderBlocked += OnSenderBlocked;
         LauncherLog.Write("Tray background reply sync started.");
+    }
+
+    // Gmail blocked one of the sending accounts (fires on the UI thread).
+    // Informational only — no tray badge and no dialog: the queue already
+    // skipped the account on its own and lifts the block at midnight, and the
+    // Resume now button lives in the web UI.
+    private void OnSenderBlocked(IReadOnlyList<TraySenderBlock> blocks)
+    {
+        if (_exiting || blocks.Count == 0)
+        {
+            return;
+        }
+
+        var first = blocks[0];
+        var resumes = FormatResumeTime(first.Until);
+        var body = blocks.Count == 1
+            ? $"{first.Sender} was blocked by Gmail and is paused for today. Sending resumes at {resumes}."
+            : $"{blocks.Count} sending accounts were blocked by Gmail and are paused for today. Sending resumes at {resumes}.";
+
+        LauncherLog.Write(
+            $"Tray sender block: {string.Join(", ", blocks.Select(b => b.Sender))} until {first.Until}.");
+
+        // CustomToast directly rather than ShowBalloon: the latter re-derives the
+        // kind from keywords in the title and would turn this Success-green.
+        CustomToast.Show("Sending account paused", body, ToastKind.Warning, 9000);
+    }
+
+    private static string FormatResumeTime(string iso)
+    {
+        return DateTimeOffset.TryParse(iso, out var at)
+            ? at.ToLocalTime().ToString("h:mm tt")
+            : "midnight";
     }
 
     // New replies arrived (fires on the UI thread). Accumulate them, raise the

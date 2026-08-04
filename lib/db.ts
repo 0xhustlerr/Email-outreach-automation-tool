@@ -199,6 +199,46 @@ function ensureSchema(db: Database.Database): void {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- Sending accounts Gmail policy-blocked ("Message blocked" bounce), one row
+    -- per account per LOCAL day. There is no expiry job: day_key stops matching
+    -- localDayKey() at midnight, so every account resumes on its own.
+    CREATE TABLE IF NOT EXISTS sender_blocks (
+      sender      TEXT NOT NULL,               -- lowercased sending account
+      day_key     TEXT NOT NULL,               -- local 'YYYY-MM-DD'
+      blocked_at  TEXT NOT NULL,               -- ISO; STABLE for the block's life
+      reason      TEXT NOT NULL DEFAULT '',    -- short label for the badge
+      detail      TEXT NOT NULL DEFAULT '',    -- the matched bounce line
+      status_code TEXT NOT NULL DEFAULT '',    -- '5.7.1'
+      source      TEXT NOT NULL DEFAULT 'dsn', -- 'dsn' | 'smtp' | 'manual'
+      gmail_id    TEXT NOT NULL DEFAULT '',    -- audit: the DSN that tripped it
+      recipient   TEXT NOT NULL DEFAULT '',    -- audit: the address that failed
+      resumed_at  TEXT,                        -- non-null = manually resumed today
+      PRIMARY KEY (sender, day_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sender_blocks_day ON sender_blocks (day_key);
+
+    -- Append-only ledger of every bounce (DSN) seen in a connected inbox. Drives
+    -- dedup: a message id already here is never re-fetched and never re-pauses,
+    -- which is what makes detection idempotent across restarts and manual
+    -- resumes. Gmail message ids are per-MAILBOX, hence the composite key.
+    CREATE TABLE IF NOT EXISTS bounce_events (
+      inbox       TEXT NOT NULL,
+      gmail_id    TEXT NOT NULL,
+      sender      TEXT NOT NULL DEFAULT '',   -- attributed sending account
+      recipient   TEXT NOT NULL DEFAULT '',
+      kind        TEXT NOT NULL,              -- 'policy' | 'invalid' | 'other'
+      status_code TEXT NOT NULL DEFAULT '',
+      detail      TEXT NOT NULL DEFAULT '',
+      received_at TEXT NOT NULL DEFAULT '',
+      day_key     TEXT NOT NULL DEFAULT '',   -- local day of received_at
+      snippet     TEXT NOT NULL DEFAULT '',
+      seen_at     TEXT NOT NULL,
+      PRIMARY KEY (inbox, gmail_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bounce_events_sender_day
+      ON bounce_events (sender, day_key);
+    CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events (seen_at);
   `);
 
   // Template kind: 'opener' (message 1) or 'followup' (message 2). Drives the

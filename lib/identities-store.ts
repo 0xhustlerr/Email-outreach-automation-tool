@@ -278,6 +278,14 @@ export function deleteSenderData(email: string): {
   } catch {
     // ignore
   }
+  try {
+    // Drop any Gmail block + bounce ledger for this account, so re-adding it
+    // the same day doesn't resurrect yesterday's pause.
+    db.prepare(`DELETE FROM sender_blocks WHERE sender = ?`).run(e);
+    db.prepare(`DELETE FROM bounce_events WHERE inbox = ? OR sender = ?`).run(e, e);
+  } catch {
+    // ignore
+  }
   return { history, queued, sequences };
 }
 

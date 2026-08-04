@@ -14,6 +14,8 @@ import {
   sequenceCounts,
 } from "@/lib/sequences-store";
 import { queueWorkerStatus } from "@/lib/queue-worker";
+import { pauseSenderManually, resumeSender } from "@/lib/sender-blocks";
+import { scanBouncesNow } from "@/lib/bounce-watch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -127,6 +129,35 @@ export async function PATCH(req: Request) {
     }
     const canceled = cancelSequenceByEmail(email);
     return NextResponse.json({ ok: canceled > 0, canceled, counts: sequenceCounts() });
+  }
+
+  // Lift a Gmail block before its automatic next-midnight expiry ("Resume now").
+  // The resume holds for the rest of the local day: further bounces from the
+  // same account won't silently re-pause it, so this can't flap.
+  if (action === "resume-sender") {
+    const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
+    if (!email) {
+      return NextResponse.json({ ok: false, error: "email required." }, { status: 400 });
+    }
+    const resumed = resumeSender(email);
+    return NextResponse.json({ ok: true, resumed, status: queueWorkerStatus() });
+  }
+
+  // Manual pause — also the way to exercise the whole feature without waiting
+  // for a real bounce.
+  if (action === "pause-sender") {
+    const email = (url.searchParams.get("email") ?? "").trim().toLowerCase();
+    if (!email) {
+      return NextResponse.json({ ok: false, error: "email required." }, { status: 400 });
+    }
+    pauseSenderManually(email);
+    return NextResponse.json({ ok: true, status: queueWorkerStatus() });
+  }
+
+  // Force an immediate inbox scan instead of waiting for the 2-minute loop.
+  if (action === "scan-bounces") {
+    const result = await scanBouncesNow();
+    return NextResponse.json({ ok: true, ...result, status: queueWorkerStatus() });
   }
 
   if (action === "clear-finished") {

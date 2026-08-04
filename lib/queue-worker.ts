@@ -18,6 +18,11 @@ import { withinLocalWindow } from "./country";
 import { getSettings, type QueueSettings } from "./queue-store";
 import { listTemplates } from "./templates-store";
 import {
+  blockedSenderSet,
+  listActiveBlocks,
+  type SenderBlock,
+} from "./sender-blocks";
+import {
   claimDueBump,
   claimNextQueuedOpener,
   claimRepliedFollowup,
@@ -29,6 +34,8 @@ import {
   markOpenerSent,
   pendingOpenersLastSentBy,
   resetStuckSequences,
+  revertBump,
+  revertFollowupToScheduled,
   revertOpenerToPending,
   sentTodayBySender,
   type Sequence,
@@ -92,14 +99,34 @@ function nextGapMs(s: QueueSettings): number {
   return Math.max(5, s.intervalSec + jitter) * 1000;
 }
 
-function pickSender(itemFrom: string): string {
-  if (itemFrom.trim()) return itemFrom.trim();
-  const ids = listIdentities();
+// Non-pooled sender choice, also used by the follow-up and bump lanes (which
+// reuse the opener's account verbatim). Returns "" when nothing may send —
+// every caller must treat that as "hold this item", not as a send with no From.
+function pickSender(itemFrom: string, blocked = blockedSenderSet()): string {
+  const pinned = itemFrom.trim();
+  if (pinned) return blocked.has(pinned.toLowerCase()) ? "" : pinned;
+  const ids = listIdentities().filter(
+    (i) => !blocked.has(i.email.toLowerCase()),
+  );
   if (ids.length === 0) return "";
   if (!getSettings().rotateSenders) return ids[0].email;
   const email = ids[state.rotateIndex % ids.length].email;
   state.rotateIndex = (state.rotateIndex + 1) % ids.length;
   return email;
+}
+
+// Can this sequence's step go out right now, given the blocked accounts?
+// from_email is written lowercased by markOpenerSent but VERBATIM by
+// recordSentSequence, so normalize before comparing. Legacy rows can still
+// carry '' — those fall through to pickSender(""), which rotates, so they're
+// eligible exactly when some account is free.
+function senderAllowed(
+  seq: Sequence,
+  blocked: Set<string>,
+  anyFree: boolean,
+): boolean {
+  const from = seq.fromEmail.trim().toLowerCase();
+  return from ? !blocked.has(from) : anyFree;
 }
 
 // An account's own daily cap from senderCaps; no entry = unlimited.
@@ -112,6 +139,16 @@ function capFor(s: QueueSettings, email: string): number {
 
 // The accounts actually sending: the configured pool, or all configured
 // identities when no pool is set. Always lowercased + deduped.
+//
+// DELIBERATELY NOT blocked-aware, and neither is effectiveDailyCap below.
+// distinctClientsToday() counts contacts across ALL senders, so dropping a
+// blocked account here would shrink the day's ceiling below a count that still
+// includes what that account already sent — e.g. two accounts capped 40, A
+// sends 35 and B sends 20, A gets blocked, ceiling falls to 40 while sentToday
+// is 55, and the cap gate halts the loop before it ever reaches the pool logic,
+// freezing the HEALTHY account for the rest of the day. Blocks and caps are
+// orthogonal: caps live here, blocks live in eligiblePoolSenders.
+// (QueueModal mirrors this formula client-side, so it must not drift either.)
 function activeSenderEmails(s: QueueSettings): string[] {
   const configured = [
     ...new Set(listIdentities().map((i) => i.email.toLowerCase())),
@@ -137,24 +174,37 @@ function effectiveDailyCap(s: QueueSettings): number {
 //   "none"   -> no sender pool configured (use the item's own sender)
 //   "capped" -> a pool exists but every account hit its daily cap (wait)
 //   "ok"     -> at least one pooled account is free
-function pooledEligibility(s: QueueSettings): "none" | "capped" | "ok" {
+// ("capped" also covers "every pooled account is policy-blocked today" — the
+// loop's response is the same: wait, don't strand a claim.)
+function pooledEligibility(
+  s: QueueSettings,
+  blocked = blockedSenderSet(),
+): "none" | "capped" | "ok" {
   const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
   if (pool.length === 0) return "none";
   const load = sentTodayBySender();
-  return pool.some((e) => (load[e] ?? 0) < capFor(s, e)) ? "ok" : "capped";
+  return pool.some((e) => (load[e] ?? 0) < capFor(s, e) && !blocked.has(e))
+    ? "ok"
+    : "capped";
 }
 
-// Under-cap pool accounts, optionally excluding one address.
+// Under-cap, non-blocked pool accounts, optionally excluding one address.
+// THE choke point for blocked senders: pickPooledSender and
+// hasDifferentFreeSender both route through here, so this one filter covers the
+// whole opener path.
 function eligiblePoolSenders(
   s: QueueSettings,
   avoidEmail = "",
   load = sentTodayBySender(),
+  blocked = blockedSenderSet(),
 ): string[] {
   const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
   const avoid = avoidEmail.trim().toLowerCase();
-  return pool.filter((e) => (load[e] ?? 0) < capFor(s, e) && e !== avoid);
+  return pool.filter(
+    (e) => (load[e] ?? 0) < capFor(s, e) && e !== avoid && !blocked.has(e),
+  );
 }
 
 // Is there a free account DIFFERENT from `avoidEmail`? Pure check (no side
@@ -164,8 +214,9 @@ function hasDifferentFreeSender(
   s: QueueSettings,
   avoidEmail: string,
   load: Record<string, number>,
+  blocked = blockedSenderSet(),
 ): boolean {
-  return eligiblePoolSenders(s, avoidEmail, load).length > 0;
+  return eligiblePoolSenders(s, avoidEmail, load, blocked).length > 0;
 }
 
 // Choose which account an OPENER goes out from. HARD RULE: never reuse
@@ -173,8 +224,12 @@ function hasDifferentFreeSender(
 // if the only free account is that one, so the caller holds the send until a
 // different account has budget. Among the different free accounts, ALTERNATE
 // away from the last account used (no back-to-back).
-function pickPooledSender(s: QueueSettings, avoidEmail = ""): string | null {
-  const candidates = eligiblePoolSenders(s, avoidEmail);
+function pickPooledSender(
+  s: QueueSettings,
+  avoidEmail = "",
+  blocked = blockedSenderSet(),
+): string | null {
+  const candidates = eligiblePoolSenders(s, avoidEmail, sentTodayBySender(), blocked);
   if (candidates.length === 0) return null; // no DIFFERENT free account → wait
   if (candidates.length === 1) return candidates[0];
 
@@ -215,8 +270,16 @@ function localEligible(seq: Sequence, s: QueueSettings): boolean {
 
 // Send one sequence's follow-up as a threaded reply to its opener, then record
 // the outcome. Shared by the hot (reply-triggered) and normal follow-up paths.
-async function sendFollowup(fu: Sequence): Promise<void> {
+// Returns whether a send was attempted; see sendBump for why the caller must
+// sleep when it wasn't.
+async function sendFollowup(fu: Sequence): Promise<boolean> {
   const sender = pickSender(fu.fromEmail);
+  if (!sender) {
+    // The account went into a block between the claim and here. Put the step
+    // back untouched — it fires tomorrow rather than burning an attempt.
+    revertFollowupToScheduled(fu.id);
+    return false;
+  }
   const result = await performSend({
     to: fu.toEmail,
     // Keep the same Cc as the opener so the thread stays consistent.
@@ -242,20 +305,39 @@ async function sendFollowup(fu: Sequence): Promise<void> {
     state.lastError = "";
     state.lastSentAt = new Date().toISOString();
     console.log(`[queue] follow-up sent → ${fu.toEmail}`);
+  } else if (result.blockKind === "policy") {
+    // The ACCOUNT is blocked, not this contact — reschedule instead of
+    // counting a strike toward the permanent 'failed' state.
+    revertFollowupToScheduled(fu.id);
+    state.lastError = result.error;
+    console.warn(`[queue] follow-up held (sender blocked) → ${fu.toEmail}`);
   } else {
     markFollowupFailed(fu.id, result.error, MAX_ATTEMPTS);
     state.lastError = result.error;
     console.warn(`[queue] follow-up failed → ${fu.toEmail}: ${result.error}`);
   }
+  return true;
 }
 
 // Send a one-time link-free bump to a non-replier as a threaded reply. The
 // sequence stays 'scheduled' (bump_sent_at already stamped by claimDueBump), so
 // a later reply still triggers the pitch.
-async function sendBump(seq: Sequence): Promise<void> {
+//
+// Returns whether a send was actually ATTEMPTED. The caller must sleep when it
+// wasn't: the bump lane `continue`s, and the paths below that bail early leave
+// state.lastSendMs untouched, so without a sleep the loop would re-claim and
+// spin with no timer in it.
+async function sendBump(seq: Sequence): Promise<boolean> {
   const body = nextBumpBody(seq.name);
-  if (!body) return; // no bump templates configured
+  if (!body) {
+    revertBump(seq.id); // no bump templates — don't consume the one chance
+    return false;
+  }
   const sender = pickSender(seq.fromEmail);
+  if (!sender) {
+    revertBump(seq.id);
+    return false;
+  }
   const result = await performSend({
     to: seq.toEmail,
     cc: seq.ccEmail,
@@ -278,10 +360,20 @@ async function sendBump(seq: Sequence): Promise<void> {
     state.lastError = "";
     state.lastSentAt = new Date().toISOString();
     console.log(`[queue] bump sent → ${seq.toEmail}`);
+  } else if (result.blockKind === "policy") {
+    // Only un-stamp for an ACCOUNT-level block, which will clear by itself.
+    // Reverting on every failure would be wrong: a bump has no attempt counter,
+    // so a permanently-failing one (dead address) would be re-claimed forever
+    // and — because this lane runs before the openers and `continue`s — would
+    // consume every drip slot and stall the queue indefinitely.
+    revertBump(seq.id);
+    state.lastError = result.error;
+    console.warn(`[queue] bump held (sender blocked) → ${seq.toEmail}`);
   } else {
     state.lastError = result.error;
     console.warn(`[queue] bump failed → ${seq.toEmail}: ${result.error}`);
   }
+  return true;
 }
 
 async function loop(): Promise<void> {
@@ -293,15 +385,29 @@ async function loop(): Promise<void> {
     try {
       const s = getSettings();
       const sinceLast = Date.now() - state.lastSendMs;
+      // One snapshot per tick, threaded into every sender decision below so a
+      // single claim scan can't issue 200 queries.
+      const blocked = blockedSenderSet();
+      const anyFree = listIdentities().some(
+        (i) => !blocked.has(i.email.toLowerCase()),
+      );
 
       // 0) HOT follow-ups: the opener already got a reply → send the pitch fast
       // (a small spacing only, bypassing the normal drip interval) while the
       // lead is warm. Not gated by the recipient's local window — they just
       // replied, so they're online now.
-      if (state.lastSendMs === 0 || sinceLast >= HOT_MIN_GAP_MS) {
-        const hot = claimRepliedFollowup(3);
+      if ((state.lastSendMs === 0 || sinceLast >= HOT_MIN_GAP_MS) && anyFree) {
+        // Pass the eligibility filter ONLY when something is actually blocked:
+        // with no predicate the claim runs LIMIT 1, with one it scans 200 rows
+        // through a correlated EXISTS subquery. Keep the common path identical.
+        const hot = claimRepliedFollowup(
+          3,
+          blocked.size > 0
+            ? (seq) => senderAllowed(seq, blocked, anyFree)
+            : undefined,
+        );
         if (hot) {
-          await sendFollowup(hot);
+          if (!(await sendFollowup(hot))) await sleep(TICK_MS);
           continue;
         }
       }
@@ -316,10 +422,19 @@ async function loop(): Promise<void> {
       // 1) Bump non-repliers: one short LINK-FREE nudge N days after the opener.
       // (The pitch itself is reply-only — handled by the hot path above.) The
       // sequence stays 'scheduled', so a later reply still fires the pitch.
-      if (s.bumpEnabled) {
-        const bump = claimDueBump(s.bumpAfterDays, (seq) => localEligible(seq, s));
+      // The template check is BEFORE the claim on purpose: with no bump
+      // templates, claiming would only be undone again on the next line, and
+      // the lane would churn a claim/revert pair every tick forever.
+      if (s.bumpEnabled && anyFree && listTemplates("bump").length > 0) {
+        // Gate in the PREDICATE, never after the claim: claimDueBump stamps
+        // bump_sent_at as it claims and only ever claims rows where that is
+        // NULL, so an early return here would lose the bump forever.
+        const bump = claimDueBump(
+          s.bumpAfterDays,
+          (seq) => localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
+        );
         if (bump) {
-          await sendBump(bump);
+          if (!(await sendBump(bump))) await sleep(TICK_MS);
           continue;
         }
       }
@@ -336,9 +451,16 @@ async function loop(): Promise<void> {
         await sleep(TICK_MS);
         continue;
       }
-      // If a pool is set and every account hit its cap, wait (don't strand a claim).
-      const elig = pooledEligibility(s);
+      // If a pool is set and every account hit its cap (or is blocked), wait
+      // (don't strand a claim).
+      const elig = pooledEligibility(s, blocked);
       if (elig === "capped") {
+        await sleep(TICK_MS);
+        continue;
+      }
+      // No pool + every configured account blocked: nothing can send. Bail
+      // before claiming, otherwise we'd claim and revert an opener every tick.
+      if (elig === "none" && !anyFree) {
         await sleep(TICK_MS);
         continue;
       }
@@ -349,8 +471,14 @@ async function loop(): Promise<void> {
       const load = elig === "ok" ? sentTodayBySender() : {};
       const op = claimNextQueuedOpener((seq) => {
         if (!localEligible(seq, s)) return false;
-        if (elig !== "ok") return true; // no pool → item's own sender
-        return hasDifferentFreeSender(s, lastSenderForContact(seq.toEmail), load);
+        // No pool → the item's own sender is used verbatim, so it must be free.
+        if (elig !== "ok") return senderAllowed(seq, blocked, anyFree);
+        return hasDifferentFreeSender(
+          s,
+          lastSenderForContact(seq.toEmail),
+          load,
+          blocked,
+        );
       });
       if (!op) {
         await sleep(TICK_MS);
@@ -361,7 +489,11 @@ async function loop(): Promise<void> {
       // gone (race), put the opener back rather than reuse the original sender.
       let sender: string;
       if (elig === "ok") {
-        const picked = pickPooledSender(s, lastSenderForContact(op.toEmail));
+        const picked = pickPooledSender(
+          s,
+          lastSenderForContact(op.toEmail),
+          blocked,
+        );
         if (!picked) {
           revertOpenerToPending(op.id);
           await sleep(TICK_MS);
@@ -369,7 +501,12 @@ async function loop(): Promise<void> {
         }
         sender = picked;
       } else {
-        sender = pickSender(op.fromEmail);
+        sender = pickSender(op.fromEmail, blocked);
+        if (!sender) {
+          revertOpenerToPending(op.id);
+          await sleep(TICK_MS);
+          continue;
+        }
       }
       const result = await performSend({
         to: op.toEmail,
@@ -392,6 +529,15 @@ async function loop(): Promise<void> {
         state.lastError = "";
         state.lastSentAt = new Date().toISOString();
         console.log(`[queue] opener sent → ${op.toEmail} (as ${result.sender})`);
+      } else if (result.blockKind === "policy") {
+        // Gmail blocked the ACCOUNT, not this contact. Put the opener back
+        // untouched. Without this, markOpenerFailed would count a strike and —
+        // since claims are ORDER BY id ASC — the same head-of-queue contact
+        // gets re-claimed and permanently killed after three tries, then the
+        // next one, for as long as the block lasts.
+        revertOpenerToPending(op.id);
+        state.lastError = result.error;
+        console.warn(`[queue] opener held (sender blocked) → ${op.toEmail}`);
       } else {
         markOpenerFailed(op.id, result.error, MAX_ATTEMPTS);
         state.lastError = result.error;
@@ -426,12 +572,25 @@ export function queueWorkerStatus() {
   // is almost always 0.
   const configured = new Set(listIdentities().map((i) => i.email.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
-  const freeAccounts = pool.filter((e) => (load[e] ?? 0) < capFor(s, e));
+  const blockedSenders: SenderBlock[] = listActiveBlocks();
+  const blockedSet = new Set(blockedSenders.map((b) => b.sender));
+  // "Free" must mean actually usable, or this under-reports next to the new
+  // blocked counter in the same stat strip.
+  const freeAccounts = pool.filter(
+    (e) => (load[e] ?? 0) < capFor(s, e) && !blockedSet.has(e),
+  );
   const waitingForSender =
     pool.length > 0 && freeAccounts.length === 1
       ? pendingOpenersLastSentBy(freeAccounts[0])
       : 0;
+  // Every eligible account blocked → the drip can't send at all. Lets the UI
+  // say so instead of showing a silent idle with a ticking countdown.
+  const activeEmails = activeSenderEmails(s);
+  const allSendersBlocked =
+    activeEmails.length > 0 && activeEmails.every((e) => blockedSet.has(e));
   return {
+    blockedSenders,
+    allSendersBlocked,
     enabled: s.enabled,
     withinWindow: withinWindow(s),
     sentToday,

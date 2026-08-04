@@ -6,6 +6,8 @@ import { listIdentities, sendMail } from "./mail";
 import { deriveSite, logSendToSheet } from "./sheets";
 import { logSendToDb } from "./db";
 import { isTrackingEnabled, newTrackToken, pixelUrl } from "./tracking";
+import { classifyBounceText, type BounceKind } from "./bounce-classify";
+import { pauseSender } from "./sender-blocks";
 
 export type SendContext = {
   to: string;
@@ -29,7 +31,16 @@ export type SendContext = {
 
 export type SendResult =
   | { ok: true; messageId: string; sender: string }
-  | { ok: false; error: string; status: number };
+  | {
+      ok: false;
+      error: string;
+      status: number;
+      /** Set when the SMTP rejection was a recognizable bounce. "policy" means
+       *  the ACCOUNT was blocked, not this contact — callers must put the item
+       *  back instead of counting an attempt against it. */
+      blockKind?: BounceKind;
+      statusCode?: string;
+    };
 
 export function isValidEmail(s: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
@@ -114,6 +125,32 @@ export async function performSend(ctx: SendContext): Promise<SendResult> {
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Unknown error sending email.";
-    return { ok: false, error: message, status: 500 };
+    // nodemailer puts the clean SMTP text on `.response` ("550-5.7.1 ... Our
+    // system has detected ..."); `.message` is a prefixed form of the same.
+    const raw =
+      (err as { response?: string })?.response?.trim() || message;
+    const verdict = classifyBounceText(raw);
+    if (verdict.kind === "policy") {
+      // Gmail rejected us on reputation/rate. Stand this account down for the
+      // rest of the day rather than keep hammering — and note that this is the
+      // ONLY detector that works for an account with no Gmail OAuth token, so
+      // it is not merely a fast path for the inbox scanner.
+      pauseSender(match.email, {
+        reason: "Gmail blocked this account",
+        detail: verdict.detail,
+        statusCode: verdict.statusCode,
+        source: "smtp",
+      });
+      console.warn(
+        `[send] ${match.email} policy-blocked by Gmail (${verdict.statusCode || "no code"}) — paused for today`,
+      );
+    }
+    return {
+      ok: false,
+      error: message,
+      status: 500,
+      blockKind: verdict.kind,
+      statusCode: verdict.statusCode,
+    };
   }
 }

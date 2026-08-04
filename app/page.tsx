@@ -2436,6 +2436,7 @@ function SendModal({
   const [capStatus, setCapStatus] = useState<{
     sentBySender: Record<string, number>;
     capBySender: Record<string, number>;
+    blocked: Set<string>;
   } | null>(null);
   useEffect(() => {
     let alive = true;
@@ -2446,12 +2447,16 @@ function SendModal({
           status?: {
             sentBySender?: Record<string, number>;
             capBySender?: Record<string, number>;
+            blockedSenders?: { sender: string }[];
           };
         }) => {
           if (!alive) return;
           setCapStatus({
             sentBySender: d.status?.sentBySender ?? {},
             capBySender: d.status?.capBySender ?? {},
+            blocked: new Set(
+              (d.status?.blockedSenders ?? []).map((b) => b.sender),
+            ),
           });
         },
       )
@@ -2465,9 +2470,16 @@ function SendModal({
     const e = email.trim().toLowerCase();
     const cap = capStatus.capBySender[e] ?? 0;
     const used = capStatus.sentBySender[e] ?? 0;
-    return { cap, used, atCap: cap > 0 && used >= cap };
+    const blocked = capStatus.blocked.has(e);
+    return { cap, used, blocked, atCap: cap > 0 && used >= cap };
   };
-  const underCapSenders = senders.filter((s) => !capInfoFor(s.email)?.atCap);
+  // Auto-rotation steers away from accounts that are at cap OR Gmail-blocked.
+  // A manual send is still ALLOWED from either (the user is deliberate here) —
+  // it just isn't chosen for them.
+  const underCapSenders = senders.filter((s) => {
+    const info = capInfoFor(s.email);
+    return !info?.atCap && !info?.blocked;
+  });
 
   // Mode: "single" = one plain email (normal send); "twostep" = cold-email
   // opener + threaded follow-up. Manual compose (editable recipient, e.g. the
@@ -2956,12 +2968,20 @@ function SendModal({
                   return null;
                 return (
                   <p className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
-                    ⚠ Every account reached its daily cap — sending anyway
-                    exceeds warm-up limits.
+                    ⚠ Every account is at its daily cap or blocked by Gmail —
+                    sending anyway exceeds warm-up limits.
                   </p>
                 );
               }
               const info = capInfoFor(fromEmail);
+              if (info?.blocked) {
+                return (
+                  <p className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">
+                    ⚠ Gmail blocked {fromEmail} today — the queue has stopped
+                    using it. Sending now will likely bounce.
+                  </p>
+                );
+              }
               if (!info?.atCap) return null;
               return (
                 <p className="mt-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-200">

@@ -10,6 +10,10 @@ export async function register() {
     startAvatarPrefetchLoop();
     const { startQueueWorker } = await import("./lib/queue-worker");
     startQueueWorker();
+    // Watches the connected inboxes for Gmail "Message blocked" bounces and
+    // stands the affected account down for the rest of the day.
+    const { startBounceWatch } = await import("./lib/bounce-watch");
+    startBounceWatch();
     // One-time: standardize any history country values missing country_std.
     const { backfillCountryStd } = await import("./lib/history-sync");
     const n = backfillCountryStd();
