@@ -4,7 +4,7 @@ import {
   getGmailMessageReplyHeaders,
   isGmailReplySyncConfigured,
 } from "@/lib/gmail";
-import { isSmtpConfigured, listIdentities, sendMail } from "@/lib/mail";
+import { isSendConfigured, listIdentities, sendMail } from "@/lib/mail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,11 +31,11 @@ function replySubject(subject: string): string {
 }
 
 export async function POST(req: Request) {
-  if (!isSmtpConfigured()) {
+  if (!isSendConfigured()) {
     return NextResponse.json(
       {
         error:
-          "SMTP not configured. Set MAIL_IDENTITIES or SMTP_USER/SMTP_PASS in .env.local.",
+          "No sending account configured. Add one in Accounts (app password or Gmail OAuth).",
       },
       { status: 503 },
     );

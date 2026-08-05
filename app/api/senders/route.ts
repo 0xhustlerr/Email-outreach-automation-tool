@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   clearTransportCache,
-  isSmtpConfigured,
+  isSendConfigured,
   listIdentities,
   verifyIdentity,
 } from "@/lib/mail";
@@ -47,7 +47,7 @@ function snapshot() {
     process.env.GMAIL_CLIENT_ID?.trim() && process.env.GMAIL_CLIENT_SECRET?.trim()
   );
   return {
-    smtpConfigured: isSmtpConfigured(),
+    smtpConfigured: isSendConfigured(),
     sheetsConfigured: isSheetsLoggerConfigured(),
     gmailReplySyncConfigured: isGmailReplySyncConfigured(),
     identities: listIdentities(),
@@ -127,18 +127,37 @@ export async function POST(req: Request) {
     smtpSecure,
   });
   if (!check.ok) {
-    const gmail = smtpHost.includes("gmail");
-    return NextResponse.json(
-      {
-        ok: false,
-        error: gmail
-          ? "Could not sign in to Gmail with that app password. Make sure 2-Step Verification is on and you pasted a 16-character App Password (not your normal password). Details: " +
-            (check.error ?? "authentication failed")
-          : "Could not connect/sign in to the SMTP server. Details: " +
-            (check.error ?? "authentication failed"),
-      },
-      { status: 400 },
+    // The SMTP server never answered (vs. answered and rejected the login) —
+    // typical on VPS hosts, which block outbound 465/587 entirely. The
+    // password can't be validated from here, but refusing to save would make
+    // it impossible to add accounts on such machines at all. Save it and let
+    // sending go over the Gmail API (HTTPS) once reply-sync OAuth is
+    // connected for the account.
+    const unreachable = /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received/i.test(
+      check.error ?? "",
     );
+    if (!unreachable) {
+      const gmail = smtpHost.includes("gmail");
+      return NextResponse.json(
+        {
+          ok: false,
+          error: gmail
+            ? "Could not sign in to Gmail with that app password. Make sure 2-Step Verification is on and you pasted a 16-character App Password (not your normal password). Details: " +
+              (check.error ?? "authentication failed")
+            : "Could not connect/sign in to the SMTP server. Details: " +
+              (check.error ?? "authentication failed"),
+        },
+        { status: 400 },
+      );
+    }
+    upsertStoredIdentity({ email, name: name || email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });
+    clearTransportCache();
+    return NextResponse.json({
+      ok: true,
+      warning:
+        "Saved, but the SMTP server could not be reached from this machine (outbound port blocked), so the app password was not verified. Connect reply-sync OAuth for this account — sending will then go over the Gmail API instead of SMTP.",
+      ...snapshot(),
+    });
   }
 
   upsertStoredIdentity({ email, name: name || email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });

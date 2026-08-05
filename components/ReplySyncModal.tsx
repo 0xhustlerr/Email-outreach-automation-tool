@@ -250,8 +250,10 @@ export default function ReplySyncModal({
                   </Step>
                   <Step n={3} title="Consent screen">
                     OAuth consent screen → External → add your Gmail as a{" "}
-                    <span className="text-slate-100">Test user</span> → add scope{" "}
-                    <span className="font-mono text-slate-100">.../auth/gmail.readonly</span>.
+                    <span className="text-slate-100">Test user</span> → add scopes{" "}
+                    <span className="font-mono text-slate-100">.../auth/gmail.readonly</span> and{" "}
+                    <span className="font-mono text-slate-100">.../auth/gmail.send</span> (the send
+                    scope lets the app send over HTTPS where SMTP ports are blocked, e.g. on a VPS).
                   </Step>
                   <Step n={4} title="Create credentials">
                     Credentials → Create OAuth client ID →{" "}
@@ -275,9 +277,13 @@ export default function ReplySyncModal({
                     paste the same Client ID &amp; Secret.
                   </Step>
                   <Step n={6} title="Authorize">
-                    Pick scope{" "}
+                    Pick BOTH scopes{" "}
                     <span className="font-mono text-slate-100">
                       https://www.googleapis.com/auth/gmail.readonly
+                    </span>{" "}
+                    and{" "}
+                    <span className="font-mono text-slate-100">
+                      https://www.googleapis.com/auth/gmail.send
                     </span>{" "}
                     → Authorize → sign in <span className="text-slate-100">as {email}</span> → Allow.
                   </Step>

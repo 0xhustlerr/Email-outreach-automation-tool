@@ -1,6 +1,7 @@
-import nodemailer, { type Transporter } from "nodemailer";
+import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
 import type { MailIdentity } from "./types";
 import { listStoredIdentities } from "./identities-store";
+import { getAccessToken, parseGmailAccounts } from "./gmail";
 
 export type { MailIdentity };
 
@@ -126,10 +127,12 @@ export function listIdentities(): MailIdentity[] {
   return parseIdentities().map(({ name, email }) => ({ name, email }));
 }
 
-export function isSmtpConfigured(): boolean {
+/** True when at least one identity can send — via SMTP credentials or a Gmail
+ *  OAuth token (the HTTPS API path). Gates the send routes. */
+export function isSendConfigured(): boolean {
   const ids = parseIdentities();
   if (ids.length === 0) return false;
-  return ids.some((id) => resolveSmtp(id) !== null);
+  return ids.some((id) => resolveSmtp(id) !== null || hasGmailOAuth(id.email));
 }
 
 function findIdentity(email: string): MailIdentityFull | null {
@@ -161,6 +164,84 @@ function transportFor(id: MailIdentityFull): Transporter {
     transportCache.set(key, t);
   }
   return t;
+}
+
+// ---------------------------------------------------------------------------
+// Gmail API transport (HTTPS). Preferred over SMTP whenever the sender has an
+// OAuth refresh token (the same one reply sync uses), because VPS hosts block
+// outbound SMTP ports while leaving 443 open. Requires the token to have been
+// consented with the gmail.send scope; a readonly-only token fails before the
+// message is handed to Gmail and the send falls back to SMTP below.
+// ---------------------------------------------------------------------------
+
+function hasGmailOAuth(email: string): boolean {
+  try {
+    return email.toLowerCase() in parseGmailAccounts();
+  } catch {
+    return false;
+  }
+}
+
+/** Failures that happen BEFORE Gmail could have accepted the message (token
+ *  refresh, missing gmail.send scope) — retrying over SMTP cannot duplicate. */
+class GmailAuthError extends Error {}
+
+// Composes RFC 2822 MIME in memory, no network — one shared instance.
+const mimeComposer = nodemailer.createTransport({
+  streamTransport: true,
+  buffer: true,
+  newline: "unix",
+});
+
+async function sendViaGmailApi(
+  senderEmail: string,
+  mail: SendMailOptions,
+): Promise<{ messageId: string }> {
+  let access: string | null;
+  try {
+    access = await getAccessToken(senderEmail);
+  } catch (e) {
+    throw new GmailAuthError(
+      e instanceof Error ? e.message : "Gmail token refresh failed",
+    );
+  }
+  if (!access) throw new GmailAuthError(`No Gmail OAuth token for ${senderEmail}.`);
+
+  const composed = await mimeComposer.sendMail(mail);
+  const raw = (composed.message as Buffer).toString("base64url");
+
+  const res = await fetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${access}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ raw }),
+    },
+  );
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: { message?: string; status?: string };
+    };
+    const detail = data.error?.message ?? `Gmail send failed (HTTP ${res.status}).`;
+    // 401 / scope-related 403 = rejected before sending; eligible for SMTP
+    // fallback. Everything else (rate limit, quota, policy) keeps Google's
+    // wording so classifyBounceText in send-core sees the phrases it knows.
+    if (
+      res.status === 401 ||
+      (res.status === 403 &&
+        /insufficient|scope|permission/i.test(detail + (data.error?.status ?? "")))
+    ) {
+      throw new GmailAuthError(detail);
+    }
+    throw new Error(detail);
+  }
+  // Gmail preserves the Message-ID header nodemailer put in `raw`, so the id
+  // returned here matches what recipients see — same contract as the SMTP
+  // path, which threading and bounce-watch depend on.
+  return { messageId: composed.messageId };
 }
 
 function escapeHtml(s: string): string {
@@ -224,7 +305,7 @@ export async function sendMail(args: {
   const pixel = args.trackPixelUrl?.trim();
 
   const cc = args.cc?.trim();
-  const info = await transportFor(identity).sendMail({
+  const mail: SendMailOptions = {
     from: fromHeader,
     to: args.to,
     ...(cc ? { cc } : {}),
@@ -232,6 +313,22 @@ export async function sendMail(args: {
     text: finalBody,
     ...(pixel ? { html: bodyToTrackedHtml(finalBody, pixel) } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-  });
+  };
+
+  // Prefer the Gmail API (HTTPS) when this sender has an OAuth token — works
+  // where outbound SMTP is blocked (VPS hosts). MAIL_FORCE_SMTP=1 opts out.
+  // On an auth/scope failure the message never reached Gmail, so retrying
+  // over SMTP cannot double-send; any other API error propagates as-is.
+  if (!bool(process.env.MAIL_FORCE_SMTP, false) && hasGmailOAuth(identity.email)) {
+    try {
+      return await sendViaGmailApi(identity.email, mail);
+    } catch (e) {
+      if (!(e instanceof GmailAuthError) || !resolveSmtp(identity)) throw e;
+      console.warn(
+        `[mail] Gmail API auth failed for ${identity.email} — falling back to SMTP: ${e.message}`,
+      );
+    }
+  }
+  const info = await transportFor(identity).sendMail(mail);
   return { messageId: info.messageId };
 }

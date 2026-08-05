@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
-import { isSmtpConfigured } from "@/lib/mail";
+import { isSendConfigured } from "@/lib/mail";
 import { performSend } from "@/lib/send-core";
 import { recordSentSequence } from "@/lib/sequences-store";
 import { recordSendEvent } from "@/lib/recent-sends";
@@ -29,11 +29,11 @@ type Body = {
 
 export async function POST(req: Request) {
   markUserActivity();
-  if (!isSmtpConfigured()) {
+  if (!isSendConfigured()) {
     return NextResponse.json(
       {
         error:
-          "SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASS in .env.local.",
+          "No sending account configured. Add one in Accounts (app password or Gmail OAuth).",
       },
       { status: 503 },
     );
