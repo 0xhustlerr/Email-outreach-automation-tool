@@ -17,10 +17,37 @@ type SenderBlock = {
   until: string;
 };
 
+/** An account's SMTP connection settings. The password is never sent here —
+ *  only whether one is on file. Mirrors `smtp` in the /api/senders snapshot. */
+type SmtpInfo = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  hasPass: boolean;
+};
+
+/** Result of the last SMTP connect + login for one account (in-memory on the
+ *  server, so it is absent until a check has run). */
+type SenderHealth = {
+  email: string;
+  ok: boolean;
+  /** 'host:port' that was tried. */
+  target: string;
+  error: string;
+  unconfigured: boolean;
+  checkedAt: string;
+};
+
+/** A port that answered when the account's own one didn't. */
+type Suggestion = { email: string; host: string; port: number; secure: boolean };
+
 type SendersState = {
   identities: MailIdentity[];
   stored: string[];
   smtpConfigured: boolean;
+  smtp?: Record<string, SmtpInfo>;
+  health?: SenderHealth[];
   replySync?: { clientConfigured: boolean; accounts: Record<string, boolean> };
   github?: { tokenSet: boolean };
   tracking?: { urlSet: boolean; enabled: boolean; url: string };
@@ -59,6 +86,18 @@ export default function SendersModal({
   // open tracking
   const [trackingUrl, setTrackingUrl] = useState("");
   const [showTrackingGuide, setShowTrackingGuide] = useState(false);
+
+  // reconnect — renew a connected account's SMTP settings in place. The app
+  // password field stays empty on open: the stored one is reused unless the
+  // user actually pastes a new one.
+  const [renewFor, setRenewFor] = useState<string | null>(null);
+  const [renewHost, setRenewHost] = useState("smtp.gmail.com");
+  const [renewPort, setRenewPort] = useState("465");
+  const [renewUser, setRenewUser] = useState("");
+  const [renewPass, setRenewPass] = useState("");
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  /** Account currently being verified — "*" while re-checking all of them. */
+  const [checking, setChecking] = useState<string | null>(null);
 
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
@@ -118,6 +157,10 @@ export default function SendersModal({
   const blockByEmail = new Map(
     (data?.senderBlocks ?? []).map((b) => [b.sender, b]),
   );
+  const healthByEmail = new Map(
+    (data?.health ?? []).map((h) => [h.email.toLowerCase(), h]),
+  );
+  const smtpByEmail = data?.smtp ?? {};
   const githubTokenSet = !!data?.github?.tokenSet;
   const trackingUrlSet = !!data?.tracking?.urlSet;
   const trackingEnabled = !!data?.tracking?.enabled;
@@ -176,6 +219,131 @@ export default function SendersModal({
       onChanged?.();
     } catch {
       setError("Network error while adding the account.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Fold fresh check results into the account list without a full refetch. */
+  const mergeHealth = (results: SenderHealth[]) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      const next = new Map(
+        (prev.health ?? []).map((h) => [h.email.toLowerCase(), h] as const),
+      );
+      for (const r of results) next.set(r.email.toLowerCase(), r);
+      return { ...prev, health: [...next.values()] };
+    });
+  };
+
+  // Re-run the SMTP connect + login. Without an address every account is
+  // checked; with one, `probe` also tries the other standard port when the
+  // account's own one can't be reached, so a blocked 465 has an obvious fix.
+  const recheck = async (addr?: string) => {
+    clearMsgs();
+    setSuggestion(null);
+    setChecking(addr ?? "*");
+    try {
+      const res = await fetch("/api/senders/health", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(addr ? { email: addr, probe: true } : {}),
+      });
+      const body = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        results?: SenderHealth[];
+        suggestion?: Suggestion | null;
+      };
+      if (!res.ok || !body.ok) {
+        setError(body.error ?? "Could not check the connection.");
+        return;
+      }
+      const results = body.results ?? [];
+      mergeHealth(results);
+      if (body.suggestion) setSuggestion(body.suggestion);
+
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length === 0) {
+        flash(
+          addr
+            ? `${addr} — connected and signed in.`
+            : `All ${results.length} account(s) connected and signed in.`,
+        );
+      } else if (body.suggestion) {
+        clearMsgs();
+        setWarnMsg(
+          `Port ${body.suggestion.port} works for ${body.suggestion.email} — apply it below to reconnect.`,
+        );
+      } else {
+        clearMsgs();
+        setWarnMsg(
+          addr
+            ? `${addr} — ${failed[0]?.error || "could not connect"}`
+            : `${failed.length} of ${results.length} account(s) could not connect. Open Reconnect on each to fix it.`,
+        );
+      }
+    } catch {
+      setError("Network error while checking the connection.");
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  const openRenew = (addr: string) => {
+    clearMsgs();
+    setSuggestion(null);
+    setPendingRemove(null);
+    const cur = smtpByEmail[addr.toLowerCase()];
+    setRenewHost(cur?.host ?? "smtp.gmail.com");
+    setRenewPort(String(cur?.port ?? 465));
+    setRenewUser(cur?.user ?? addr);
+    setRenewPass("");
+    setRenewFor(addr);
+  };
+
+  // Save renewed connection settings for an existing account. An empty password
+  // field keeps the stored one — this flow is usually about the port or host,
+  // not the credentials.
+  const saveRenew = async (addr: string) => {
+    clearMsgs();
+    setBusy(true);
+    try {
+      const port = Number(renewPort) || 465;
+      const res = await fetch("/api/senders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: addr,
+          appPassword: renewPass.trim(),
+          smtpHost: renewHost.trim() || "smtp.gmail.com",
+          smtpPort: port,
+          smtpSecure: port === 465,
+          smtpUser: renewUser.trim() || addr,
+        }),
+      });
+      const body = (await res.json()) as SendersState & {
+        ok: boolean;
+        error?: string;
+        warning?: string;
+      };
+      if (!res.ok || !body.ok) {
+        setError(body.error ?? "Could not update the connection.");
+        return;
+      }
+      setData(body);
+      setRenewPass("");
+      setSuggestion(null);
+      if (body.warning) {
+        clearMsgs();
+        setWarnMsg(`Updated ${addr}. ${body.warning}`);
+      } else {
+        setRenewFor(null);
+        flash(`Reconnected ${addr} — verified and ready to send.`);
+      }
+      onChanged?.();
+    } catch {
+      setError("Network error while updating the connection.");
     } finally {
       setBusy(false);
     }
@@ -325,13 +493,48 @@ export default function SendersModal({
             )}
 
             {/* Current accounts */}
+            {(data?.identities ?? []).length > 0 && (
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+                  Connections
+                </span>
+                <button
+                  type="button"
+                  onClick={() => recheck()}
+                  disabled={busy || checking !== null}
+                  title="Open a real SMTP connection for every account and sign in, right now"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/5 disabled:opacity-40"
+                >
+                  {checking === "*" ? (
+                    <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshIcon className="h-3.5 w-3.5" />
+                  )}
+                  {checking === "*" ? "Checking…" : "Recheck all"}
+                </button>
+              </div>
+            )}
             <div className="space-y-2">
               {(data?.identities ?? []).length === 0 && (
                 <p className="text-xs text-slate-500">No accounts yet. Add your first Gmail below.</p>
               )}
               {(data?.identities ?? []).map((id) => {
-                const syncOn = !!syncAccounts[id.email.toLowerCase()];
-                const block = blockByEmail.get(id.email.toLowerCase());
+                const key = id.email.toLowerCase();
+                const syncOn = !!syncAccounts[key];
+                const block = blockByEmail.get(key);
+                const hp = healthByEmail.get(key);
+                const smtp = smtpByEmail[key];
+                const renewing = renewFor === id.email;
+                const sug = suggestion?.email.toLowerCase() === key ? suggestion : null;
+                // A password must be typed when there is none on file, or when
+                // the form points the account at a different server than the one
+                // the stored password belongs to (the server refuses to replay
+                // it elsewhere). Port and username changes stay password-free.
+                const needsPass =
+                  renewing &&
+                  renewPass.trim().length < 8 &&
+                  (!smtp?.hasPass ||
+                    renewHost.trim().toLowerCase() !== smtp.host.toLowerCase());
                 return (
                   <div
                     key={id.email}
@@ -344,6 +547,7 @@ export default function SendersModal({
                           <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
                           <div className="flex items-center gap-2">
                             <span className="truncate font-mono text-[11px] text-slate-400">{id.email}</span>
+                            <HealthBadge health={hp} checking={checking === id.email} />
                             {block && (
                               // No time shown: this modal polls slowly, so a
                               // live-looking clock would read stale. The title
@@ -361,6 +565,23 @@ export default function SendersModal({
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => (renewing ? setRenewFor(null) : openRenew(id.email))}
+                          disabled={busy}
+                          title="Re-test this account's SMTP connection, or renew its host, port, username and app password"
+                          className={
+                            "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 " +
+                            (renewing
+                              ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200"
+                              : hp && !hp.ok
+                                ? "border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
+                                : "border-white/10 text-slate-300 hover:bg-white/5")
+                          }
+                        >
+                          <RefreshIcon className="h-3.5 w-3.5" />
+                          Reconnect
+                        </button>
                         <button
                           type="button"
                           onClick={() => setReplyFor(id.email)}
@@ -413,6 +634,170 @@ export default function SendersModal({
                         Removes the account and deletes its send history (hidden from
                         History &amp; Insights) plus any pending queue items from it.
                       </p>
+                    )}
+
+                    {renewing && (
+                      <div className="mt-3 space-y-2.5 rounded-xl border border-white/10 bg-slate-950/40 p-3">
+                        <p className="text-[11px] leading-relaxed text-slate-400">
+                          {hp
+                            ? hp.ok
+                              ? `Connected — SMTP login ok on ${hp.target}, checked at ${checkTime(hp.checkedAt)}.`
+                              : `Last check at ${checkTime(hp.checkedAt)} failed${hp.target ? ` on ${hp.target}` : ""}: ${hp.error}`
+                            : "Not checked since the app started. Test the connection, or change the settings below and save."}
+                        </p>
+
+                        {hp && !hp.ok && !hp.unconfigured && isTimeout(hp.error) && (
+                          <p className="text-[11px] leading-relaxed text-slate-500">
+                            A timeout means the server never answered, so this says
+                            nothing about your app password. Try the other port below.
+                            If 465 and 587 both time out, the block is outside the app —
+                            usually a VPN or proxy tunnel, a firewall, or antivirus mail
+                            scanning sitting on the connection. Disconnect the VPN and
+                            test again.
+                          </p>
+                        )}
+
+                        {sug && (
+                          <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                            <span className="text-[11px] leading-relaxed text-emerald-200">
+                              Port {sug.port} connected and signed in
+                              {sug.secure ? " (SSL)" : " (STARTTLS)"}. Your current
+                              port is blocked on this network.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRenewHost(sug.host);
+                                setRenewPort(String(sug.port));
+                              }}
+                              className="shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+                            >
+                              Use port {sug.port}
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <input
+                            type="text"
+                            value={renewHost}
+                            onChange={(e) => setRenewHost(e.target.value)}
+                            placeholder="SMTP host"
+                            className="col-span-2 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                          />
+                          <input
+                            type="text"
+                            value={renewPort}
+                            onChange={(e) => setRenewPort(e.target.value)}
+                            placeholder="Port"
+                            className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                          />
+                          <input
+                            type="text"
+                            value={renewUser}
+                            onChange={(e) => setRenewUser(e.target.value)}
+                            placeholder="SMTP username"
+                            className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                          />
+                          <input
+                            type="text"
+                            value={renewPass}
+                            onChange={(e) => setRenewPass(e.target.value)}
+                            placeholder={
+                              needsPass
+                                ? `App password for ${renewHost.trim()}`
+                                : "New app password (leave blank to keep current)"
+                            }
+                            autoComplete="off"
+                            className="col-span-2 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 font-mono text-sm text-slate-200 outline-none placeholder:font-sans placeholder:text-slate-500 focus:border-cyan-400/50"
+                          />
+                        </div>
+
+                        {needsPass && (
+                          // Mirrors the server rule: the stored password is only
+                          // ever replayed to the account's own server, so moving
+                          // it elsewhere has to be typed out.
+                          <p className="text-[11px] leading-relaxed text-amber-300/90">
+                            {smtp?.hasPass
+                              ? `Enter the app password for ${renewHost.trim()} — the one on file belongs to ${smtp.host} and is not sent to a different server.`
+                              : "Enter the account's app password (16 characters for Gmail)."}
+                          </p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="mr-1 text-[11px] text-slate-500">Port:</span>
+                          {[
+                            { port: "465", label: "465 · SSL" },
+                            { port: "587", label: "587 · STARTTLS" },
+                          ].map((p) => (
+                            <button
+                              key={p.port}
+                              type="button"
+                              onClick={() => setRenewPort(p.port)}
+                              className={
+                                "rounded-lg border px-2 py-0.5 text-[11px] font-medium transition " +
+                                (renewPort.trim() === p.port
+                                  ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200"
+                                  : "border-white/10 text-slate-400 hover:bg-white/5")
+                              }
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => recheck(id.email)}
+                            disabled={busy || checking !== null}
+                            title="Try the stored settings now, and the other standard port if this one can't be reached"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-200 transition hover:bg-white/5 disabled:opacity-40"
+                          >
+                            {checking === id.email ? (
+                              <>
+                                <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                Testing…
+                              </>
+                            ) : (
+                              <>
+                                <PlugIcon className="h-3.5 w-3.5" />
+                                Test connection
+                              </>
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => saveRenew(id.email)}
+                            disabled={busy || checking !== null || needsPass}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500/90 px-3 py-1.5 text-[12px] font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-40"
+                          >
+                            {busy ? (
+                              <>
+                                <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                Verifying…
+                              </>
+                            ) : (
+                              "Save & reconnect"
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRenewFor(null);
+                              setSuggestion(null);
+                            }}
+                            className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-slate-300 transition hover:bg-white/5"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        <p className="text-[11px] leading-relaxed text-slate-500">
+                          Saving re-verifies the login and drops the cached connection,
+                          so the next send uses these settings. History, queue and reply
+                          sync for this account are untouched.
+                        </p>
+                      </div>
                     )}
                   </div>
                 );
@@ -736,6 +1121,75 @@ export default function SendersModal({
   );
 }
 
+/** A connection-level failure (the server never answered), as opposed to a
+ *  rejected login — the two need completely different fixes. Kept in sync with
+ *  isSmtpUnreachable in lib/mail.ts, which decides server-side whether an
+ *  account is saved unverified; it can't be imported here because that module
+ *  pulls in nodemailer. */
+function isTimeout(error: string): boolean {
+  return /timeout|timed out|ETIMEDOUT|ETIMEOUT|ECONNRESET|ECONNREFUSED|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received/i.test(
+    error,
+  );
+}
+
+/** Local wall-clock time of a check, e.g. "08:29". */
+function checkTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? "unknown time"
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Whether this account can actually reach its SMTP server right now. Absent
+// until a check has run (the server holds these in memory), which is why
+// "Not checked" is a distinct state from a failure rather than a red badge.
+function HealthBadge({
+  health,
+  checking,
+}: {
+  health?: SenderHealth;
+  checking: boolean;
+}) {
+  const base = "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ";
+  if (checking) {
+    return (
+      <span className={base + "border-cyan-400/30 bg-cyan-400/10 text-cyan-200"}>
+        Checking…
+      </span>
+    );
+  }
+  if (!health) {
+    return (
+      <span
+        title="Not checked since the app started. Use Recheck all, or Reconnect on this account."
+        className={base + "border-white/10 bg-white/[0.03] text-slate-500"}
+      >
+        Not checked
+      </span>
+    );
+  }
+  if (health.ok) {
+    return (
+      <span
+        title={`SMTP login ok on ${health.target}, checked at ${checkTime(health.checkedAt)}.`}
+        className={base + "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}
+      >
+        Connected
+      </span>
+    );
+  }
+  return (
+    <span
+      title={`${health.target ? `${health.target}: ` : ""}${health.error} (checked at ${checkTime(
+        health.checkedAt,
+      )}). Open Reconnect to test again or change the port.`}
+      className={base + "border-rose-500/30 bg-rose-500/10 text-rose-300"}
+    >
+      {health.unconfigured ? "No credentials" : "Can't connect"}
+    </span>
+  );
+}
+
 function Collapsible({
   open,
   onToggle,
@@ -860,6 +1314,27 @@ function ChevronIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.35-3.8" />
+      <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.35 3.8" />
+      <path d="M21 3v5h-5" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
+function PlugIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M9 2v6M15 2v6" />
+      <path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8Z" />
+      <path d="M12 17v5" />
     </svg>
   );
 }

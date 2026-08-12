@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   clearTransportCache,
   isSendConfigured,
+  isSmtpUnreachable,
   listIdentities,
   verifyIdentity,
 } from "@/lib/mail";
@@ -9,6 +10,7 @@ import {
   deleteSenderData,
   deleteStoredIdentity,
   getGmailClient,
+  getStoredIdentity,
   isGithubTokenSet,
   isStoredIdentity,
   listStoredIdentities,
@@ -17,6 +19,11 @@ import {
   setOAuthRefreshToken,
   upsertStoredIdentity,
 } from "@/lib/identities-store";
+import {
+  forgetSenderHealth,
+  getSenderHealth,
+  recordSenderHealth,
+} from "@/lib/sender-health";
 import {
   isGmailReplySyncConfigured,
   parseGmailAccounts,
@@ -53,6 +60,24 @@ function snapshot() {
     identities: listIdentities(),
     // Every identity is stored in the DB and therefore removable here.
     stored: stored.map((i) => i.email),
+    // Per-account SMTP settings, so Accounts can show what an account connects
+    // through and pre-fill the Reconnect form. NEVER the password — only
+    // whether one is on file.
+    smtp: Object.fromEntries(
+      stored.map((i) => [
+        i.email,
+        {
+          host: i.smtpHost,
+          port: i.smtpPort,
+          secure: i.smtpSecure,
+          user: i.smtpUser,
+          hasPass: !!i.smtpPass,
+        },
+      ]),
+    ),
+    // Last known SMTP status per account, from the startup check and any manual
+    // recheck. In-memory, so it is empty until the first check completes.
+    health: getSenderHealth(),
     // Reply-sync (reading incoming replies) state: whether the shared OAuth
     // client is set, and which accounts have working sync. Secrets are never
     // returned — only booleans.
@@ -79,9 +104,16 @@ export async function GET() {
   return NextResponse.json(snapshot());
 }
 
-// Add (or update) a sending account. Body: { name, email, appPassword, and
+// Add (or renew) a sending account. Body: { name, email, appPassword, and
 // optional advanced SMTP: smtpHost, smtpPort, smtpSecure, smtpUser }. The
 // credentials are verified against the SMTP server before they are saved.
+//
+// For an account that already exists this doubles as the Reconnect flow: the
+// app password may be omitted to renew only the connection settings (port,
+// username) against the password already on file, and any field left out keeps
+// its stored value instead of silently reverting to the Gmail default. Moving
+// the account to a DIFFERENT smtpHost is the one change that still requires the
+// password in the body — see the note at `sameHost` below.
 export async function POST(req: Request) {
   let body: {
     name?: string;
@@ -99,19 +131,45 @@ export async function POST(req: Request) {
   }
 
   const email = (body.email ?? "").trim().toLowerCase();
-  const appPassword = (body.appPassword ?? "").trim();
-  const name = (body.name ?? "").trim();
-  const smtpHost = (body.smtpHost ?? "").trim() || "smtp.gmail.com";
-  const smtpUser = (body.smtpUser ?? "").trim() || email;
-  const smtpPort = Number.isFinite(body.smtpPort) ? Number(body.smtpPort) : 465;
-  const smtpSecure = typeof body.smtpSecure === "boolean" ? body.smtpSecure : smtpPort === 465;
-
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return NextResponse.json({ ok: false, error: "Enter a valid email address." }, { status: 400 });
   }
+
+  const existing = getStoredIdentity(email);
+  const name = (body.name ?? "").trim() || existing?.name || email;
+  const smtpHost = (body.smtpHost ?? "").trim() || existing?.smtpHost || "smtp.gmail.com";
+  const smtpUser = (body.smtpUser ?? "").trim() || existing?.smtpUser || email;
+  const smtpPort = Number.isFinite(body.smtpPort)
+    ? Number(body.smtpPort)
+    : (existing?.smtpPort ?? 465);
+  // With no explicit flag: derive from the port when a port was actually given,
+  // otherwise keep what is stored — a custom account on an implicit-TLS port
+  // must not silently flip to plaintext just because it isn't 465.
+  const smtpSecure =
+    typeof body.smtpSecure === "boolean"
+      ? body.smtpSecure
+      : Number.isFinite(body.smtpPort)
+        ? smtpPort === 465
+        : (existing?.smtpSecure ?? smtpPort === 465);
+
+  // The password on file is only reused for the account's OWN SMTP host. These
+  // routes are unauthenticated, so without that check a drive-by POST could
+  // point an existing account at any server and have us hand over the saved app
+  // password during the verification login below.
+  const sameHost =
+    !!existing && existing.smtpHost.trim().toLowerCase() === smtpHost.toLowerCase();
+  const appPassword =
+    (body.appPassword ?? "").trim() || (sameHost ? (existing?.smtpPass ?? "") : "");
+
   if (appPassword.length < 8) {
     return NextResponse.json(
-      { ok: false, error: "Enter the account's app password (16 characters for Gmail)." },
+      {
+        ok: false,
+        error:
+          existing && !sameHost
+            ? `Enter the app password for ${smtpHost}. The one on file belongs to ${existing.smtpHost} and is not reused for a different server.`
+            : "Enter the account's app password (16 characters for Gmail).",
+      },
       { status: 400 },
     );
   }
@@ -132,10 +190,7 @@ export async function POST(req: Request) {
     // what a transient network blip looks like. The password can't be
     // validated from here, and refusing to save would make it impossible to
     // add accounts on such machines at all, so save it with a warning.
-    const unreachable = /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received/i.test(
-      check.error ?? "",
-    );
-    if (!unreachable) {
+    if (!isSmtpUnreachable(check.error ?? "")) {
       const gmail = smtpHost.includes("gmail");
       return NextResponse.json(
         {
@@ -149,20 +204,39 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
-    upsertStoredIdentity({ email, name: name || email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });
+    upsertStoredIdentity({ email, name, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });
+    // Recorded only now that this config is the one on disk: a rejected login
+    // above saves nothing, so publishing its failure would paint a still-working
+    // account red (and leave a ghost entry for an account that was never added).
+    recordSenderHealth({
+      email,
+      ok: false,
+      target: `${smtpHost}:${smtpPort}`,
+      error: check.error ?? "SMTP verification failed",
+      unconfigured: false,
+    });
     clearTransportCache();
     return NextResponse.json({
       ok: true,
-      warning:
-        "Saved, but the SMTP server could not be reached from this machine, so the app password was not verified. If the outbound SMTP port is blocked here (common on VPS hosts), sending from this account will fail until it is opened.",
+      renewed: !!existing,
+      warning: `Saved, but ${smtpHost}:${smtpPort} could not be reached from this machine, so the connection was not verified. If that outbound port is blocked here (common on VPS hosts and some office/ISP networks), sending from this account will fail until it is opened — try the other port (465 or 587) from Reconnect.`,
       ...snapshot(),
     });
   }
 
-  upsertStoredIdentity({ email, name: name || email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });
+  upsertStoredIdentity({ email, name, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPass: appPassword });
+  // Verified against exactly what was just stored, so the Accounts list reflects
+  // this check without waiting for the next restart or manual recheck.
+  recordSenderHealth({
+    email,
+    ok: true,
+    target: `${smtpHost}:${smtpPort}`,
+    error: "",
+    unconfigured: false,
+  });
   clearTransportCache();
 
-  return NextResponse.json({ ok: true, ...snapshot() });
+  return NextResponse.json({ ok: true, renewed: !!existing, ...snapshot() });
 }
 
 // Reply-sync configuration. Two shapes:
@@ -306,6 +380,7 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ ok: false, error: "That account was not found." }, { status: 404 });
   }
   const removed = deleteSenderData(email);
+  forgetSenderHealth(email);
   clearTransportCache();
 
   return NextResponse.json({ ok: true, removed, ...snapshot() });

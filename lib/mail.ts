@@ -110,6 +110,65 @@ export async function verifySmtp(cfg: SmtpConfig): Promise<{
   }
 }
 
+/** True when the SMTP server never answered at all, as opposed to answering and
+ *  rejecting the login. Connection-level failures say nothing about whether the
+ *  credentials are right — typically a blocked outbound port (common on VPS
+ *  hosts and locked-down networks) or a transient network blip. */
+export function isSmtpUnreachable(error: string): boolean {
+  return /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received|connection timeout/i.test(
+    error,
+  );
+}
+
+// The two standard mail submission endpoints. A network that blocks one often
+// allows the other, and Gmail (like most providers) accepts both, so an account
+// stuck on an unreachable port can usually be fixed by switching to the other.
+const ALT_ENDPOINTS: { port: number; secure: boolean }[] = [
+  { port: 465, secure: true },
+  { port: 587, secure: false },
+];
+
+export type SmtpProbe = { port: number; secure: boolean; ok: boolean; error?: string };
+
+/** Verify an account's own SMTP settings and, when the connection itself never
+ *  gets through, try the standard alternate port on the same host. `working` is
+ *  the first config that connected AND authenticated, so the Accounts UI can
+ *  offer it as a one-click fix. Never throws. */
+export async function probeSmtp(cfg: SmtpConfig): Promise<{
+  ok: boolean;
+  error?: string;
+  working: SmtpConfig | null;
+  tried: SmtpProbe[];
+}> {
+  const first = await verifySmtp(cfg);
+  const tried: SmtpProbe[] = [
+    { port: cfg.port, secure: cfg.secure, ok: first.ok, error: first.error },
+  ];
+  if (first.ok) return { ok: true, working: cfg, tried };
+
+  // A rejected login would be rejected on every port too — only a connection
+  // failure is worth re-trying elsewhere.
+  if (!isSmtpUnreachable(first.error ?? "")) {
+    return { ok: false, error: first.error, working: null, tried };
+  }
+
+  const alts = ALT_ENDPOINTS.filter((a) => a.port !== cfg.port);
+  const results = await Promise.all(
+    alts.map(async (a) => {
+      const r = await verifySmtp({ ...cfg, port: a.port, secure: a.secure });
+      return { port: a.port, secure: a.secure, ok: r.ok, error: r.error };
+    }),
+  );
+  tried.push(...results);
+  const hit = results.find((r) => r.ok);
+  return {
+    ok: false,
+    error: first.error,
+    working: hit ? { ...cfg, port: hit.port, secure: hit.secure } : null,
+    tried,
+  };
+}
+
 /** Opens an SMTP connection and authenticates, to validate an account's app
  *  password before it is saved. Defaults to Gmail. */
 export async function verifyIdentity(entry: {

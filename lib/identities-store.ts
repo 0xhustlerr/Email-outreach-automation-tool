@@ -51,6 +51,20 @@ export function listStoredIdentities(): StoredIdentity[] {
   }
 }
 
+/** One stored identity, CREDENTIALS INCLUDED — server-side only. Used by the
+ *  Accounts "Reconnect" flow to renew an account's SMTP settings while keeping
+ *  the app password already on file. */
+export function getStoredIdentity(email: string): StoredIdentity | null {
+  try {
+    const row = db
+      .prepare(`SELECT * FROM mail_identities WHERE email = ?`)
+      .get(email.trim().toLowerCase()) as Row | undefined;
+    return row ? fromRow(row) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isStoredIdentity(email: string): boolean {
   try {
     return (
