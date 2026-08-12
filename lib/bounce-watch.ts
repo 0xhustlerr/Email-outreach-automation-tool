@@ -55,9 +55,13 @@ const state: WatchState = globalForWatch.__bounceWatch ?? {
 };
 globalForWatch.__bounceWatch = state;
 
-state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+// Allow a re-executed module to arm a fresh watcher; the generation itself is
+// bumped in startBounceWatch, NOT here. /api/queue imports scanBouncesNow, so a
+// production build instantiates this module a second time inside that route's
+// bundle - bumping at module scope meant the first request to the queue route
+// retired the running watcher, silently ending bounce detection for the
+// session (and with it the automatic stand-down of a blocked sender).
 state.started = false;
-const MY_GEN = state.gen;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -313,11 +317,11 @@ export async function scanBouncesNow(): Promise<{
   return { inboxes: inboxes.length, paused, errors };
 }
 
-async function loop(): Promise<void> {
+async function loop(myGen: number): Promise<void> {
   // Let the server settle before the first Gmail round-trip.
   await sleep(20_000);
   for (;;) {
-    if (state.gen !== MY_GEN) return;
+    if (state.gen !== myGen) return;
     try {
       const { inboxes, errors } = await scanBouncesNow();
       state.backoffMs =
@@ -338,12 +342,14 @@ async function loop(): Promise<void> {
 export function startBounceWatch(): void {
   if (state.started) return;
   state.started = true;
+  state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+  const myGen = state.gen;
   if (Object.keys(parseGmailAccounts()).length === 0) {
     console.log("[bounce] watch idle — no Gmail account connected");
   } else {
     console.log("[bounce] block watch armed");
   }
-  void loop();
+  void loop(myGen);
 }
 
 export function bounceWatchStatus() {

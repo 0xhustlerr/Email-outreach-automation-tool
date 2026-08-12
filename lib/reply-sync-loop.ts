@@ -87,11 +87,9 @@ const state: LoopState = globalForLoop.__replySyncLoop ?? {
 };
 globalForLoop.__replySyncLoop = state;
 
-// A hot reload re-executes this module: bump the generation so the previous
-// loop exits at its next tick instead of running alongside the new one.
-state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+// Allow a re-executed module to arm a fresh loop (see startReplySyncLoop for
+// where the generation is actually bumped).
 state.started = false;
-const MY_GEN = state.gen;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -224,11 +222,11 @@ export function ackReplyNotifications(keys: string[]): void {
   };
 }
 
-async function loop(): Promise<void> {
+async function loop(myGen: number): Promise<void> {
   // Let the server settle before the first Gmail round-trip.
   await sleep(FIRST_RUN_DELAY_MS);
   for (;;) {
-    if (state.gen !== MY_GEN) return;
+    if (state.gen !== myGen) return;
     await runReplySyncNow();
     state.backoffMs = state.snapshot.lastError
       ? Math.min(MAX_BACKOFF_MS, Math.max(SYNC_MS, state.backoffMs * 2))
@@ -240,6 +238,15 @@ async function loop(): Promise<void> {
 export function startReplySyncLoop(): void {
   if (state.started) return;
   state.started = true;
+
+  // Bumped HERE rather than at module scope, so that only ARMING a new loop
+  // retires the old one. The route handlers import this module too, and a
+  // production build instantiates it a second time inside the route bundle -
+  // a module-scope bump meant the first request to touch /api/sync-replies
+  // silently retired the running loop, which then never synced at all.
+  state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+  const myGen = state.gen;
+
   if (!isGmailReplySyncConfigured()) {
     // Not fatal: the loop still ticks and picks up credentials as soon as an
     // account is connected through the Accounts modal, with no restart.
@@ -247,5 +254,5 @@ export function startReplySyncLoop(): void {
   } else {
     console.log(`[reply-sync] loop armed (${Math.round(SYNC_MS / 1000)}s)`);
   }
-  void loop();
+  void loop(myGen);
 }
