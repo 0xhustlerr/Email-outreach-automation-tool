@@ -14,6 +14,10 @@ export async function register() {
     // stands the affected account down for the rest of the day.
     const { startBounceWatch } = await import("./lib/bounce-watch");
     startBounceWatch();
+    // Single owner of reply detection. Clients read its cached result instead
+    // of each running their own inbox scan on their own timer.
+    const { startReplySyncLoop } = await import("./lib/reply-sync-loop");
+    startReplySyncLoop();
     // Logs one SMTP login check per connected account so the console shows
     // which senders actually work right after every start/restart.
     const { startSenderHealthCheck } = await import("./lib/sender-health");

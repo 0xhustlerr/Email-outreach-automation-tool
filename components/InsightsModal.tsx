@@ -240,13 +240,27 @@ export function computeInsights(
       if (at !== null && (c.repliedAtMs === null || at > c.repliedAtMs)) {
         c.repliedAtMs = at;
       }
-      // Attach a snippet for grading, matching by sheet row first.
-      const n =
-        (typeof r._row === "number" ? notifByRow.get(r._row) : undefined) ??
-        notifByEmail.get(email);
-      if (n && !c.snippet) {
-        c.snippet = (n.snippet ?? "").trim();
-        c.subject = (n.subject ?? "").trim();
+      // Attach reply text for grading. The row's own stored copy wins: it is
+      // written by the reply-sync loop and survives forever, whereas the
+      // live `replies` set only covers the Gmail scan window. Fall back to the
+      // live set for rows replied to before the columns existed.
+      if (!c.snippet && !c.subject) {
+        const stored = {
+          snippet: (r.replySnippet ?? "").trim(),
+          subject: (r.replySubject ?? "").trim(),
+        };
+        if (stored.snippet || stored.subject) {
+          c.snippet = stored.snippet;
+          c.subject = stored.subject;
+        } else {
+          const n =
+            (typeof r._row === "number" ? notifByRow.get(r._row) : undefined) ??
+            notifByEmail.get(email);
+          if (n) {
+            c.snippet = (n.snippet ?? "").trim();
+            c.subject = (n.subject ?? "").trim();
+          }
+        }
       }
     }
   }

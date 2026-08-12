@@ -497,12 +497,19 @@ internal sealed class TrayHost : ApplicationContext
 
         foreach (var r in replies)
         {
-            if (r.Row <= 0)
+            // Identify a thread by contact, not sheet row: replies detected on
+            // an install without Google Sheets carry _row 0, so a row filter
+            // dropped them all and a row match collapsed them into one card.
+            var contact = (r.Contact ?? "").Trim().ToLowerInvariant();
+            if (contact.Length == 0 && r.Row <= 0)
             {
                 continue;
             }
 
-            var existing = _unseenReplies.FindIndex(x => x.Row == r.Row);
+            var existing = _unseenReplies.FindIndex(x =>
+                contact.Length > 0
+                    ? string.Equals((x.Contact ?? "").Trim(), contact, StringComparison.OrdinalIgnoreCase)
+                    : x.Row == r.Row);
             if (existing >= 0)
             {
                 _unseenReplies[existing] = r;

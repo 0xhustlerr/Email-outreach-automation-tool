@@ -8,9 +8,11 @@ import type { ReplyNotification, ReplySyncResult } from "@/lib/reply-alerts";
 import {
   batchUpdateSheetRows,
   fetchSheetHistory,
+  isSheetsLoggerConfigured,
   type SheetHistoryRow,
 } from "@/lib/sheets";
 import { markRepliedInDb } from "@/lib/db";
+import { listHistoryFromDb } from "@/lib/history-sync";
 
 function primaryEmail(contact: string): string {
   const part = contact.split(/[/,;]/)[0]?.trim() ?? "";
@@ -49,7 +51,15 @@ export async function syncRepliesToSheet(
 
   let rows: SheetHistoryRow[];
   try {
-    rows = await fetchSheetHistory();
+    // Without Google Sheets, fetchSheetHistory returns [] and reply detection
+    // would find nothing at all - even though the local database holds the
+    // same send history and is what the History view actually renders. Fall
+    // back to it so reply detection needs only Gmail OAuth. Sheets installs
+    // keep reading the sheet, which stays authoritative for _row numbers and
+    // covers rows written by another machine.
+    rows = isSheetsLoggerConfigured()
+      ? await fetchSheetHistory()
+      : listHistoryFromDb();
   } catch (err) {
     return {
       ok: false,
@@ -109,14 +119,21 @@ export async function syncRepliesToSheet(
 
   let checked = 0;
 
-  const rowByNum = new Map(rows.map((r) => [r._row, r]));
+  // The source row for each alert, carried by object identity. A row-number
+  // lookup would miss every alert raised from a row that has no sheet row yet
+  // (_row 0), which is every row on an install without Google Sheets - exactly
+  // the rows the push notification below would then silently skip.
+  const rowByAlert = new Map<ReplyNotification, SheetHistoryRow>();
 
   // Only alert once per contact even when several sent rows share it.
   const alerted = new Set<string>();
 
   for (const row of rows) {
-    const rowNum = row._row;
-    if (!rowNum || rowNum < 2) continue;
+    // A sheet row number is required to WRITE back to the sheet, but not to
+    // detect a reply. Database rows that were never reconciled (no Sheets, or
+    // not reconciled yet) get 0 and are detected + marked locally, just not
+    // pushed to the sheet.
+    const rowNum = row._row && row._row >= 2 ? row._row : 0;
 
     const sentFrom = row.sender.trim().toLowerCase();
     const contact = primaryEmail(row.contact);
@@ -141,34 +158,49 @@ export async function syncRepliesToSheet(
     const receivedInbox = inbound.inbox;
     const crossInbox = receivedInbox !== sentFrom;
 
-    const rowKey = String(rowNum);
-    const prevId = lastMessageIds[rowKey] ?? "";
+    // Row-keyed maps only make sense for real sheet rows; rowNum 0 would make
+    // every unreconciled row share one entry.
+    const rowKey = rowNum > 0 ? String(rowNum) : "";
+    const prevId = rowKey ? (lastMessageIds[rowKey] ?? "") : "";
     const isNewMessage = latestId !== prevId;
 
-    messageIds[rowKey] = latestId;
-    receivedInboxes[rowKey] = receivedInbox;
+    if (rowKey) {
+      messageIds[rowKey] = latestId;
+      receivedInboxes[rowKey] = receivedInbox;
+    }
 
     const rowIsActive = isYes(row.active);
+    const replyText = {
+      subject: inbound.subject || "",
+      snippet: inbound.snippet?.slice(0, 200) || "",
+    };
 
     // Self-heal: whenever a reply exists and the sheet isn't marked active,
     // set it - not only the first time the message id changes. This is what
     // keeps a replied row from being stuck on "No".
-    if (!rowIsActive) {
+    if (!rowIsActive && rowNum > 0) {
       updates.push({ _row: rowNum, active: "yes", replied: "yes" });
-      markRepliedInDb(
-        contact,
-        inbound.receivedMs > 0
-          ? new Date(inbound.receivedMs).toISOString()
-          : new Date().toISOString(),
-      );
     }
 
     if (alerted.has(contact)) continue;
     alerted.add(contact);
 
+    // Persist the reply text on EVERY pass, not only the first (unlike the
+    // sheet write above). Rows marked active before this column existed have
+    // no stored snippet, so gating on !rowIsActive would leave them forever
+    // ungradeable in Insights. Once per contact, not per row: the statement is
+    // contact-scoped, so extra rows sharing the address only repeat the same
+    // update.
+    markRepliedInDb(
+      contact,
+      inbound.receivedMs > 0
+        ? new Date(inbound.receivedMs).toISOString()
+        : new Date().toISOString(),
+      replyText,
+    );
+
     const name = (row.name ?? "").trim() || contact;
-    const snippet = inbound.snippet?.slice(0, 200) || "";
-    const subject = inbound.subject || "";
+    const { snippet, subject } = replyText;
 
     // Full current reply set - the tray dedups against its own seen-set so it
     // isn't starved by the web page consuming the shared "new" flag first.
@@ -189,7 +221,7 @@ export async function syncRepliesToSheet(
     // Suppress the popup only for rows already marked active before we ever
     // tracked a message id (avoids re-alerting old, handled replies).
     if (isNewMessage && !(prevId === "" && rowIsActive)) {
-      notifications.push({
+      const alert: ReplyNotification = {
         _row: rowNum,
         messageId: latestId,
         contact,
@@ -201,7 +233,9 @@ export async function syncRepliesToSheet(
         snippet,
         subject,
         firstSheetUpdate: !rowIsActive,
-      });
+      };
+      notifications.push(alert);
+      rowByAlert.set(alert, row);
     }
   }
 
@@ -224,7 +258,7 @@ export async function syncRepliesToSheet(
   }
 
   for (const alert of notifications) {
-    const row = rowByNum.get(alert._row);
+    const row = rowByAlert.get(alert);
     if (row) {
       await notifyNewReply(row, alert._row, alert.snippet || alert.subject);
     }

@@ -6,29 +6,12 @@ import type { SheetHistoryRow } from "@/lib/sheets";
 
 const STALE_MS = 60_000;
 
-const REPLY_SYNC_INTERVAL_MS = Math.max(
-  30_000,
-  Number(process.env.NEXT_PUBLIC_REPLY_SYNC_MS ?? "60000") || 60_000,
-);
-
 const POLL_INTERVAL_MS = Math.max(
   20_000,
   Number(process.env.NEXT_PUBLIC_INBOX_POLL_MS ?? "45000") || 45_000,
 );
 
-const KNOWN_MSG_IDS_KEY = "email-finder-known-gmail-msg-ids";
 const RECEIVED_INBOX_KEY = "email-finder-received-inbox-by-row";
-
-function loadKnownMessageIds(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(KNOWN_MSG_IDS_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, string>;
-  } catch {
-    return {};
-  }
-}
 
 function loadReceivedInboxes(): Record<string, string> {
   if (typeof window === "undefined") return {};
@@ -50,54 +33,48 @@ export function useSheetHistory(enabled: boolean) {
   const [replyNotifications, setReplyNotifications] = useState<
     ReplyNotification[]
   >([]);
+  const [replies, setReplies] = useState<ReplyNotification[]>([]);
   const [messageIds, setMessageIds] = useState<Record<string, string>>({});
   const [receivedInboxes, setReceivedInboxes] = useState<Record<string, string>>(
     () => ({}),
   );
   const lastFetchedRef = useRef(0);
-  const lastReplySyncRef = useRef(0);
   const inflightRef = useRef<Promise<void> | null>(null);
   const readyRef = useRef(false);
-  const knownIdsRef = useRef<Record<string, string>>({});
   const receivedInboxRef = useRef<Record<string, string>>({});
+  const pendingAckRef = useRef<string[]>([]);
 
   useEffect(() => {
-    knownIdsRef.current = loadKnownMessageIds();
     receivedInboxRef.current = loadReceivedInboxes();
     setReceivedInboxes(receivedInboxRef.current);
   }, []);
 
+  // Reads the background loop's cached result. `force` asks the server to run a
+  // cycle now (the Refresh button) - the loop collapses that onto any scan
+  // already in flight, so it can't stack up Gmail work.
   const runReplySync = useCallback(async (force = false) => {
-    if (
-      !force &&
-      Date.now() - lastReplySyncRef.current < REPLY_SYNC_INTERVAL_MS
-    ) {
-      return;
-    }
-    setSyncingReplies(true);
+    if (force) setSyncingReplies(true);
     try {
       const res = await fetch("/api/sync-replies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          lastMessageIds: knownIdsRef.current,
+          force,
+          // Alerts shown on the previous poll: tell the server to stop
+          // reporting them as new, so a second poll inside one sync cycle
+          // doesn't re-toast the same reply.
+          ack: pendingAckRef.current,
         }),
       });
       const data = (await res.json()) as {
         ok?: boolean;
+        replies?: ReplyNotification[];
         notifications?: ReplyNotification[];
         messageIds?: Record<string, string>;
         receivedInboxes?: Record<string, string>;
       };
       if (res.ok && data.ok) {
-        if (data.messageIds) {
-          knownIdsRef.current = data.messageIds;
-          setMessageIds(data.messageIds);
-          localStorage.setItem(
-            KNOWN_MSG_IDS_KEY,
-            JSON.stringify(data.messageIds),
-          );
-        }
+        if (data.messageIds) setMessageIds(data.messageIds);
         if (data.receivedInboxes) {
           receivedInboxRef.current = {
             ...receivedInboxRef.current,
@@ -109,13 +86,18 @@ export function useSheetHistory(enabled: boolean) {
             JSON.stringify(receivedInboxRef.current),
           );
         }
-        setReplyNotifications(data.notifications ?? []);
+        // Full set for Insights (sentiment needs every reply, not the delta);
+        // the delta alone drives the bell.
+        setReplies(data.replies ?? []);
+        const fresh = data.notifications ?? [];
+        // Must match alertKey() in lib/reply-sync-loop.ts.
+        pendingAckRef.current = fresh.map((n) => `${n.contact}:${n.messageId}`);
+        if (fresh.length > 0) setReplyNotifications(fresh);
       }
-      lastReplySyncRef.current = Date.now();
     } catch {
       // Best-effort.
     } finally {
-      setSyncingReplies(false);
+      if (force) setSyncingReplies(false);
     }
   }, []);
 
@@ -183,13 +165,16 @@ export function useSheetHistory(enabled: boolean) {
       setLoading(false);
       setSyncingReplies(false);
       setReplyNotifications([]);
+      setReplies([]);
       setMessageIds({});
       setReceivedInboxes({});
       lastFetchedRef.current = 0;
-      lastReplySyncRef.current = 0;
+      pendingAckRef.current = [];
       return;
     }
-    void load(false, { forceSync: true });
+    // Not forced: the background loop keeps the snapshot fresh, so opening a
+    // tab now costs a cached read instead of kicking off an inbox scan.
+    void load(false);
   }, [enabled, load]);
 
   useEffect(() => {
@@ -202,7 +187,6 @@ export function useSheetHistory(enabled: boolean) {
     if (!enabled) return;
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
-      lastReplySyncRef.current = 0;
       poll();
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -223,10 +207,10 @@ export function useSheetHistory(enabled: boolean) {
     error,
     ready,
     replyNotifications,
+    replies,
     messageIds,
     receivedInboxes,
     refresh: async () => {
-      lastReplySyncRef.current = 0;
       await load(readyRef.current, { forceSync: true });
     },
     refreshIfStale,

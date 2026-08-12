@@ -1552,7 +1552,7 @@ export default function Page() {
             <InsightsDashboard
               className="fade-in"
               rows={sheetHistory.rows}
-              replies={sheetHistory.replyNotifications}
+              replies={sheetHistory.replies}
               loading={sheetHistory.loading}
               onRefresh={() => void sheetHistory.refresh()}
               // All time, not today: an always-on panel must not open on an
@@ -1643,7 +1643,7 @@ export default function Page() {
       {insightsOpen && (
         <InsightsModal
           rows={sheetHistory.rows}
-          replies={sheetHistory.replyNotifications}
+          replies={sheetHistory.replies}
           loading={sheetHistory.loading}
           onRefresh={() => void sheetHistory.refresh()}
           onClose={() => setInsightsOpen(false)}
