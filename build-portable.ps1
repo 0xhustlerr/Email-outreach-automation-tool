@@ -12,10 +12,17 @@
 
   Usage:
     powershell -ExecutionPolicy Bypass -File build-portable.ps1
-    powershell -ExecutionPolicy Bypass -File build-portable.ps1 -SkipBuild   # reuse existing .next build
+    powershell -ExecutionPolicy Bypass -File build-portable.ps1 -SkipBuild       # reuse existing .next build
+    powershell -ExecutionPolicy Bypass -File build-portable.ps1 -ReuseLauncher   # reuse existing launcher exe (no .NET SDK)
 #>
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # Skip `dotnet publish` and reuse the launcher exe from the previous bundle
+    # (falling back to 'Email Finder.exe' in the project root). For machines
+    # with no .NET SDK, and for web-only changes, where the launcher — a tray
+    # shell that just boots node — is unchanged. Check that nothing under
+    # launcher\ is newer than the exe before using it.
+    [switch]$ReuseLauncher
 )
 
 $ErrorActionPreference = 'Stop'
@@ -56,10 +63,26 @@ if (-not (Test-Path (Join-Path $standalone 'server.js'))) {
 }
 
 # --- 2. Publish the launcher (self-contained single exe) --------------------
-Step 'Publishing launcher (self-contained, single file)...'
-if (Test-Path $publishTmp) { Remove-Item $publishTmp -Recurse -Force }
-& dotnet publish $launcherProj -c Release -r win-x64 --self-contained true -o $publishTmp | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)." }
+if ($ReuseLauncher) {
+    # Stage the previous exe where dotnet publish would have written it, so
+    # step 3 below is identical either way. Must happen BEFORE step 3 deletes
+    # the old bundle, which is where the exe is being read from.
+    Step 'Reusing the previously built launcher (-ReuseLauncher; no dotnet publish)'
+    $priorExe = Join-Path $bundleDir "$bundleName.exe"
+    if (-not (Test-Path $priorExe)) { $priorExe = Join-Path $projectRoot 'Email Finder.exe' }
+    if (-not (Test-Path $priorExe)) {
+        throw "-ReuseLauncher: no existing launcher exe found in the previous bundle or the project root. Build once with the .NET SDK first."
+    }
+    Write-Host "    source: $priorExe"
+    if (Test-Path $publishTmp) { Remove-Item $publishTmp -Recurse -Force }
+    New-Item -ItemType Directory -Path $publishTmp -Force | Out-Null
+    Copy-Item $priorExe (Join-Path $publishTmp 'Email Finder.exe') -Force
+} else {
+    Step 'Publishing launcher (self-contained, single file)...'
+    if (Test-Path $publishTmp) { Remove-Item $publishTmp -Recurse -Force }
+    & dotnet publish $launcherProj -c Release -r win-x64 --self-contained true -o $publishTmp | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)." }
+}
 $builtExe = Join-Path $publishTmp 'Email Finder.exe'
 if (-not (Test-Path $builtExe)) { throw "Launcher exe not found at $builtExe" }
 $loaderDll = Join-Path $publishTmp 'WebView2Loader.dll'

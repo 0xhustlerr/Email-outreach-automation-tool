@@ -43,6 +43,19 @@ export type ScanMatch = {
 
 export type MailIdentity = { name: string; email: string };
 
+/** How a message leaves the app: the Gmail HTTPS API, or an SMTP connection. */
+export type MailTransport = "gmail_api" | "smtp";
+
+/** What the Accounts UI badges for one sending account.
+ *  `predicted` is what the account's current config would use on the next send
+ *  ("none" = it cannot send at all); `actual` is the transport the last
+ *  successful send really used, or null if it has never sent. They differ when
+ *  a Gmail API send falls back to SMTP, which is the case worth surfacing. */
+export type SenderTransport = {
+  predicted: MailTransport | "none";
+  actual: MailTransport | null;
+};
+
 export type DiscoverySourceKind =
   | "profile"
   | "readme"

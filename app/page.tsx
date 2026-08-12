@@ -5,7 +5,10 @@ import HistoryModal from "@/components/HistoryModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
 import { resolveLocation } from "@/lib/country";
-import InsightsModal, { computeInsights } from "@/components/InsightsModal";
+import InsightsModal, {
+  InsightsDashboard,
+  computeInsights,
+} from "@/components/InsightsModal";
 import { primaryEmail } from "@/lib/sheet-active";
 import KnockAppShell from "@/components/knock/KnockAppShell";
 import ReplyNotificationsBell from "@/components/ReplyNotificationsBell";
@@ -872,6 +875,19 @@ export default function Page() {
     return computeInsights(sheetHistory.rows, { fromMs: from.getTime() });
   }, [sheetHistory.rows]);
 
+  // The right column only holds contacts, so it is empty until a scan finds
+  // some — fill that space with the insights dashboard instead of nothing.
+  // Hidden the moment a scan starts (not merely when results arrive) so the
+  // column doesn't show a full dashboard that is about to be replaced, and
+  // hidden with no rows so a fresh install gets clean space, not an empty
+  // shell. Note rows stay [] unless sheetsConfigured — useSheetHistory is
+  // gated on it — so this panel is absent until logging is set up.
+  const showIdleInsights =
+    contacts.length === 0 &&
+    phase !== "loading-repos" &&
+    phase !== "scanning" &&
+    sheetHistory.rows.length > 0;
+
   return (
     <KnockAppShell
       onReplyNotification={() => {
@@ -1319,8 +1335,9 @@ export default function Page() {
           </div>
         </section>
 
-        {/* RIGHT - contacts (after a scan). Insights live behind the nav
-            button (InsightsModal) only. */}
+        {/* RIGHT - contacts (after a scan), or the insights dashboard while
+            the column is otherwise idle. The same dashboard is still behind
+            the nav button (InsightsModal) for on-demand use during a scan. */}
         <section className="no-scrollbar flex min-h-0 w-full flex-col overflow-y-auto overflow-x-hidden px-8 py-8 md:w-1/2 md:px-10">
           {contacts.length > 0 && (
             <div className="slide-in mb-5 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
@@ -1529,6 +1546,21 @@ export default function Page() {
                 );
               })}
             </ul>
+          )}
+
+          {showIdleInsights && (
+            <InsightsDashboard
+              className="fade-in"
+              rows={sheetHistory.rows}
+              replies={sheetHistory.replyNotifications}
+              loading={sheetHistory.loading}
+              onRefresh={() => void sheetHistory.refresh()}
+              // All time, not today: an always-on panel must not open on an
+              // empty window after a quiet week, and the nav strip already
+              // carries the rolling 7-day numbers. Narrow with the picker.
+              // No onClose — it isn't dismissible, it yields to scan results.
+              initialPreset="all"
+            />
           )}
         </section>
 

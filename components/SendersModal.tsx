@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MailIdentity } from "@/lib/types";
+import type { MailIdentity, SenderTransport } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
 
 // Manage the Gmail accounts the app sends from. Everything lives in the local
@@ -26,6 +26,8 @@ type SendersState = {
   tracking?: { urlSet: boolean; enabled: boolean; url: string };
   /** Accounts Gmail policy-blocked; they resume at the next local midnight. */
   senderBlocks?: SenderBlock[];
+  /** How each account sends, keyed by lowercased email. From lib/mail.ts. */
+  sendTransport?: Record<string, SenderTransport>;
 };
 
 type RemovedCounts = { history: number; queued: number; sequences: number };
@@ -110,6 +112,7 @@ export default function SendersModal({
 
   const clientConfigured = !!data?.replySync?.clientConfigured;
   const syncAccounts = data?.replySync?.accounts ?? {};
+  const transportByEmail = data?.sendTransport ?? {};
   const blockByEmail = new Map(
     (data?.senderBlocks ?? []).map((b) => [b.sender, b]),
   );
@@ -309,6 +312,7 @@ export default function SendersModal({
               {(data?.identities ?? []).map((id) => {
                 const syncOn = !!syncAccounts[id.email.toLowerCase()];
                 const block = blockByEmail.get(id.email.toLowerCase());
+                const transport = transportByEmail[id.email.toLowerCase()];
                 return (
                   <div
                     key={id.email}
@@ -321,6 +325,7 @@ export default function SendersModal({
                           <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
                           <div className="flex items-center gap-2">
                             <span className="truncate font-mono text-[11px] text-slate-400">{id.email}</span>
+                            {transport && <TransportBadge state={transport} />}
                             {block && (
                               // No time shown: this modal polls slowly, so a
                               // live-looking clock would read stale. The title
@@ -785,6 +790,56 @@ function accountColorHex(email: string): string {
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash + key.charCodeAt(i) * 17) % 997;
   return FALLBACK_SENDER_HEX[hash % FALLBACK_SENDER_HEX.length];
+}
+
+// How this account's mail leaves the app. A FILLED pill is an observed fact —
+// the transport the last successful send really used. An OUTLINE pill is a
+// prediction from the account's current config, shown until it has ever sent.
+// The two disagree when a Gmail API send silently falls back to SMTP, which is
+// the reason this badge exists; the fill weight is what keeps a guess from
+// reading as a fact.
+function TransportBadge({ state }: { state: SenderTransport }) {
+  // Config wins over history: an account whose credentials were removed can no
+  // longer send, so a stale "SMTP" from last week would be actively misleading.
+  const kind = state.predicted === "none" ? "none" : (state.actual ?? state.predicted);
+  const observed = state.predicted !== "none" && state.actual !== null;
+
+  const { label, tone, title } =
+    kind === "gmail_api"
+      ? {
+          label: "Gmail API",
+          tone: "border-emerald-500/30 text-emerald-300",
+          title: observed
+            ? "The last send from this account went out over the Gmail API (HTTPS), which works where outbound SMTP ports are blocked."
+            : "This account has an OAuth token, so its next send will use the Gmail API (HTTPS). It hasn't sent yet.",
+        }
+      : kind === "smtp"
+        ? {
+            label: "SMTP",
+            tone: "border-slate-500/40 text-slate-300",
+            title: observed
+              ? "The last send from this account went out over SMTP. If you expected the Gmail API, its OAuth token is missing the gmail.send scope (or MAIL_FORCE_SMTP is set) and sending fell back to SMTP."
+              : "No Gmail OAuth token for this account, so its next send will use SMTP. It hasn't sent yet.",
+          }
+        : {
+            label: "Not configured",
+            tone: "border-amber-500/30 text-amber-300",
+            title:
+              "This account has neither SMTP credentials nor a Gmail OAuth token, so sending from it will fail. Re-add it with an app password, or connect reply-sync OAuth.",
+          };
+
+  return (
+    <span
+      title={title}
+      className={
+        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium " +
+        tone +
+        (observed ? " bg-white/[0.06]" : "")
+      }
+    >
+      {label}
+    </span>
+  );
 }
 
 function AccountAvatar({ name, email }: { name: string; email: string }) {

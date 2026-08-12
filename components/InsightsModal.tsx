@@ -576,6 +576,7 @@ export function InsightsDashboard({
   onRefresh,
   onClose,
   className = "",
+  initialPreset = "today",
 }: {
   rows: SheetHistoryRow[];
   replies?: ReplyNotification[];
@@ -583,10 +584,14 @@ export function InsightsDashboard({
   onRefresh?: () => void;
   onClose?: () => void;
   className?: string;
+  /** Range selected on first render. The modal keeps "today" — you open it to
+   *  ask about now. The always-on home-page panel opens on "all", because a
+   *  panel that is always visible must still say something after a quiet week. */
+  initialPreset?: Exclude<PresetId, "custom">;
 }) {
   const [range, setRange] = useState<RangeState>(() => {
-    const r = presetRange("today");
-    return { preset: "today", from: r.from, to: r.to };
+    const r = presetRange(initialPreset);
+    return { preset: initialPreset, from: r.from, to: r.to };
   });
 
   const data = useMemo(

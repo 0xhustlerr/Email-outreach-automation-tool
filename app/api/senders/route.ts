@@ -3,6 +3,7 @@ import {
   clearTransportCache,
   isSendConfigured,
   listIdentities,
+  listSenderTransports,
   verifyIdentity,
 } from "@/lib/mail";
 import {
@@ -62,6 +63,11 @@ function snapshot() {
         stored.map((i) => [i.email, i.email.toLowerCase() in activeSync]),
       ) as Record<string, boolean>,
     },
+    // How each account sends, keyed by lowercased email: `predicted` from its
+    // current config, `actual` from its last successful send. Resolved server
+    // side because the rule lives in lib/mail.ts — the UI must not re-derive it
+    // from credentials and risk contradicting the mailer.
+    sendTransport: listSenderTransports(),
     // Accounts Gmail policy-blocked; they resume on their own at `until` (the
     // next local midnight). An ARRAY, not a map, so the C# tray DTO stays a
     // plain List<T> — the tray reads this on the poll it already makes.

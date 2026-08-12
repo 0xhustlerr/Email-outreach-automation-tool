@@ -45,6 +45,9 @@ email-finder-launcher.state.json
 # Claude Code local settings
 .claude/settings.local.json
 
+# Local markdown issue tracker (specs + tickets, see docs/agents/issue-tracker.md)
+.scratch/
+
 # OS / editor
 .DS_Store
 Thumbs.db

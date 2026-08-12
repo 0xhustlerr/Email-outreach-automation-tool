@@ -1,6 +1,6 @@
 import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
-import type { MailIdentity } from "./types";
-import { listStoredIdentities } from "./identities-store";
+import type { MailIdentity, MailTransport, SenderTransport } from "./types";
+import { listStoredIdentities, setLastTransport } from "./identities-store";
 import { getAccessToken, parseGmailAccounts } from "./gmail";
 
 export type { MailIdentity };
@@ -125,6 +125,33 @@ function resolveSmtp(id: MailIdentityFull): {
 
 export function listIdentities(): MailIdentity[] {
   return parseIdentities().map(({ name, email }) => ({ name, email }));
+}
+
+/** Which transport `sendMail` would pick for this identity right now — the same
+ *  test it applies below, kept here so callers never re-derive it from the
+ *  underlying credentials and drift out of step with the real decision. */
+function predictTransport(id: MailIdentityFull): MailTransport | "none" {
+  if (!bool(process.env.MAIL_FORCE_SMTP, false) && hasGmailOAuth(id.email)) {
+    return "gmail_api";
+  }
+  return resolveSmtp(id) !== null ? "smtp" : "none";
+}
+
+/** Per-account sending transport, keyed by lowercased email: what the next send
+ *  would use, and what the last one actually used. Feeds the Accounts UI badge. */
+export function listSenderTransports(): Record<string, SenderTransport> {
+  const observed = new Map(
+    listStoredIdentities().map((s) => [s.email.toLowerCase(), s.lastTransport]),
+  );
+  const out: Record<string, SenderTransport> = {};
+  for (const id of parseIdentities()) {
+    const key = id.email.toLowerCase();
+    out[key] = {
+      predicted: predictTransport(id),
+      actual: observed.get(key) ?? null,
+    };
+  }
+  return out;
 }
 
 /** True when at least one identity can send — via SMTP credentials or a Gmail
@@ -321,7 +348,9 @@ export async function sendMail(args: {
   // over SMTP cannot double-send; any other API error propagates as-is.
   if (!bool(process.env.MAIL_FORCE_SMTP, false) && hasGmailOAuth(identity.email)) {
     try {
-      return await sendViaGmailApi(identity.email, mail);
+      const sent = await sendViaGmailApi(identity.email, mail);
+      setLastTransport(identity.email, "gmail_api");
+      return sent;
     } catch (e) {
       if (!(e instanceof GmailAuthError) || !resolveSmtp(identity)) throw e;
       console.warn(
@@ -330,5 +359,9 @@ export async function sendMail(args: {
     }
   }
   const info = await transportFor(identity).sendMail(mail);
+  // Recorded only after the send succeeded, and after a fallback as well as a
+  // plain SMTP send — a silent fallback is exactly what the badge exists to
+  // show, so it must not look like an API send here.
+  setLastTransport(identity.email, "smtp");
   return { messageId: info.messageId };
 }
