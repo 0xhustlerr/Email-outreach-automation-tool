@@ -22,7 +22,13 @@ param(
     # with no .NET SDK, and for web-only changes, where the launcher — a tray
     # shell that just boots node — is unchanged. Check that nothing under
     # launcher\ is newer than the exe before using it.
-    [switch]$ReuseLauncher
+    [switch]$ReuseLauncher,
+    # Upgrade the bundle ALREADY INSTALLED here in place: keep this machine's
+    # database, .env.local and launcher window state instead of starting empty.
+    # Off by default, because the whole point of the bundle is to ship clean.
+    # The data is restored AFTER the zip is written, so the zip stays clean and
+    # distributable either way — only the folder on this machine keeps the data.
+    [switch]$KeepData
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,6 +53,43 @@ function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 if (-not (Test-Path $nodeExe)) { throw "Bundled Node source not found at $nodeExe. Install Node.js (x64) first." }
 $nodeVer = (& $nodeExe --version)
 Step "Bundling Node runtime $nodeVer (must match the ABI better-sqlite3 was built with)"
+
+# The bundle folder is deleted and re-created in step 3, so a running app would
+# both lose the files it has open and leave the folder half-deleted. Checked up
+# front rather than three minutes into the build.
+$holding = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($bundleDir, [StringComparison]::OrdinalIgnoreCase) })
+if ($holding) {
+    $who = ($holding | ForEach-Object { "$($_.ProcessName) (pid $($_.Id))" }) -join ', '
+    throw "Close the app before rebuilding: $who still has files open under $bundleDir."
+}
+
+# --- 0b. Preserve this machine's live data (-KeepData) ----------------------
+# Everything the installed app writes lives inside the bundle folder, so a
+# rebuild would take the database with it. Snapshot it into the project's .data
+# alongside the earlier bundle-backup-* folders, and restore it after the zip.
+$stateFiles = @('.env.local', 'email-finder-launcher.state.json')
+$backupDir = $null
+if ($KeepData) {
+    if (Test-Path $bundleDir) {
+        $backupDir = Join-Path $projectRoot ".data\bundle-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        Step "Preserving installed data -> $backupDir"
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+        $liveData = Join-Path $bundleDir '.data'
+        if (Test-Path $liveData) { Copy-Item (Join-Path $liveData '*') $backupDir -Recurse -Force }
+        foreach ($f in $stateFiles) {
+            $src = Join-Path $bundleDir $f
+            if (Test-Path $src) { Copy-Item $src $backupDir -Force }
+        }
+        $kept = (Get-ChildItem $backupDir -Recurse -File | Measure-Object -Property Length -Sum)
+        Write-Host ("    $($kept.Count) file(s), {0:N1} MB" -f ($kept.Sum / 1MB))
+        if (-not (Test-Path (Join-Path $backupDir 'app.db'))) {
+            throw "-KeepData: no app.db was captured from $liveData. Refusing to continue and overwrite the bundle."
+        }
+    } else {
+        Step '-KeepData: nothing installed here yet, building a fresh bundle'
+    }
+}
 
 # --- 1. Production build (Next standalone) ----------------------------------
 # Turbopack (the `next build` default) crashes on this project, so force webpack.
@@ -161,6 +204,26 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($bundleDir, $zipPath)
 
+# --- 4b. Put this machine's data back (-KeepData) ---------------------------
+# Deliberately after the zip: the archive above was made from the clean folder,
+# so it stays safe to hand to someone else even on a -KeepData rebuild.
+if ($KeepData -and $backupDir) {
+    Step 'Restoring preserved data into the rebuilt bundle (the zip above stays clean)'
+    $newData = Join-Path $bundleDir '.data'
+    New-Item -ItemType Directory -Path $newData -Force | Out-Null
+    foreach ($item in Get-ChildItem $backupDir -Force) {
+        if ($stateFiles -contains $item.Name) {
+            Copy-Item $item.FullName (Join-Path $bundleDir $item.Name) -Force
+        } else {
+            Copy-Item $item.FullName $newData -Recurse -Force
+        }
+    }
+    if (-not (Test-Path (Join-Path $newData 'app.db'))) {
+        throw "Restore failed: app.db is missing from $newData. The backup is intact at $backupDir."
+    }
+    Write-Host "    database restored; backup kept at $backupDir"
+}
+
 # --- 5. Summary -------------------------------------------------------------
 $sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host ''
@@ -172,5 +235,10 @@ Write-Host 'On the other PC: unzip anywhere writable (Desktop/Documents, NOT Pro
 Write-Host 'then double-click "Cold Outreach Command Center.exe". Needs Windows 10/11 with the'
 Write-Host 'Edge WebView2 runtime (preinstalled on Win11 and most updated Win10).'
 Write-Host ''
-Write-Host 'This bundle is CLEAN: no .env.local, no secrets, no Google Sheet. Each user opens' -ForegroundColor Green
+Write-Host 'The ZIP is CLEAN: no .env.local, no secrets, no Google Sheet. Each user opens' -ForegroundColor Green
 Write-Host 'the app and adds their own Gmail account in the Accounts page (stored locally).' -ForegroundColor Green
+if ($KeepData -and $backupDir) {
+    Write-Host ''
+    Write-Host "The FOLDER on this machine kept its database and .env.local (-KeepData)." -ForegroundColor Yellow
+    Write-Host "Backup of what was preserved: $backupDir" -ForegroundColor Yellow
+}
