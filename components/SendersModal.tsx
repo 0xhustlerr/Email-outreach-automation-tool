@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MailIdentity, SenderTransport } from "@/lib/types";
+import type { MailIdentity } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
 
 // Manage the Gmail accounts the app sends from. Everything lives in the local
@@ -26,8 +26,6 @@ type SendersState = {
   tracking?: { urlSet: boolean; enabled: boolean; url: string };
   /** Accounts Gmail policy-blocked; they resume at the next local midnight. */
   senderBlocks?: SenderBlock[];
-  /** How each account sends, keyed by lowercased email. From lib/mail.ts. */
-  sendTransport?: Record<string, SenderTransport>;
 };
 
 type RemovedCounts = { history: number; queued: number; sequences: number };
@@ -67,6 +65,11 @@ export default function SendersModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  // A caveat the server attached to an otherwise successful save — the account
+  // was stored but may not actually be able to send (e.g. its app password
+  // could not be verified because outbound SMTP is blocked here). Amber and
+  // separate from okMsg: a green "ready to send" would be a plain lie.
+  const [warnMsg, setWarnMsg] = useState<string | null>(null);
 
   // Deep-link support: scroll to + briefly highlight the GitHub token section
   // when opened from the Setup menu's "GitHub token" item.
@@ -112,7 +115,6 @@ export default function SendersModal({
 
   const clientConfigured = !!data?.replySync?.clientConfigured;
   const syncAccounts = data?.replySync?.accounts ?? {};
-  const transportByEmail = data?.sendTransport ?? {};
   const blockByEmail = new Map(
     (data?.senderBlocks ?? []).map((b) => [b.sender, b]),
   );
@@ -121,14 +123,19 @@ export default function SendersModal({
   const trackingEnabled = !!data?.tracking?.enabled;
   const trackingCurrentUrl = data?.tracking?.url ?? "";
 
-  const flash = (msg: string) => {
+  const clearMsgs = () => {
     setError(null);
+    setOkMsg(null);
+    setWarnMsg(null);
+  };
+
+  const flash = (msg: string) => {
+    clearMsgs();
     setOkMsg(msg);
   };
 
   const addAccount = async () => {
-    setError(null);
-    setOkMsg(null);
+    clearMsgs();
     setBusy(true);
     try {
       const payload: Record<string, unknown> = { name, email, appPassword };
@@ -143,7 +150,11 @@ export default function SendersModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
+      const body = (await res.json()) as SendersState & {
+        ok: boolean;
+        error?: string;
+        warning?: string;
+      };
       if (!res.ok || !body.ok) {
         setError(body.error ?? "Could not add the account.");
         return;
@@ -154,7 +165,14 @@ export default function SendersModal({
       setEmail("");
       setAppPassword("");
       setSmtpUser("");
-      flash(`Added ${added} — verified and ready to send.`);
+      // The account is saved either way, but only claim it can send when the
+      // server actually reached the SMTP server and signed in.
+      if (body.warning) {
+        clearMsgs();
+        setWarnMsg(`Added ${added}. ${body.warning}`);
+      } else {
+        flash(`Added ${added} — verified and ready to send.`);
+      }
       onChanged?.();
     } catch {
       setError("Network error while adding the account.");
@@ -164,8 +182,7 @@ export default function SendersModal({
   };
 
   const removeAccount = async (addr: string) => {
-    setError(null);
-    setOkMsg(null);
+    clearMsgs();
     setBusy(true);
     setPendingRemove(null);
     try {
@@ -201,8 +218,7 @@ export default function SendersModal({
   };
 
   const saveGithubToken = async (token: string) => {
-    setError(null);
-    setOkMsg(null);
+    clearMsgs();
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -226,8 +242,7 @@ export default function SendersModal({
   };
 
   const putTracking = async (payload: Record<string, unknown>, okText: string) => {
-    setError(null);
-    setOkMsg(null);
+    clearMsgs();
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -303,6 +318,11 @@ export default function SendersModal({
                 {okMsg}
               </p>
             )}
+            {warnMsg && !error && (
+              <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                {warnMsg}
+              </p>
+            )}
 
             {/* Current accounts */}
             <div className="space-y-2">
@@ -312,7 +332,6 @@ export default function SendersModal({
               {(data?.identities ?? []).map((id) => {
                 const syncOn = !!syncAccounts[id.email.toLowerCase()];
                 const block = blockByEmail.get(id.email.toLowerCase());
-                const transport = transportByEmail[id.email.toLowerCase()];
                 return (
                   <div
                     key={id.email}
@@ -325,7 +344,6 @@ export default function SendersModal({
                           <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
                           <div className="flex items-center gap-2">
                             <span className="truncate font-mono text-[11px] text-slate-400">{id.email}</span>
-                            {transport && <TransportBadge state={transport} />}
                             {block && (
                               // No time shown: this modal polls slowly, so a
                               // live-looking clock would read stale. The title
@@ -379,8 +397,7 @@ export default function SendersModal({
                           <button
                             type="button"
                             onClick={() => {
-                              setError(null);
-                              setOkMsg(null);
+                              clearMsgs();
                               setPendingRemove(id.email);
                             }}
                             disabled={busy}
@@ -792,55 +809,6 @@ function accountColorHex(email: string): string {
   return FALLBACK_SENDER_HEX[hash % FALLBACK_SENDER_HEX.length];
 }
 
-// How this account's mail leaves the app. A FILLED pill is an observed fact —
-// the transport the last successful send really used. An OUTLINE pill is a
-// prediction from the account's current config, shown until it has ever sent.
-// The two disagree when a Gmail API send silently falls back to SMTP, which is
-// the reason this badge exists; the fill weight is what keeps a guess from
-// reading as a fact.
-function TransportBadge({ state }: { state: SenderTransport }) {
-  // Config wins over history: an account whose credentials were removed can no
-  // longer send, so a stale "SMTP" from last week would be actively misleading.
-  const kind = state.predicted === "none" ? "none" : (state.actual ?? state.predicted);
-  const observed = state.predicted !== "none" && state.actual !== null;
-
-  const { label, tone, title } =
-    kind === "gmail_api"
-      ? {
-          label: "Gmail API",
-          tone: "border-emerald-500/30 text-emerald-300",
-          title: observed
-            ? "The last send from this account went out over the Gmail API (HTTPS), which works where outbound SMTP ports are blocked."
-            : "This account has an OAuth token, so its next send will use the Gmail API (HTTPS). It hasn't sent yet.",
-        }
-      : kind === "smtp"
-        ? {
-            label: "SMTP",
-            tone: "border-slate-500/40 text-slate-300",
-            title: observed
-              ? "The last send from this account went out over SMTP. If you expected the Gmail API, its OAuth token is missing the gmail.send scope (or MAIL_FORCE_SMTP is set) and sending fell back to SMTP."
-              : "No Gmail OAuth token for this account, so its next send will use SMTP. It hasn't sent yet.",
-          }
-        : {
-            label: "Not configured",
-            tone: "border-amber-500/30 text-amber-300",
-            title:
-              "This account has neither SMTP credentials nor a Gmail OAuth token, so sending from it will fail. Re-add it with an app password, or connect reply-sync OAuth.",
-          };
-
-  return (
-    <span
-      title={title}
-      className={
-        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium " +
-        tone +
-        (observed ? " bg-white/[0.06]" : "")
-      }
-    >
-      {label}
-    </span>
-  );
-}
 
 function AccountAvatar({ name, email }: { name: string; email: string }) {
   const color = accountColorHex(email);

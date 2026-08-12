@@ -3,7 +3,6 @@
 // production build can gain new Gmail senders without editing .env.local.
 
 import { db } from "./db";
-import type { MailTransport } from "./types";
 
 export type StoredIdentity = {
   email: string;
@@ -15,8 +14,6 @@ export type StoredIdentity = {
   smtpPass: string;
   /** Per-account Gmail OAuth refresh token for reply sync ('' = not set). */
   oauthRefreshToken: string;
-  /** Transport the last successful send used; null until the account sends. */
-  lastTransport: MailTransport | null;
 };
 
 type Row = {
@@ -28,7 +25,6 @@ type Row = {
   smtp_user: string;
   smtp_pass: string;
   oauth_refresh_token: string;
-  last_transport: string;
 };
 
 function fromRow(r: Row): StoredIdentity {
@@ -41,10 +37,6 @@ function fromRow(r: Row): StoredIdentity {
     smtpUser: r.smtp_user,
     smtpPass: r.smtp_pass,
     oauthRefreshToken: r.oauth_refresh_token ?? "",
-    lastTransport:
-      r.last_transport === "gmail_api" || r.last_transport === "smtp"
-        ? r.last_transport
-        : null,
   };
 }
 
@@ -82,9 +74,8 @@ export function upsertStoredIdentity(entry: {
   smtpPass: string;
 }): StoredIdentity {
   const email = entry.email.trim().toLowerCase();
-  // Note: oauth_refresh_token and last_transport are intentionally NOT written
-  // here, so re-adding / editing a sending account preserves its reply-sync
-  // token and the transport its last send observed.
+  // Note: oauth_refresh_token is intentionally NOT written here, so re-adding /
+  // editing a sending account preserves its reply-sync token.
   db.prepare(
     `INSERT INTO mail_identities
        (email, name, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, created_at)
@@ -132,20 +123,6 @@ export function setOAuthRefreshToken(email: string, token: string): boolean {
     return info.changes > 0;
   } catch {
     return false;
-  }
-}
-
-/** Record the transport a successful send actually used. Called on every send,
- *  so the `<>` guard keeps a steady-state run from writing at all. Swallows
- *  failures: this is UI metadata, and the message has already gone out. */
-export function setLastTransport(email: string, transport: MailTransport): void {
-  try {
-    db.prepare(
-      `UPDATE mail_identities SET last_transport = ?
-       WHERE email = ? AND last_transport <> ?`,
-    ).run(transport, email.trim().toLowerCase(), transport);
-  } catch {
-    // ignore
   }
 }
 

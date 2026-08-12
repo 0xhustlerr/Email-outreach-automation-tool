@@ -4,14 +4,14 @@ The app connects to Gmail on two layers:
 
 | Layer | What it does | Credential |
 | --- | --- | --- |
-| **Sending** | Sends your outreach emails | App password (SMTP) and/or OAuth token (Gmail API over HTTPS) |
-| **Reply sync** | Reads replies landing in the sender's inbox | OAuth token |
+| **Sending** | Sends your outreach emails | App password (SMTP) |
+| **Reply sync** | Reads replies landing in the sender's inbox | OAuth token (read-only) |
 
-One OAuth token covers both reply sync **and** HTTPS sending when it is created
-with both scopes (steps below). On networks that block outbound SMTP ports —
-most VPS hosts — the OAuth token is **required** to send at all; the app
-automatically prefers the Gmail API when a token exists and falls back to SMTP
-otherwise.
+The two are independent: sending is always SMTP, and the OAuth token is only
+ever used to *read* replies. Outbound SMTP (port 465/587) must therefore be
+reachable from the machine running the app — most VPS hosts block it by
+default, so open it there or run the app somewhere that allows it. Parts 2–5
+below are needed only if you want reply sync.
 
 ---
 
@@ -25,9 +25,9 @@ otherwise.
 3. In the app: **Accounts** (top bar) → add the account with its display name,
    Gmail address, and the app password.
 
-> On a machine where SMTP is blocked the password cannot be verified at save
-> time — the app saves it with a warning. Sending will work once OAuth is
-> connected (Parts 2–4).
+> On a machine where outbound SMTP is blocked the password cannot be verified at
+> save time — the app saves it with a warning, but sending will keep failing
+> until the port is open.
 
 ## Part 2 — Create the OAuth client (once, shared by all accounts)
 
@@ -58,16 +58,13 @@ otherwise.
      scroll to **Test users** → **Add users** and add **every Gmail address you
      send from**, one per line, then **Save**. An account that is not listed
      here gets `403 access_denied` in Part 3.
-   - **Data access** — click **Add or remove scopes**. The two Gmail scopes are
-     sensitive/restricted, so they are usually not in the visible list: paste
-     them into the **Manually add scopes** box at the bottom, one per line, then
-     **Add to table**:
+   - **Data access** — click **Add or remove scopes**. The Gmail read scope is
+     sensitive/restricted, so it is usually not in the visible list: paste it
+     into the **Manually add scopes** box at the bottom, then **Add to table**:
      - `https://www.googleapis.com/auth/gmail.readonly` (read replies)
-     - `https://www.googleapis.com/auth/gmail.send` (send over HTTPS)
 
-     Click **Update**, confirm both now appear under *Restricted scopes* /
-     *Sensitive scopes*, then **Save**. Both must be listed — a client with only
-     one of them causes the "insufficient scope" failure in Troubleshooting.
+     Click **Update**, confirm it now appears under *Restricted scopes* /
+     *Sensitive scopes*, then **Save**.
    - Google may show a "verification required" notice for these scopes. Ignore
      it: an unverified app still works for your own test users (and, after
      Part 5, for up to 100 users) with an extra Advanced → continue click.
@@ -84,17 +81,15 @@ otherwise.
 1. Open [developers.google.com/oauthplayground](https://developers.google.com/oauthplayground/).
 2. Click the **gear icon** (top right) → tick **Use your own OAuth
    credentials** → paste the same Client ID and Client Secret.
-3. In the Step 1 panel, type both scopes into **"Input your own scopes"**,
-   separated by a space:
+3. In the Step 1 panel, type the scope into **"Input your own scopes"**:
 
    ```
-   https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send
+   https://www.googleapis.com/auth/gmail.readonly
    ```
 
 4. Click **Authorize APIs** and sign in **as the sending account you are
    setting up right now** — the token belongs to whichever account you pick.
-5. The consent screen must list **two** permissions (read + send). If it shows
-   only one, redo step 3. Click **Allow**.
+5. Click **Allow**.
 6. Click **Exchange authorization code for tokens** and copy the
    **Refresh token** (starts with `1//`).
 
@@ -117,16 +112,13 @@ re-do Parts 3–4 once so the tokens are permanent.
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `connect ETIMEDOUT ...:465` in the log | Outbound SMTP is blocked (typical on VPS). Connect OAuth with the `gmail.send` scope — sends then go over HTTPS. |
-| "insufficient scope" / sends fall back to SMTP and time out | The refresh token was consented without `gmail.send`. Redo Part 3 with BOTH scopes and paste the new token. |
+| `connect ETIMEDOUT ...:465` in the log | Outbound SMTP is blocked (typical on VPS). Open port 465/587 outbound on the host, or run the app from a network that allows it — sending has no other path. |
 | `invalid_grant` on token exchange | Token expired (consent screen still in Testing → Part 5) or revoked. Mint a new one (Part 3). |
 | "Could not sign in to Gmail with that app password" | Use a 16-character **App Password** (Part 1), not the normal account password; 2-Step Verification must be on. |
 | Consent screen shows "unverified app" warning | Normal for your own client in Testing/Published state — click Advanced → continue. |
 | `403: access_denied` when authorizing | That Gmail address is not a **Test user** (Part 2, step 3 → Audience), or you signed in with a different account than intended. |
 | `400: redirect_uri_mismatch` | The OAuth client is missing `https://developers.google.com/oauthplayground` as an authorized redirect URI (Part 2, step 4) — add it exactly, no trailing slash. |
 | `Gmail API has not been used in project ... before or it is disabled` | Part 2, step 2 was skipped or applied to a different project. |
-| Only one permission listed at consent | The scopes field in OAuth Playground was wrong — both URLs, space-separated. |
 
 **Env notes (advanced):** tokens entered in the UI are stored in the local
 database and take precedence over any `GMAIL_*` values in `.env.local`.
-`MAIL_FORCE_SMTP=1` forces SMTP even when a token exists.

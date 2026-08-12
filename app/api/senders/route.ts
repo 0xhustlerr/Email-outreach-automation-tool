@@ -3,7 +3,6 @@ import {
   clearTransportCache,
   isSendConfigured,
   listIdentities,
-  listSenderTransports,
   verifyIdentity,
 } from "@/lib/mail";
 import {
@@ -63,11 +62,6 @@ function snapshot() {
         stored.map((i) => [i.email, i.email.toLowerCase() in activeSync]),
       ) as Record<string, boolean>,
     },
-    // How each account sends, keyed by lowercased email: `predicted` from its
-    // current config, `actual` from its last successful send. Resolved server
-    // side because the rule lives in lib/mail.ts — the UI must not re-derive it
-    // from credentials and risk contradicting the mailer.
-    sendTransport: listSenderTransports(),
     // Accounts Gmail policy-blocked; they resume on their own at `until` (the
     // next local midnight). An ARRAY, not a map, so the C# tray DTO stays a
     // plain List<T> — the tray reads this on the poll it already makes.
@@ -134,11 +128,10 @@ export async function POST(req: Request) {
   });
   if (!check.ok) {
     // The SMTP server never answered (vs. answered and rejected the login) —
-    // typical on VPS hosts, which block outbound 465/587 entirely. The
-    // password can't be validated from here, but refusing to save would make
-    // it impossible to add accounts on such machines at all. Save it and let
-    // sending go over the Gmail API (HTTPS) once reply-sync OAuth is
-    // connected for the account.
+    // typical on VPS hosts, which block outbound 465/587 entirely, but also
+    // what a transient network blip looks like. The password can't be
+    // validated from here, and refusing to save would make it impossible to
+    // add accounts on such machines at all, so save it with a warning.
     const unreachable = /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received/i.test(
       check.error ?? "",
     );
@@ -161,7 +154,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       warning:
-        "Saved, but the SMTP server could not be reached from this machine (outbound port blocked), so the app password was not verified. Connect reply-sync OAuth for this account — sending will then go over the Gmail API instead of SMTP.",
+        "Saved, but the SMTP server could not be reached from this machine, so the app password was not verified. If the outbound SMTP port is blocked here (common on VPS hosts), sending from this account will fail until it is opened.",
       ...snapshot(),
     });
   }
