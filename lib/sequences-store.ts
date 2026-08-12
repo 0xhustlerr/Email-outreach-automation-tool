@@ -679,6 +679,110 @@ export function cancelSequence(id: number): boolean {
   );
 }
 
+/** What a retry did, or why it did nothing (the UI reports the reason). */
+export type RetryResult =
+  | { ok: true; step: "opener" | "followup" }
+  | { ok: false; reason: string };
+
+/** Put a FAILED item back to work — the manual counterpart to the worker's
+ *  automatic retry, which is terminal once the 3 attempts are spent.
+ *
+ *  Two shapes, chosen from the row's own state:
+ *    - opener failed → back to 'pending', due now, with the follow-up
+ *      un-skipped (markOpenerFailed force-skips it, so a plain status flip
+ *      would silently drop the second step).
+ *    - opener sent, follow-up failed → follow-up back to 'scheduled'.
+ *  `attempts` is per-ROW and shared by both steps, so a manual retry clears it:
+ *  the whole point is to grant a fresh set of tries.
+ *
+ *  Canceled items are stored as failed with last_error='canceled' (see
+ *  cancelSequence), so this un-cancels them too — deliberate; it's the only
+ *  undo the cancel buttons have. */
+export function retrySequence(id: number): RetryResult {
+  const seq = getSequence(id);
+  if (!seq) return { ok: false, reason: "not found" };
+
+  if (seq.opStatus === "failed") {
+    // A live row for the same address means the contact is already back in the
+    // queue by some other route — retrying this one would double-send.
+    // Compared WITHOUT lower(): to_email is always stored trimmed+lowercased
+    // (insertStmt is the only writer), and a bare column match is the only form
+    // that can use idx_sequences_to — lower(to_email) forces a full table scan,
+    // which retryAllFailed would then pay once per failed row. Same shape as
+    // the enqueueSequence guard above.
+    const dup = db
+      .prepare(
+        `SELECT 1 FROM sequences WHERE to_email = ? AND id <> ?
+           AND op_status IN ('pending','sending') LIMIT 1`,
+      )
+      .get(seq.toEmail.trim().toLowerCase(), id);
+    if (dup) return { ok: false, reason: "already queued" };
+    // lane is forced to 'queue': the worker only ever claims that lane, so a
+    // failed 'send'-lane opener would be unreachable otherwise. op_send_after
+    // NULL makes it due immediately — the drip interval still spaces it out.
+    const changed = db
+      .prepare(
+        `UPDATE sequences SET
+           lane = 'queue', op_status = 'pending', op_send_after = NULL,
+           attempts = 0, last_error = '',
+           fu_status = CASE WHEN has_follow = 1 THEN 'waiting' ELSE 'skipped' END
+         WHERE id = ? AND op_status = 'failed'`,
+      )
+      .run(id).changes;
+    // The row was read before the UPDATE, so a concurrent retry/enqueue can
+    // have moved it out of 'failed' in between. Reporting ok:true then would
+    // toast "back in the queue" for a no-op and inflate retryAllFailed's count.
+    if (changed === 0) return { ok: false, reason: "no longer failed" };
+    return { ok: true, step: "opener" };
+  }
+
+  if (seq.opStatus === "sent" && seq.fuStatus === "failed") {
+    // Follow-ups are reply-triggered (claimRepliedFollowup ignores
+    // fu_send_after), but claimDueFollowup needs a non-NULL past timestamp —
+    // keep the original if there is one, else make it due now.
+    const changed = db
+      .prepare(
+        `UPDATE sequences SET
+           fu_status = 'scheduled', attempts = 0, last_error = '',
+           fu_send_after = COALESCE(fu_send_after, ?)
+         WHERE id = ? AND fu_status = 'failed'`,
+      )
+      .run(new Date().toISOString(), id).changes;
+    if (changed === 0) return { ok: false, reason: "no longer failed" };
+    return { ok: true, step: "followup" };
+  }
+
+  return { ok: false, reason: "nothing to retry" };
+}
+
+/** Retry every failed item at once. Goes through retrySequence per row so the
+ *  dup guard and the opener/follow-up split behave identically to the single
+ *  button; one transaction, so the guard also dedupes WITHIN the batch (two
+ *  failed rows for the same address → the second is skipped, not double-sent). */
+export function retryAllFailed(): {
+  openers: number;
+  followups: number;
+  skipped: number;
+} {
+  const rows = db
+    .prepare(
+      `SELECT id FROM sequences
+       WHERE op_status = 'failed' OR (op_status = 'sent' AND fu_status = 'failed')
+       ORDER BY id ASC`,
+    )
+    .all() as { id: number }[];
+  const out = { openers: 0, followups: 0, skipped: 0 };
+  db.transaction(() => {
+    for (const r of rows) {
+      const res = retrySequence(r.id);
+      if (!res.ok) out.skipped++;
+      else if (res.step === "opener") out.openers++;
+      else out.followups++;
+    }
+  })();
+  return out;
+}
+
 export function clearFinishedSequences(): number {
   return db
     .prepare(

@@ -76,25 +76,29 @@ export function clearTransportCache(): void {
   transportCache.clear();
 }
 
-/** Opens an SMTP connection and authenticates, to validate an account's app
- *  password before it is saved. Defaults to Gmail. */
-export async function verifyIdentity(entry: {
-  email: string;
-  smtpUser?: string;
-  smtpPass: string;
-  smtpHost?: string;
-  smtpPort?: number;
-  smtpSecure?: boolean;
-}): Promise<{ ok: boolean; error?: string }> {
-  const host = entry.smtpHost?.trim() || "smtp.gmail.com";
-  const port = entry.smtpPort ?? 465;
-  const secure = entry.smtpSecure ?? port === 465;
-  const user = (entry.smtpUser ?? entry.email).trim();
+export type SmtpConfig = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+};
+
+/** Opens an SMTP connection and authenticates, without touching the send
+ *  transport cache. Never throws. Bounded so an unreachable host can't hang the
+ *  caller (the startup health check runs this for every account). */
+export async function verifySmtp(cfg: SmtpConfig): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
   const transport = nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: { user, pass: entry.smtpPass.trim() },
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
   });
   try {
     await transport.verify();
@@ -106,13 +110,27 @@ export async function verifyIdentity(entry: {
   }
 }
 
-function resolveSmtp(id: MailIdentityFull): {
-  host: string;
-  port: number;
-  secure: boolean;
-  user: string;
-  pass: string;
-} | null {
+/** Opens an SMTP connection and authenticates, to validate an account's app
+ *  password before it is saved. Defaults to Gmail. */
+export async function verifyIdentity(entry: {
+  email: string;
+  smtpUser?: string;
+  smtpPass: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  const port = entry.smtpPort ?? 465;
+  return verifySmtp({
+    host: entry.smtpHost?.trim() || "smtp.gmail.com",
+    port,
+    secure: entry.smtpSecure ?? port === 465,
+    user: (entry.smtpUser ?? entry.email).trim(),
+    pass: entry.smtpPass.trim(),
+  });
+}
+
+function resolveSmtp(id: MailIdentityFull): SmtpConfig | null {
   const host = id.smtpHost ?? process.env.SMTP_HOST;
   const user = id.smtpUser ?? process.env.SMTP_USER;
   const pass = id.smtpPass ?? process.env.SMTP_PASS;
@@ -124,6 +142,22 @@ function resolveSmtp(id: MailIdentityFull): {
 
 export function listIdentities(): MailIdentity[] {
   return parseIdentities().map(({ name, email }) => ({ name, email }));
+}
+
+export type SendAccount = MailIdentity & {
+  /** Resolved SMTP config, or null when this account has no usable
+   *  credentials. CARRIES THE PASSWORD — server-side only, never log it. */
+  smtp: SmtpConfig | null;
+};
+
+/** Every configured identity with the SMTP config a send would actually use.
+ *  For the startup health check; sending itself goes through transportFor. */
+export function listSendAccounts(): SendAccount[] {
+  return parseIdentities().map((id) => ({
+    name: id.name,
+    email: id.email,
+    smtp: resolveSmtp(id),
+  }));
 }
 
 /** True when at least one identity has usable SMTP credentials. Gates the send

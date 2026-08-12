@@ -243,6 +243,15 @@ function PauseIcon({ className }: { className?: string }) {
   );
 }
 
+function RetryIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
+}
+
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -250,6 +259,14 @@ function MailIcon({ className }: { className?: string }) {
       <path d="m3 7 9 7 9-7" />
     </svg>
   );
+}
+
+// Is there a failed step a retry could actually restart? Mirrors the server
+// rule in retrySequence (lib/sequences-store.ts) — keep the two in step, or the
+// button appears on rows the API will refuse.
+function canRetry(item: QueueItem): boolean {
+  if (item.opStatus === "failed") return true;
+  return item.opStatus === "sent" && item.fuStatus === "failed";
 }
 
 // One compact pill summarising an item's overall state (replaces the two
@@ -580,9 +597,69 @@ export default function QueueModal({
   };
 
   const itemAction = async (id: number, action: "cancel" | "retry") => {
-    await fetch(`/api/queue?action=${action}&id=${id}`, { method: "PATCH" }).catch(
-      () => {},
-    );
+    try {
+      const res = await fetch(`/api/queue?action=${action}&id=${id}`, {
+        method: "PATCH",
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        step?: "opener" | "followup";
+        error?: string;
+      };
+      // A retry can legitimately do nothing (the contact got re-queued by
+      // another route), so report the server's reason instead of a silent no-op.
+      if (action === "retry") {
+        if (!res.ok || !data.ok) {
+          toast.error(`Couldn't retry — ${data.error ?? "request failed"}.`);
+        } else {
+          toast.success(
+            data.step === "followup"
+              ? "Follow-up re-scheduled."
+              : "Back in the queue — it sends on the next drip slot.",
+          );
+        }
+      }
+    } catch {
+      if (action === "retry") toast.error("Couldn't retry — request failed.");
+    }
+    void refresh();
+  };
+
+  // Retry every failed item. No confirm: it only ever puts sends BACK, and the
+  // drip/cap rules still gate what actually goes out.
+  const retryAllFailed = async () => {
+    if (num("failed") === 0) return;
+    try {
+      const res = await fetch("/api/queue?action=retry-all-failed", {
+        method: "PATCH",
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        openers?: number;
+        followups?: number;
+        skipped?: number;
+      };
+      if (!res.ok || !data.ok) {
+        toast.error("Couldn't retry the failed items.");
+      } else {
+        const moved = (data.openers ?? 0) + (data.followups ?? 0);
+        const skipped = data.skipped ?? 0;
+        // "Nothing moved" and "nothing was eligible" are different outcomes —
+        // when every candidate hit the server's dup guard, saying "nothing to
+        // retry" next to a non-zero Failed counter reads as a broken button.
+        toast[moved > 0 ? "success" : "info"](
+          moved > 0
+            ? `${moved} item(s) back in the queue${
+                skipped > 0 ? ` · ${skipped} skipped (already queued)` : ""
+              }.`
+            : skipped > 0
+              ? `Nothing moved — ${skipped} item(s) are already queued.`
+              : "Nothing to retry.",
+        );
+      }
+    } catch {
+      toast.error("Couldn't retry the failed items.");
+    }
     void refresh();
   };
 
@@ -1456,6 +1533,21 @@ export default function QueueModal({
                       <CloseIcon className="h-3.5 w-3.5" />
                     </button>
                   )}
+                  {canRetry(it) && (
+                    <button
+                      type="button"
+                      onClick={() => void itemAction(it.id, "retry")}
+                      title={
+                        it.lastError === "canceled"
+                          ? "Put this canceled send back in the queue"
+                          : "Retry this failed send"
+                      }
+                      aria-label="Retry this send"
+                      className="shrink-0 rounded-md p-1 text-slate-600 opacity-0 transition hover:text-cyan-300 focus:opacity-100 group-hover:opacity-100"
+                    >
+                      <RetryIcon className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
                 );
               })}
@@ -1464,6 +1556,15 @@ export default function QueueModal({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => void retryAllFailed()}
+            disabled={num("failed") === 0}
+            className="mr-auto rounded-full border border-cyan-500/30 bg-cyan-500/10 px-4 py-1.5 text-xs text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20 disabled:opacity-40 disabled:hover:border-cyan-500/30 disabled:hover:bg-cyan-500/10"
+            title="Put every failed and canceled item back in the queue"
+          >
+            Retry failed{num("failed") > 0 ? ` (${num("failed")})` : ""}
+          </button>
           <button
             type="button"
             onClick={() => void cancelAllFollowups()}
