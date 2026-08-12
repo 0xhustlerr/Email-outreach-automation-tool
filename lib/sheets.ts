@@ -25,6 +25,10 @@ export type SheetHistoryRow = {
   /** Open tracking (local only; not synced to the sheet). */
   openedAt?: string;
   openCount?: number;
+  /** Latest reply text captured by reply sync (local only). Used to grade
+   *  sentiment in Insights without a live Gmail scan. */
+  replySubject?: string;
+  replySnippet?: string;
 };
 
 export type SheetRowUpdate = {

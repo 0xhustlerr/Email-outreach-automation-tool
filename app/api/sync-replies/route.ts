@@ -1,47 +1,52 @@
 import { NextResponse } from "next/server";
 import {
-  loadPersistedMessageIds,
-  savePersistedMessageIds,
-} from "@/lib/reply-sync-persist";
-import { syncRepliesToSheet } from "@/lib/reply-sync";
+  ackReplyNotifications,
+  getReplySyncSnapshot,
+  runReplySyncNow,
+} from "@/lib/reply-sync-loop";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Reply detection is owned by the background loop armed in instrumentation.ts.
+// This route no longer runs a sync per request - it reads the loop's cached
+// result, so N polling clients cost N cheap reads instead of N concurrent
+// full-inbox Gmail scans racing each other's sheet writes.
+
+export async function GET() {
+  return NextResponse.json({ ok: true, ...getReplySyncSnapshot() });
+}
+
 export async function POST(req: Request) {
+  let body: { force?: boolean; ack?: string[] } = {};
   try {
-    let clientIds: Record<string, string> = {};
-    try {
-      const body = (await req.json()) as {
-        lastMessageIds?: Record<string, string>;
-      };
-      if (body.lastMessageIds && typeof body.lastMessageIds === "object") {
-        clientIds = body.lastMessageIds;
-      }
-    } catch {
-      // Empty body is fine (tray sync uses server-persisted ids).
+    body = (await req.json()) as typeof body;
+  } catch {
+    // Empty body is fine - treated as a plain read.
+  }
+
+  try {
+    if (Array.isArray(body.ack) && body.ack.length > 0) {
+      ackReplyNotifications(body.ack.filter((k) => typeof k === "string"));
     }
 
-    const persisted = loadPersistedMessageIds();
-    const lastMessageIds = { ...persisted, ...clientIds };
+    // force = the user pressed Refresh and is watching a spinner. Everything
+    // else reads the cache; runReplySyncNow collapses onto the in-flight cycle
+    // when the loop happens to be mid-scan, so this can't stack up scans.
+    const snapshot = body.force
+      ? await runReplySyncNow()
+      : getReplySyncSnapshot();
 
-    const result = await syncRepliesToSheet(lastMessageIds);
-    if (!result.ok) {
+    if (snapshot.lastError && snapshot.replies.length === 0) {
       return NextResponse.json(
-        { ok: false, error: result.error ?? "Reply sync failed." },
+        { ok: false, error: snapshot.lastError, ...snapshot },
         { status: 502 },
       );
     }
 
-    if (result.messageIds && Object.keys(result.messageIds).length > 0) {
-      savePersistedMessageIds(result.messageIds);
-    }
-
-    const { ok: _ok, ...rest } = result;
-    return NextResponse.json({ ok: true, ...rest });
+    return NextResponse.json({ ok: true, ...snapshot });
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Reply sync failed.";
+    const message = err instanceof Error ? err.message : "Reply sync failed.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

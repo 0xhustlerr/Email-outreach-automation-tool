@@ -348,6 +348,16 @@ function ensureSchema(db: Database.Database): void {
   if (!sendLogCols.includes("open_count")) {
     db.exec(`ALTER TABLE send_log ADD COLUMN open_count INTEGER NOT NULL DEFAULT 0`);
   }
+  // Reply text captured by the reply-sync loop. Stored locally (never written
+  // to the sheet) so sentiment grading in Insights keeps working after the
+  // reply falls out of the Gmail scan window - previously the snippet only
+  // existed in a transient notification payload and was lost on the next sync.
+  if (!sendLogCols.includes("reply_subject")) {
+    db.exec(`ALTER TABLE send_log ADD COLUMN reply_subject TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!sendLogCols.includes("reply_snippet")) {
+    db.exec(`ALTER TABLE send_log ADD COLUMN reply_snippet TEXT NOT NULL DEFAULT ''`);
+  }
 
   // Resolved location on queue sequences: standardized country + timezone for
   // local-time send scheduling. tz_source records which signal won (commit
@@ -442,6 +452,8 @@ export type SendLogRow = {
   track_token: string;
   opened_at: string | null;
   open_count: number;
+  reply_subject: string;
+  reply_snippet: string;
 };
 
 export function logSendToDb(entry: {
@@ -553,13 +565,54 @@ export function listSendLog(limit = 200): SendLogRow[] {
     .all(limit) as SendLogRow[];
 }
 
-export function markRepliedInDb(contact: string, repliedAt: string): void {
+export function markRepliedInDb(
+  contact: string,
+  repliedAt: string,
+  reply?: { subject?: string; snippet?: string },
+): void {
+  // Callers pass the normalized primary address (lowercased, first address of a
+  // multi-address cell), but `contact` is stored as it was typed - mixed case,
+  // and possibly "a@x.com / b@y.com" or "Name <a@x.com>". An `=` match is
+  // case-sensitive in SQLite, so it silently updated nothing for those rows.
+  //
+  // Matched on ADDRESS BOUNDARIES rather than with a bare substring test like
+  // getContactSends uses: that one only over-selects rows for a read, whereas
+  // this flips replied/active, and `instr(lower(contact), 'john@acme.com')`
+  // also matches a row for bjohn@acme.com - marking a different person as
+  // having replied and dropping them from follow-up.
+  const key = contact.trim().toLowerCase();
+  if (!key) return;
   try {
+    // replied_at keeps the FIRST reply time (COALESCE), but the subject/snippet
+    // track the LATEST non-empty reply text - that is what Insights grades, and
+    // the most recent message is the better signal of where the thread stands.
+    //
+    // The WHERE clause makes a re-detection of an unchanged reply a no-op: the
+    // sync loop calls this for every replied contact on every cycle, so without
+    // it a steady-state install would rewrite every replied row once a minute.
     db.prepare(
       `UPDATE send_log
-       SET replied = 1, active = 1, replied_at = COALESCE(replied_at, ?)
-       WHERE contact = ?`,
-    ).run(repliedAt, contact);
+       SET replied = 1,
+           active = 1,
+           replied_at = COALESCE(replied_at, @repliedAt),
+           reply_subject = CASE WHEN @subject <> '' THEN @subject ELSE reply_subject END,
+           reply_snippet = CASE WHEN @snippet <> '' THEN @snippet ELSE reply_snippet END
+       WHERE instr(
+               ' ' || replace(replace(replace(replace(replace(
+                 lower(contact), '/', ' '), ',', ' '), ';', ' '), '<', ' '), '>', ' ') || ' ',
+               ' ' || @contact || ' '
+             ) > 0
+         AND (replied = 0
+              OR active = 0
+              OR replied_at IS NULL
+              OR (@subject <> '' AND reply_subject <> @subject)
+              OR (@snippet <> '' AND reply_snippet <> @snippet))`,
+    ).run({
+      repliedAt,
+      subject: reply?.subject ?? "",
+      snippet: reply?.snippet ?? "",
+      contact: key,
+    });
   } catch {
     // Best-effort.
   }

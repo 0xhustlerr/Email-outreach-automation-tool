@@ -17,7 +17,7 @@ internal sealed class TrayReplySyncService : IDisposable
     private const int MinIntervalSeconds = 30;
 
     // Bump when the dedup source changes so existing state re-seeds once.
-    private const int StateVersion = 2;
+    private const int StateVersion = 3;
 
     private readonly HttpClient _http;
     private readonly string _appUrl;
@@ -157,14 +157,20 @@ internal sealed class TrayReplySyncService : IDisposable
                 HandleSenderBlocks(senders.SenderBlocks);
             }
 
-            if (senders is not { SheetsConfigured: true, GmailReplySyncConfigured: true })
+            // Only Gmail OAuth is required. Google Sheets used to be gated on
+            // here as well, which left a Sheets-less install with no reply
+            // alerts at all — detection reads the inbox and writes the local
+            // database; the sheet write is an optional extra the server skips
+            // on its own when Sheets isn't configured.
+            if (senders is not { GmailReplySyncConfigured: true })
             {
                 return;
             }
 
-            using var res = await _http.PostAsJsonAsync(
-                $"{_appUrl}/api/sync-replies",
-                new { lastMessageIds = new Dictionary<string, string>() });
+            // A read, not a command: the server's background loop owns the
+            // actual Gmail scan. Polling here no longer triggers one, so the
+            // tray and any open browser tabs can no longer scan concurrently.
+            using var res = await _http.GetAsync($"{_appUrl}/api/sync-replies");
 
             if (!res.IsSuccessStatusCode)
             {
@@ -304,6 +310,25 @@ internal sealed class TrayReplySyncService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Dedup key for one reply. Keyed on the contact address, NOT the sheet row:
+    /// a row number only exists once a send has been reconciled to a Google
+    /// Sheet, so on a Sheets-less install every reply arrives with _row 0 and a
+    /// row-keyed set would both drop them and collapse them into one entry.
+    /// Mirrors alertKey() in lib/reply-sync-loop.ts. Falls back to the row for
+    /// the (impossible in practice) case of a reply with no contact.
+    /// </summary>
+    private static string DedupKey(TrayReplyNotification n)
+    {
+        var contact = (n.Contact ?? "").Trim().ToLowerInvariant();
+        if (contact.Length > 0)
+        {
+            return contact;
+        }
+
+        return n.Row > 0 ? n.Row.ToString() : "";
+    }
+
     private void HandleNotifications(IReadOnlyList<TrayReplyNotification> notifications)
     {
         if (notifications.Count == 0)
@@ -319,9 +344,10 @@ internal sealed class TrayReplySyncService : IDisposable
             state.ToastedMessageIds.Clear();
             foreach (var n in notifications)
             {
-                if (n.Row > 0 && !string.IsNullOrEmpty(n.MessageId))
+                var seedKey = DedupKey(n);
+                if (seedKey.Length > 0 && !string.IsNullOrEmpty(n.MessageId))
                 {
-                    state.ToastedMessageIds[n.Row.ToString()] = n.MessageId;
+                    state.ToastedMessageIds[seedKey] = n.MessageId;
                 }
             }
 
@@ -338,12 +364,12 @@ internal sealed class TrayReplySyncService : IDisposable
         var fresh = new List<TrayReplyNotification>();
         foreach (var n in notifications)
         {
-            if (n.Row <= 0 || string.IsNullOrEmpty(n.MessageId))
+            var key = DedupKey(n);
+            if (key.Length == 0 || string.IsNullOrEmpty(n.MessageId))
             {
                 continue;
             }
 
-            var key = n.Row.ToString();
             if (state.ToastedMessageIds.TryGetValue(key, out var prev) &&
                 string.Equals(prev, n.MessageId, StringComparison.Ordinal))
             {

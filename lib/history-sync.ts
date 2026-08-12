@@ -205,5 +205,7 @@ export function listHistoryFromDb(): SheetHistoryRow[] {
     repliedAt: r.replied_at ?? "",
     openedAt: r.opened_at ?? "",
     openCount: r.open_count ?? 0,
+    replySubject: r.reply_subject ?? "",
+    replySnippet: r.reply_snippet ?? "",
   }));
 }
