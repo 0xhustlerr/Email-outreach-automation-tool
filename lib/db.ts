@@ -191,13 +191,6 @@ function ensureSchema(db: Database.Database): void {
       -- Per-account Gmail OAuth refresh token for READING replies (reply sync).
       -- Paired with the global client id/secret in app_meta. Empty = no sync.
       oauth_refresh_token TEXT NOT NULL DEFAULT '',
-      -- How this account's most recent successful send actually went out:
-      -- 'gmail_api' | 'smtp' | '' (never sent). Written by sendMail, which is
-      -- the one place that chooses; read only to badge the account in the UI.
-      -- Deliberately last-write-wins rather than a per-send log: the badge asks
-      -- "how is this account sending now", and it self-heals once the condition
-      -- that caused a Gmail-API-to-SMTP fallback is fixed.
-      last_transport TEXT NOT NULL DEFAULT '',
       created_at  TEXT NOT NULL
     );
 
@@ -418,12 +411,9 @@ function ensureSchema(db: Database.Database): void {
       `ALTER TABLE mail_identities ADD COLUMN oauth_refresh_token TEXT NOT NULL DEFAULT ''`,
     );
   }
-  // Observed transport of the last successful send ('' until the account sends).
-  if (!identCols.includes("last_transport")) {
-    db.exec(
-      `ALTER TABLE mail_identities ADD COLUMN last_transport TEXT NOT NULL DEFAULT ''`,
-    );
-  }
+  // NB: databases created before Gmail-API sending was removed still carry a
+  // `last_transport` column. It is left in place (dropping it would rewrite the
+  // table) and nothing reads or writes it — SMTP is now the only rail.
   });
   init.immediate();
 }

@@ -14,6 +14,10 @@ export async function register() {
     // stands the affected account down for the rest of the day.
     const { startBounceWatch } = await import("./lib/bounce-watch");
     startBounceWatch();
+    // Logs one SMTP login check per connected account so the console shows
+    // which senders actually work right after every start/restart.
+    const { startSenderHealthCheck } = await import("./lib/sender-health");
+    startSenderHealthCheck();
     // One-time: standardize any history country values missing country_std.
     const { backfillCountryStd } = await import("./lib/history-sync");
     const n = backfillCountryStd();

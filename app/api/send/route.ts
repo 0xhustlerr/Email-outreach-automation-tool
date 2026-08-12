@@ -33,7 +33,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error:
-          "No sending account configured. Add one in Accounts (app password or Gmail OAuth).",
+          "No sending account configured. Add one in Accounts with its app password.",
       },
       { status: 503 },
     );

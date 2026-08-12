@@ -10,6 +10,8 @@ import {
   clearFinishedSequences,
   enqueueSequence,
   listSequences,
+  retryAllFailed,
+  retrySequence,
   rotateQueuedOpeners,
   sequenceCounts,
 } from "@/lib/sequences-store";
@@ -120,6 +122,26 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, error: "id required." }, { status: 400 });
     }
     return NextResponse.json({ ok: cancelSequence(id), counts: sequenceCounts() });
+  }
+
+  // Manual retry of a failed (or canceled) item — the worker's own retry is
+  // terminal after 3 attempts, so this is the only way back.
+  if (action === "retry") {
+    const id = Number(url.searchParams.get("id"));
+    if (!Number.isFinite(id)) {
+      return NextResponse.json({ ok: false, error: "id required." }, { status: 400 });
+    }
+    const res = retrySequence(id);
+    return NextResponse.json({
+      ok: res.ok,
+      ...(res.ok ? { step: res.step } : { error: res.reason }),
+      counts: sequenceCounts(),
+    });
+  }
+
+  if (action === "retry-all-failed") {
+    const res = retryAllFailed();
+    return NextResponse.json({ ok: true, ...res, counts: sequenceCounts() });
   }
 
   if (action === "cancel-email") {
