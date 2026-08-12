@@ -84,6 +84,87 @@ export type SmtpConfig = {
   pass: string;
 };
 
+// --- Trusted DNS resolution --------------------------------------------------
+// Some VPNs and captive networks hijack DNS: the system resolver hands back an
+// interception IP that accepts the TCP handshake but never speaks SMTP, so
+// every connect "times out" even though Gmail itself is reachable. Resolving
+// the SMTP host over DNS-over-HTTPS — queried by literal resolver IP, so the
+// lookup itself can't be hijacked — and connecting to the real address gets
+// mail flowing on those networks. TLS still validates the certificate against
+// the hostname (tls.servername below), so this cannot be used to talk to an
+// impostor server; at worst the lookup fails and we fall back to system DNS.
+
+// Queried by IP on purpose: both certs carry the bare IP as a SAN, so no DNS
+// lookup is needed to reach the resolver.
+const DOH_ENDPOINTS = [
+  "https://8.8.8.8/resolve", // dns.google JSON API
+  "https://1.1.1.1/dns-query", // Cloudflare (same JSON API with the accept header)
+];
+const DOH_TIMEOUT_MS = 4_000;
+const DNS_TTL_MS = 10 * 60 * 1000;
+
+// host -> resolved IP. `ip: null` records a failed lookup so an unreachable
+// DoH endpoint (offline box, internal SMTP host) costs one timeout per TTL,
+// not one per send.
+const dnsCache = new Map<string, { ip: string | null; expires: number }>();
+
+function isIpLiteral(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":");
+}
+
+async function dohResolve4(host: string): Promise<string | null> {
+  const query = async (base: string): Promise<string> => {
+    const res = await fetch(`${base}?name=${encodeURIComponent(host)}&type=A`, {
+      headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(DOH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`DoH ${res.status}`);
+    const json = (await res.json()) as {
+      Answer?: { type: number; data: string }[];
+    };
+    // type 1 = A record; CNAME entries (type 5) ride along in the same array.
+    const a = json.Answer?.find(
+      (r) => r.type === 1 && isIpLiteral(r.data ?? ""),
+    );
+    if (!a) throw new Error("no A record");
+    return a.data;
+  };
+  try {
+    return await Promise.any(DOH_ENDPOINTS.map(query));
+  } catch {
+    return null;
+  }
+}
+
+/** Real IP for an SMTP host via DoH, or null to use system DNS as-is. */
+async function resolveSmtpHost(host: string): Promise<string | null> {
+  if (isIpLiteral(host)) return null;
+  const cached = dnsCache.get(host);
+  if (cached && cached.expires > Date.now()) return cached.ip;
+  const ip = await dohResolve4(host);
+  dnsCache.set(host, { ip, expires: Date.now() + DNS_TTL_MS });
+  return ip;
+}
+
+/** Connection options for nodemailer: the DoH-resolved IP when available
+ *  (with TLS still pinned to the hostname), otherwise the hostname itself. */
+async function smtpConnectionOptions(cfg: SmtpConfig): Promise<{
+  host: string;
+  port: number;
+  secure: boolean;
+  auth: { user: string; pass: string };
+  tls?: { servername: string };
+}> {
+  const ip = await resolveSmtpHost(cfg.host);
+  return {
+    host: ip ?? cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: { user: cfg.user, pass: cfg.pass },
+    ...(ip ? { tls: { servername: cfg.host } } : {}),
+  };
+}
+
 /** Opens an SMTP connection and authenticates, without touching the send
  *  transport cache. Never throws. Bounded so an unreachable host can't hang the
  *  caller (the startup health check runs this for every account). */
@@ -92,10 +173,7 @@ export async function verifySmtp(cfg: SmtpConfig): Promise<{
   error?: string;
 }> {
   const transport = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.secure,
-    auth: { user: cfg.user, pass: cfg.pass },
+    ...(await smtpConnectionOptions(cfg)),
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
     socketTimeout: 15_000,
@@ -235,24 +313,22 @@ function findIdentity(email: string): MailIdentityFull | null {
 }
 
 // Cache transports by SMTP user+host so re-sending from the same identity
-// reuses a warmed connection instead of handshaking every time.
+// reuses a warmed connection instead of handshaking every time. The resolved
+// IP is part of the key, so when the DNS cache rotates to a new address the
+// next send builds a fresh transport instead of staying pinned to a dead IP.
 const transportCache = new Map<string, Transporter>();
-function transportFor(id: MailIdentityFull): Transporter {
+async function transportFor(id: MailIdentityFull): Promise<Transporter> {
   const cfg = resolveSmtp(id);
   if (!cfg) {
     throw new Error(
       `SMTP credentials missing for ${id.email}. Add smtpUser/smtpPass to the identity in MAIL_IDENTITIES, or set the top-level SMTP_USER/SMTP_PASS.`,
     );
   }
-  const key = `${cfg.host}:${cfg.port}:${cfg.user}`;
+  const options = await smtpConnectionOptions(cfg);
+  const key = `${options.host}:${cfg.port}:${cfg.user}`;
   let t = transportCache.get(key);
   if (!t) {
-    t = nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.secure,
-      auth: { user: cfg.user, pass: cfg.pass },
-    });
+    t = nodemailer.createTransport(options);
     transportCache.set(key, t);
   }
   return t;
@@ -329,6 +405,6 @@ export async function sendMail(args: {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   };
 
-  const info = await transportFor(identity).sendMail(mail);
+  const info = await (await transportFor(identity)).sendMail(mail);
   return { messageId: info.messageId };
 }
