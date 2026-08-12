@@ -110,6 +110,22 @@ function computeTotalDailyCap(s: QueueSettings, activeEmails: string[]): number 
     : s.dailyCap;
 }
 
+// Order-insensitive form of a settings value, for the "did the user change
+// this?" diff. senderPool is a set and senderCaps a map, so unchecking and
+// re-checking a sender (or clearing and retyping the same cap) reorders them
+// without changing anything — a plain JSON.stringify would call that an edit.
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return JSON.stringify([...v].sort());
+  if (v !== null && typeof v === "object") {
+    return JSON.stringify(
+      Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      ),
+    );
+  }
+  return JSON.stringify(v);
+}
+
 // "12:00 AM" from a block's ISO `until`. label12h below only takes "HH:MM".
 function resumeAt(iso: string): string {
   const d = new Date(iso);
@@ -335,8 +351,21 @@ export default function QueueModal({
   const [intervalUnit, setIntervalUnit] = useState<"sec" | "min">("sec");
   // Settings are collapsed by default so the queued contacts stay visible.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // In-progress per-account cap edits, committed on blur/Enter so each
-  // keystroke doesn't fire a PATCH (a senderCaps patch replaces the map).
+  // Working copy of the settings while the settings modal is open. Every edit
+  // in there goes here, never straight to the server — nothing is applied until
+  // the user clicks OK. Also means the 5s refresh can't clobber a live edit.
+  const [draft, setDraft] = useState<QueueSettings | null>(null);
+  // What the settings were when the modal opened. The diff sent on OK is
+  // draft-vs-baseline, so a concurrent change from another window isn't
+  // reverted by fields this user never touched.
+  const [baseline, setBaseline] = useState<QueueSettings | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  // Whether "Rotate queued" ran this visit. That one writes to the server
+  // immediately (it rewrites queue items, not settings), so the footer must not
+  // claim "No changes" afterwards.
+  const [rotatedQueued, setRotatedQueued] = useState(false);
+  // In-progress per-account cap edits, kept as raw strings so a half-typed or
+  // cleared box isn't coerced to a number mid-keystroke.
   const [capDrafts, setCapDrafts] = useState<Record<string, string>>({});
   // Opener rotation: rewrite the queued items' openers in place, round-robin
   // across the selected templates (no items removed).
@@ -575,17 +604,8 @@ export default function QueueModal({
       .join("  ·  ");
   }, [settings, senders]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      // Esc closes the settings modal first if it's open, else the queue.
-      if (settingsOpen) setSettingsOpen(false);
-      else onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, settingsOpen]);
-
+  // Immediate save — only for controls outside the settings modal (the
+  // Running/Paused toggle). Everything inside the modal edits `draft` instead.
   const patchSettings = async (patch: Partial<QueueSettings>) => {
     setSettings((s) => (s ? { ...s, ...patch } : s));
     await fetch("/api/queue", {
@@ -595,6 +615,138 @@ export default function QueueModal({
     }).catch(() => {});
     void refresh();
   };
+
+  // Edit the working copy. Nothing leaves the browser until OK.
+  const editDraft = (patch: Partial<QueueSettings>) =>
+    setDraft((d) => (d ? { ...d, ...patch } : d));
+
+  // Fold any cap box the user is still typing in into a senderCaps map, so OK
+  // applies it even if the input never blurred. Blank/0/invalid = uncapped.
+  const mergeCapDrafts = useCallback(
+    (caps: Record<string, number>) => {
+      const next = { ...caps };
+      for (const [email, raw] of Object.entries(capDrafts)) {
+        const v = Math.round(Number(raw));
+        if (raw.trim() !== "" && Number.isFinite(v) && v > 0) next[email] = v;
+        else delete next[email];
+      }
+      return next;
+    },
+    [capDrafts],
+  );
+
+  // Only the fields the user actually changed — a patch merges over the stored
+  // row, so sending the whole draft would also re-write untouched fields (and
+  // `enabled`, which the Running/Paused toggle owns).
+  //
+  // The diff is against `baseline` (the snapshot taken when the modal opened),
+  // NOT the live 5s-polled `settings`: another window editing the same local
+  // app would otherwise show up as a "change" here and get reverted by fields
+  // this user never touched.
+  const draftPatch = useMemo(() => {
+    if (!baseline || !draft) return null;
+    const merged: QueueSettings = {
+      ...draft,
+      senderCaps: mergeCapDrafts(draft.senderCaps ?? {}),
+    };
+    const patch: Partial<QueueSettings> = {};
+    for (const key of Object.keys(merged) as (keyof QueueSettings)[]) {
+      if (canonical(merged[key]) !== canonical(baseline[key])) {
+        (patch as Record<string, unknown>)[key] = merged[key];
+      }
+    }
+    return patch;
+  }, [baseline, draft, mergeCapDrafts]);
+
+  const settingsDirty = !!draftPatch && Object.keys(draftPatch).length > 0;
+
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    setDraft(null);
+    setBaseline(null);
+    setCapDrafts({});
+    setRotatedQueued(false);
+  };
+
+  const openSettings = () => {
+    if (!settings) return;
+    setDraft(settings);
+    setBaseline(settings);
+    setCapDrafts({});
+    setRotatedQueued(false);
+    setSettingsOpen(true);
+  };
+
+  const discardSettings = () => {
+    // An apply is already in flight — its own PATCH will land regardless, so
+    // don't offer to "discard" what is being written.
+    if (savingSettings) return;
+    if (
+      settingsDirty &&
+      !window.confirm("Discard the unsaved settings changes?")
+    )
+      return;
+    closeSettings();
+  };
+
+  // OK — apply every edit in one PATCH, then close.
+  const applySettings = async () => {
+    if (savingSettings) return;
+    if (!settingsDirty) {
+      closeSettings();
+      return;
+    }
+    setSavingSettings(true);
+    try {
+      const res = await fetch("/api/queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draftPatch),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        settings?: QueueSettings;
+      };
+      if (!res.ok || !data.ok) {
+        toast.error("Couldn't apply the queue settings.");
+        return;
+      }
+      // The server clamps values (interval, caps, …) — show what it stored.
+      if (data.settings) setSettings(data.settings);
+      toast.success("Queue settings applied.");
+      closeSettings();
+      void refresh();
+    } catch {
+      toast.error("Couldn't apply the queue settings.");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Esc closes the settings modal first if it's open, else the queue.
+      if (!settingsOpen) {
+        onClose();
+        return;
+      }
+      // Mid-apply Esc is a no-op: the PATCH lands either way.
+      if (savingSettings) return;
+      if (
+        settingsDirty &&
+        !window.confirm("Discard the unsaved settings changes?")
+      )
+        return;
+      setSettingsOpen(false);
+      setDraft(null);
+      setBaseline(null);
+      setCapDrafts({});
+      setRotatedQueued(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, settingsOpen, settingsDirty, savingSettings]);
 
   const itemAction = async (id: number, action: "cancel" | "retry") => {
     try {
@@ -754,16 +906,19 @@ export default function QueueModal({
   }, [rotateIds]);
 
   // Active sending accounts (the selected pool, or all identities if none).
+  // Reads the draft while the settings modal is open, so the rotation estimate
+  // below tracks the pool/caps being edited.
+  const capSource = draft ?? settings;
   const activeEmails = useMemo(() => {
-    const pool = settings?.senderPool ?? [];
+    const pool = capSource?.senderPool ?? [];
     return pool.length > 0
       ? pool
       : senders.map((s) => s.email.toLowerCase());
-  }, [settings?.senderPool, senders]);
+  }, [capSource?.senderPool, senders]);
   // The overall day ceiling = sum of each active account's own cap (legacy
   // total when any account is uncapped).
-  const totalDailyCap = settings
-    ? computeTotalDailyCap(settings, activeEmails)
+  const totalDailyCap = capSource
+    ? computeTotalDailyCap(capSource, activeEmails)
     : 0;
 
   const selectedRotate = openers.filter((o) => rotateIds.includes(o.id));
@@ -800,6 +955,7 @@ export default function QueueModal({
       });
       const data = (await res.json()) as { ok?: boolean; updated?: number };
       if (res.ok && data.ok) {
+        setRotatedQueued(true);
         toast.success(`Rotated openers across ${data.updated ?? 0} queued item(s).`);
       } else {
         toast.error("Could not rotate openers.");
@@ -1011,7 +1167,7 @@ export default function QueueModal({
         {settings && (
           <button
             type="button"
-            onClick={() => setSettingsOpen(true)}
+            onClick={openSettings}
             className="flex w-full items-center gap-2 border-b border-white/10 px-5 py-2 text-left text-xs text-slate-300 transition hover:bg-white/[0.03]"
           >
             <GearIcon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
@@ -1024,11 +1180,11 @@ export default function QueueModal({
             </span>
           </button>
         )}
-        {settings && settingsOpen && (
+        {draft && settingsOpen && (
           <div
             className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"
             onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setSettingsOpen(false);
+              if (e.target === e.currentTarget) discardSettings();
             }}
           >
             <div className="glass slide-in flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
@@ -1039,10 +1195,10 @@ export default function QueueModal({
                 </h3>
                 <button
                   type="button"
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={discardSettings}
                   className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"
-                  title="Close"
-                  aria-label="Close"
+                  title="Discard changes and close"
+                  aria-label="Discard changes and close"
                 >
                   <CloseIcon className="h-4 w-4" />
                 </button>
@@ -1056,9 +1212,9 @@ export default function QueueModal({
                   Start sending at
                   <input
                     type="datetime-local"
-                    value={toLocalInput(settings.startAt)}
+                    value={toLocalInput(draft.startAt)}
                     onChange={(e) =>
-                      void patchSettings({ startAt: fromLocalInput(e.target.value) })
+                      editDraft({ startAt: fromLocalInput(e.target.value) })
                     }
                     className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                   />
@@ -1069,24 +1225,24 @@ export default function QueueModal({
                 <label className="text-[11px] text-slate-400">
                   Window start
                   <TimeSelect
-                    value={settings.windowStart}
-                    onChange={(v) => void patchSettings({ windowStart: v })}
+                    value={draft.windowStart}
+                    onChange={(v) => editDraft({ windowStart: v })}
                   />
                 </label>
                 <label className="text-[11px] text-slate-400">
                   Window end
                   <TimeSelect
-                    value={settings.windowEnd}
-                    onChange={(v) => void patchSettings({ windowEnd: v })}
+                    value={draft.windowEnd}
+                    onChange={(v) => editDraft({ windowEnd: v })}
                   />
                 </label>
                 <label className="col-span-2 flex flex-col text-[11px] text-slate-300 sm:col-span-4">
                   <span className="flex items-center gap-2">
                     <input
                       type="checkbox"
-                      checked={settings.localTimeSend}
+                      checked={draft.localTimeSend}
                       onChange={(e) =>
-                        void patchSettings({ localTimeSend: e.target.checked })
+                        editDraft({ localTimeSend: e.target.checked })
                       }
                       className="accent-cyan-500"
                     />
@@ -1096,20 +1252,20 @@ export default function QueueModal({
                     Uses their resolved timezone; unknown ones use the window above.
                   </span>
                 </label>
-                {settings.localTimeSend && (
+                {draft.localTimeSend && (
                   <>
                     <label className="col-span-2 text-[11px] text-slate-400">
                       Recipient local start
                       <TimeSelect
-                        value={settings.localStart}
-                        onChange={(v) => void patchSettings({ localStart: v })}
+                        value={draft.localStart}
+                        onChange={(v) => editDraft({ localStart: v })}
                       />
                     </label>
                     <label className="col-span-2 text-[11px] text-slate-400">
                       Recipient local end
                       <TimeSelect
-                        value={settings.localEnd}
-                        onChange={(v) => void patchSettings({ localEnd: v })}
+                        value={draft.localEnd}
+                        onChange={(v) => editDraft({ localEnd: v })}
                       />
                     </label>
                   </>
@@ -1130,14 +1286,14 @@ export default function QueueModal({
                       step={intervalUnit === "min" ? 0.5 : 5}
                       value={
                         intervalUnit === "min"
-                          ? Math.round((settings.intervalSec / 60) * 100) / 100
-                          : settings.intervalSec
+                          ? Math.round((draft.intervalSec / 60) * 100) / 100
+                          : draft.intervalSec
                       }
                       onChange={(e) => {
                         const n = Number(e.target.value);
                         const sec =
                           intervalUnit === "min" ? Math.round(n * 60) : Math.round(n);
-                        void patchSettings({ intervalSec: sec });
+                        editDraft({ intervalSec: sec });
                       }}
                       className="min-w-0 flex-1 rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                     />
@@ -1153,7 +1309,7 @@ export default function QueueModal({
                     </select>
                   </div>
                   <span className="mt-0.5 block text-[10px] text-slate-600">
-                    = {settings.intervalSec}s between each send
+                    = {draft.intervalSec}s between each send
                   </span>
                 </label>
                 <label className="text-[11px] text-slate-400">
@@ -1161,9 +1317,9 @@ export default function QueueModal({
                   <input
                     type="number"
                     min={0}
-                    value={settings.jitterSec}
+                    value={draft.jitterSec}
                     onChange={(e) =>
-                      void patchSettings({ jitterSec: Number(e.target.value) })
+                      editDraft({ jitterSec: Number(e.target.value) })
                     }
                     className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                   />
@@ -1173,9 +1329,9 @@ export default function QueueModal({
                   <input
                     type="number"
                     min={1}
-                    value={settings.fuDelayMin}
+                    value={draft.fuDelayMin}
                     onChange={(e) =>
-                      void patchSettings({ fuDelayMin: Number(e.target.value) })
+                      editDraft({ fuDelayMin: Number(e.target.value) })
                     }
                     className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                   />
@@ -1199,27 +1355,25 @@ export default function QueueModal({
                 <label className="flex items-center gap-2 text-[11px] text-slate-300">
                   <input
                     type="checkbox"
-                    checked={settings.bumpEnabled}
-                    onChange={(e) =>
-                      void patchSettings({ bumpEnabled: e.target.checked })
-                    }
+                    checked={draft.bumpEnabled}
+                    onChange={(e) => editDraft({ bumpEnabled: e.target.checked })}
                     className="accent-cyan-500"
                   />
                   Send a link‑free bump to non‑repliers
                 </label>
-                {settings.bumpEnabled && (
+                {draft.bumpEnabled && (
                   <label className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                     after
                     <input
                       type="number"
                       min={1}
-                      value={settings.bumpAfterDays}
+                      value={draft.bumpAfterDays}
                       onChange={(e) =>
-                        void patchSettings({ bumpAfterDays: Number(e.target.value) })
+                        editDraft({ bumpAfterDays: Number(e.target.value) })
                       }
                       className="w-16 rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
                     />
-                    day{settings.bumpAfterDays === 1 ? "" : "s"} · rotates 30 bump
+                    day{draft.bumpAfterDays === 1 ? "" : "s"} · rotates 30 bump
                     templates
                   </label>
                 )}
@@ -1231,9 +1385,9 @@ export default function QueueModal({
               <div className="mb-2 flex items-baseline justify-between gap-2">
                 <SectionHead>Sending accounts</SectionHead>
                 <span className="text-[10px] text-slate-600">
-                  {(settings.senderPool?.length ?? 0) === 0
+                  {(draft.senderPool?.length ?? 0) === 0
                     ? "all accounts eligible"
-                    : `${settings.senderPool.length} selected — openers use only these`}
+                    : `${draft.senderPool.length} selected — openers use only these`}
                 </span>
               </div>
               <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
@@ -1245,26 +1399,27 @@ export default function QueueModal({
                   <div className="space-y-1">
                     {senders.map((id) => {
                       const email = id.email.toLowerCase();
-                      const pool = settings.senderPool ?? [];
+                      const pool = draft.senderPool ?? [];
                       const inPool = pool.includes(email);
                       const used = status?.sentBySender?.[email];
-                      const cap =
-                        status?.capBySender?.[email] ??
-                        effCapFor(settings, email);
+                      // While editing, show the cap being edited rather than
+                      // the one the worker is currently running with.
+                      const cap = effCapFor(draft, email);
                       const block = blockByEmail.get(email);
                       const commitCap = () => {
-                        const draft = capDrafts[email];
-                        if (draft === undefined) return;
+                        const raw = capDrafts[email];
+                        if (raw === undefined) return;
                         setCapDrafts((d) => {
                           const n = { ...d };
                           delete n[email];
                           return n;
                         });
-                        const v = Math.round(Number(draft));
-                        const next = { ...(settings.senderCaps ?? {}) };
-                        if (Number.isFinite(v) && v > 0) next[email] = v;
+                        const v = Math.round(Number(raw));
+                        const next = { ...(draft.senderCaps ?? {}) };
+                        if (raw.trim() !== "" && Number.isFinite(v) && v > 0)
+                          next[email] = v;
                         else delete next[email];
-                        void patchSettings({ senderCaps: next });
+                        editDraft({ senderCaps: next });
                       };
                       return (
                         <label
@@ -1278,7 +1433,7 @@ export default function QueueModal({
                               const next = inPool
                                 ? pool.filter((x) => x !== email)
                                 : [...pool, email];
-                              void patchSettings({ senderPool: next });
+                              editDraft({ senderPool: next });
                             }}
                             className="accent-cyan-500"
                           />
@@ -1316,7 +1471,7 @@ export default function QueueModal({
                               min={0}
                               value={
                                 capDrafts[email] ??
-                                (settings.senderCaps?.[email] || "")
+                                (draft.senderCaps?.[email] || "")
                               }
                               placeholder="∞"
                               onChange={(e) =>
@@ -1349,9 +1504,9 @@ export default function QueueModal({
                     <span className="flex items-center gap-2 text-slate-300">
                       <input
                         type="checkbox"
-                        checked={settings.rotateSenders}
+                        checked={draft.rotateSenders}
                         onChange={(e) =>
-                          void patchSettings({ rotateSenders: e.target.checked })
+                          editDraft({ rotateSenders: e.target.checked })
                         }
                         className="accent-cyan-500"
                       />
@@ -1371,7 +1526,8 @@ export default function QueueModal({
                 <SectionHead>Opener rotation</SectionHead>
                 <span className="text-[10px] text-slate-600">
                   rewrites the {num("queued")} queued item
-                  {num("queued") === 1 ? "" : "s"} in place · keeps follow-ups
+                  {num("queued") === 1 ? "" : "s"} in place · keeps follow-ups ·
+                  applies on click, not on OK
                 </span>
               </div>
               <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
@@ -1452,6 +1608,33 @@ export default function QueueModal({
                 )}
               </div>
             </div>
+              </div>
+              {/* OK applies every setting above in one PATCH. The one exception
+                  is "Rotate queued", which rewrites queue items on click. */}
+              <div className="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-3">
+                <span className="mr-auto text-[11px] text-slate-500">
+                  {settingsDirty
+                    ? "Unsaved changes — click OK to apply."
+                    : rotatedQueued
+                      ? "Openers already rotated. No other changes."
+                      : "No changes."}
+                </span>
+                <button
+                  type="button"
+                  onClick={discardSettings}
+                  disabled={savingSettings}
+                  className="rounded-full border border-white/10 px-4 py-1.5 text-xs text-slate-400 transition hover:border-white/25 hover:text-white disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void applySettings()}
+                  disabled={savingSettings}
+                  className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-6 py-1.5 text-xs font-medium text-cyan-100 transition hover:border-cyan-300/70 hover:bg-cyan-500/25 disabled:opacity-40"
+                >
+                  {savingSettings ? "Applying…" : "OK"}
+                </button>
               </div>
             </div>
           </div>
