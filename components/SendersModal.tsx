@@ -545,8 +545,11 @@ export default function SendersModal({
                         <AccountAvatar name={id.name} email={id.email} />
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
-                          <div className="flex items-center gap-2">
-                            <span className="truncate font-mono text-[11px] text-slate-400">{id.email}</span>
+                          {/* Wraps: the badges refuse to shrink, so on a narrow
+                              row (two badges at once) they would otherwise
+                              overflow this column and paint over the buttons. */}
+                          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="max-w-full truncate font-mono text-[11px] text-slate-400">{id.email}</span>
                             <HealthBadge health={hp} checking={checking === id.email} />
                             {block && (
                               // No time shown: this modal polls slowly, so a
