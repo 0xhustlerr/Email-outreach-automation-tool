@@ -1,12 +1,20 @@
 // Storage for two-step send sequences (opener + optional threaded follow-up).
 // Used by both lanes:
 //   - 'send'  : opener already sent synchronously by /api/send; this records
-//               the sequence and schedules the follow-up.
-//   - 'queue' : opener pending; the worker drips it, then the follow-up fires.
+//               the sequence and holds the follow-up.
+//   - 'queue' : opener pending; the worker drips it, then holds the follow-up.
+// The follow-up (the pitch) is REPLY-TRIGGERED in both lanes — see
+// claimRepliedFollowup — so nothing here schedules it by clock.
 // Also the source of truth for the History status ticks.
 
 import { db } from "./db";
 import { resolveLocation } from "./country";
+
+// Legacy follow-up delay, in minutes. The timed pitch was retired (the worker
+// never imports claimDueFollowup), and with it the user-facing delay controls.
+// It survives only to give the NOT NULL fu_delay_min column and the
+// fu_send_after stamp a stable value; no sender consults either.
+const FU_DELAY_MIN_LEGACY = 30;
 
 export type StepStatus =
   | "pending"
@@ -137,7 +145,10 @@ export type SequenceInput = {
   country?: string;
   opSubject: string;
   opBody: string;
-  followUp?: { subject: string; body: string; delayMin: number };
+  // No delayMin: the pitch is reply-triggered. fu_delay_min keeps its legacy
+  // 30-minute default (see FU_DELAY_MIN_LEGACY) purely to stamp fu_send_after,
+  // which nothing reads any more.
+  followUp?: { subject: string; body: string };
   // Location signals for scheduling: the author's commit UTC offset (minutes)
   // and any discovered phones. Combined with `country`/location by the resolver.
   commitOffsetMin?: number | null;
@@ -183,7 +194,7 @@ export function recordSentSequence(
   const now = new Date().toISOString();
   const hasFollow = !!input.followUp;
   const fuSendAfter = hasFollow
-    ? new Date(Date.now() + (input.followUp!.delayMin || 30) * 60_000).toISOString()
+    ? new Date(Date.now() + FU_DELAY_MIN_LEGACY * 60_000).toISOString()
     : null;
   const loc = resolveSeqLocation(input);
   const info = insertStmt().run({
@@ -209,7 +220,7 @@ export function recordSentSequence(
     hasFollow: hasFollow ? 1 : 0,
     fuSubject: input.followUp?.subject ?? "",
     fuBody: input.followUp?.body ?? "",
-    fuDelayMin: input.followUp?.delayMin ?? 30,
+    fuDelayMin: FU_DELAY_MIN_LEGACY,
     fuStatus: hasFollow ? "scheduled" : "skipped",
     fuSendAfter,
     createdAt: now,
@@ -265,7 +276,7 @@ export function enqueueSequence(
     hasFollow: hasFollow ? 1 : 0,
     fuSubject: input.followUp?.subject ?? "",
     fuBody: input.followUp?.body ?? "",
-    fuDelayMin: input.followUp?.delayMin ?? 30,
+    fuDelayMin: FU_DELAY_MIN_LEGACY,
     fuStatus: hasFollow ? "waiting" : "skipped",
     fuSendAfter: null,
     createdAt: now,
@@ -486,7 +497,9 @@ export function markOpenerSent(
   if (!seq) return;
   const now = new Date().toISOString();
   const fuSendAfter = seq.hasFollow
-    ? new Date(Date.now() + (seq.fuDelayMin || 30) * 60_000).toISOString()
+    ? new Date(
+        Date.now() + (seq.fuDelayMin || FU_DELAY_MIN_LEGACY) * 60_000,
+      ).toISOString()
     : null;
   // Persist the account the opener actually went out from so the threaded
   // follow-up replies from the SAME address (critical when the sender was

@@ -23,8 +23,8 @@ type Body = {
   commitOffsetMin?: number | null;
   phones?: string[];
   // Optional follow-up (message 2). When present, the opener is sent now and
-  // the follow-up is scheduled as a threaded reply after `delayMin`.
-  followUp?: { subject?: string; body?: string; delayMin?: number };
+  // the follow-up is held as a threaded reply until the contact answers.
+  followUp?: { subject?: string; body?: string };
 };
 
 export async function POST(req: Request) {
@@ -92,11 +92,7 @@ export async function POST(req: Request) {
     opBody: parsed.body ?? "",
     opMessageId: result.messageId,
     followUp: hasFollow
-      ? {
-          subject: (fu!.subject ?? "").trim(),
-          body: fu!.body ?? "",
-          delayMin: Number(fu!.delayMin) > 0 ? Number(fu!.delayMin) : 30,
-        }
+      ? { subject: (fu!.subject ?? "").trim(), body: fu!.body ?? "" }
       : undefined,
   });
 

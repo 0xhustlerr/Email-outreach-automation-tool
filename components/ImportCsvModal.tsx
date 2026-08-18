@@ -30,7 +30,6 @@ type RowResult = {
 // values that shape what this modal shows and sends.
 type QueueSettings = {
   dailyCap: number;
-  fuDelayMin: number;
   enabled: boolean;
 };
 
@@ -207,13 +206,7 @@ export default function ImportCsvModal({
         body: JSON.stringify({
           rows,
           openers: selected.map((o) => ({ subject: o.subject, body: o.body })),
-          followUp: fu
-            ? {
-                subject: fu.subject,
-                body: fu.body,
-                delayMin: settings?.fuDelayMin,
-              }
-            : undefined,
+          followUp: fu ? { subject: fu.subject, body: fu.body } : undefined,
         }),
       });
       if (!res.ok || !res.body) {

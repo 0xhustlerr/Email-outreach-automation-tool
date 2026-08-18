@@ -56,7 +56,7 @@ type Body = {
   /** One opener, or several to rotate round-robin across the leads. */
   opener?: { subject?: string; body?: string };
   openers?: { subject?: string; body?: string }[];
-  followUp?: { subject?: string; body?: string; delayMin?: number };
+  followUp?: { subject?: string; body?: string };
   /** '' (default) lets the queue worker rotate senders. */
   fromEmail?: string;
 };
@@ -154,10 +154,6 @@ export async function POST(req: Request) {
   const fuBody = body.followUp?.body ?? "";
   const hasFollow = !!fuBody.trim();
   const fuSubject = (body.followUp?.subject ?? "").trim();
-  const delayMin =
-    Number(body.followUp?.delayMin) > 0
-      ? Number(body.followUp!.delayMin)
-      : settings.fuDelayMin;
   const fromEmail = (body.fromEmail ?? "").trim();
 
   const encoder = new TextEncoder();
@@ -232,7 +228,6 @@ export async function POST(req: Request) {
                 ? {
                     subject: substitute(fuSubject, vars),
                     body: substitute(fuBody, vars),
-                    delayMin,
                   }
                 : undefined,
             },

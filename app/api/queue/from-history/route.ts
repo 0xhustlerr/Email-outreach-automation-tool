@@ -64,7 +64,7 @@ export async function POST(req: Request) {
     // one template's text is sent too many times a day (spam-fingerprint guard).
     opener?: { subject?: string; body?: string };
     openers?: { subject?: string; body?: string }[];
-    followUp?: { body?: string; delayMin?: number };
+    followUp?: { body?: string };
   };
   try {
     body = (await req.json()) as typeof body;
@@ -95,10 +95,6 @@ export async function POST(req: Request) {
   const settings = getSettings();
   const fuBody = body.followUp?.body ?? "";
   const hasFollow = !!fuBody.trim();
-  const delayMin =
-    Number(body.followUp?.delayMin) > 0
-      ? Number(body.followUp!.delayMin)
-      : settings.fuDelayMin;
 
   const candidates: HistoryCandidate[] = pickCandidates(body);
   if (candidates.length === 0) {
@@ -131,7 +127,7 @@ export async function POST(req: Request) {
         opSubject: substitute(op.subject, vars),
         opBody: substitute(op.body, vars),
         followUp: hasFollow
-          ? { subject: "", body: substitute(fuBody, vars), delayMin }
+          ? { subject: "", body: substitute(fuBody, vars) }
           : undefined,
       },
       settings.startAt,

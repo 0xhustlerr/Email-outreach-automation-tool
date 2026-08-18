@@ -2531,7 +2531,6 @@ function SendModal({
   );
   const [fuSubject, setFuSubject] = useState(() => followups[0]?.subject ?? "");
   const [fuBody, setFuBody] = useState(() => followups[0]?.body ?? "");
-  const [fuDelayMin, setFuDelayMin] = useState(30);
   const [showFollowEditor, setShowFollowEditor] = useState(false);
 
   // Auto-rotate opener: when on, each time the Send window opens it advances to
@@ -2717,11 +2716,11 @@ function SendModal({
   const hasFollow = mode === "twostep" && fuId !== "" && !!fuBody.trim();
   const renderedFuSubject = substitute(fuSubject, previewVars);
   const renderedFuBody = substitute(fuBody, previewVars);
+  // No delay: the pitch is reply-triggered, so there is no timer to set.
   const followUpPayload = hasFollow
     ? {
         subject: substitute(fuSubject, storeVars),
         body: substitute(fuBody, storeVars),
-        delayMin: fuDelayMin,
       }
     : undefined;
 
@@ -2783,7 +2782,7 @@ function SendModal({
       setResult({
         ok: true,
         message: data.followUpScheduled
-          ? `Opener sent. Follow-up in ${fuDelayMin} min. Closing…`
+          ? `Opener sent. The pitch goes out when they reply. Closing…`
           : `Email sent successfully. Closing in 3s…`,
       });
       onSent?.(recipientEmail, cleanUrl);
@@ -3176,20 +3175,8 @@ function SendModal({
                 Message 2 · Follow-up
               </p>
               <span className="text-[11px] text-slate-500">
-                sent as a reply after
+                sent as a reply when they answer
               </span>
-              <select
-                value={fuDelayMin}
-                onChange={(e) => setFuDelayMin(Number(e.target.value))}
-                disabled={fuId === ""}
-                className="rounded-md border border-white/10 bg-slate-950 px-2 py-0.5 text-xs text-slate-200 outline-none focus:border-indigo-400/40 disabled:opacity-40"
-              >
-                <option value={15}>15 min</option>
-                <option value={30}>30 min</option>
-                <option value={60}>60 min</option>
-                <option value={120}>2 hours</option>
-                <option value={1440}>Next day</option>
-              </select>
             </div>
             <select
               value={fuId}

@@ -33,7 +33,10 @@ export type QueueSettings = {
   dailyCap: number; // by distinct recipient address, not email count
   rotateSenders: boolean;
   startAt: string | null; // ISO — queue kickoff; null = start when enabled
-  fuDelayMin: number; // default follow-up delay for queue-lane sequences
+  // Retired default follow-up delay. The pitch is reply-triggered, so no delay
+  // is read any more and the setting is gone from the UI. Kept like
+  // perSenderCap below: the column/row and old clients keep working.
+  fuDelayMin: number;
   localTimeSend: boolean; // send by the recipient's local time
   localStart: string; // recipient-local window "HH:MM"
   localEnd: string;

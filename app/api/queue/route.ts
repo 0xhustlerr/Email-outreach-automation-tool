@@ -51,7 +51,7 @@ export async function POST(req: Request) {
       phones?: string[];
       subject?: string; // opener
       body?: string; // opener
-      followUp?: { subject?: string; body?: string; delayMin?: number };
+      followUp?: { subject?: string; body?: string };
     }[];
   };
   try {
@@ -94,12 +94,7 @@ export async function POST(req: Request) {
         opSubject: subject.trim(),
         opBody: bodyText,
         followUp: hasFollow
-          ? {
-              subject: (fu!.subject ?? "").trim(),
-              body: fu!.body ?? "",
-              delayMin:
-                Number(fu!.delayMin) > 0 ? Number(fu!.delayMin) : settings.fuDelayMin,
-            }
+          ? { subject: (fu!.subject ?? "").trim(), body: fu!.body ?? "" }
           : undefined,
       },
       settings.startAt,
