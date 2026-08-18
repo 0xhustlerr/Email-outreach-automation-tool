@@ -321,7 +321,11 @@ export function claimNextQueuedOpener(
       .all(nowIso, eligible ? CLAIM_SCAN : 1) as Row[];
     for (const row of rows) {
       if (eligible && !eligible(toSeq(row))) continue;
-      db.prepare(`UPDATE sequences SET op_status = 'sending' WHERE id = ?`).run(row.id);
+      // claimed_at is the marker crash recovery reads to decide whether a send
+      // that was in flight actually made it out — see recoverInterruptedSequences.
+      db.prepare(
+        `UPDATE sequences SET op_status = 'sending', claimed_at = ? WHERE id = ?`,
+      ).run(new Date().toISOString(), row.id);
       return row;
     }
     return null;
@@ -371,7 +375,9 @@ export function claimDueFollowup(
       .all(nowIso, eligible ? CLAIM_SCAN : 1) as Row[];
     for (const row of rows) {
       if (eligible && !eligible(toSeq(row))) continue;
-      db.prepare(`UPDATE sequences SET fu_status = 'sending' WHERE id = ?`).run(row.id);
+      db.prepare(
+        `UPDATE sequences SET fu_status = 'sending', claimed_at = ? WHERE id = ?`,
+      ).run(new Date().toISOString(), row.id);
       return row;
     }
     return null;
@@ -405,7 +411,9 @@ export function claimRepliedFollowup(
       .all(cutoff, eligible ? CLAIM_SCAN : 1) as Row[];
     for (const row of rows) {
       if (eligible && !eligible(toSeq(row))) continue;
-      db.prepare(`UPDATE sequences SET fu_status = 'sending' WHERE id = ?`).run(row.id);
+      db.prepare(
+        `UPDATE sequences SET fu_status = 'sending', claimed_at = ? WHERE id = ?`,
+      ).run(new Date().toISOString(), row.id);
       return row;
     }
     return null;
@@ -598,15 +606,91 @@ export function backfillSequenceLocations(): number {
   return run();
 }
 
-/** Crash recovery on boot. */
-export function resetStuckSequences(): number {
-  const a = db
-    .prepare(`UPDATE sequences SET op_status = 'pending' WHERE op_status = 'sending'`)
-    .run().changes;
-  const b = db
-    .prepare(`UPDATE sequences SET fu_status = 'scheduled' WHERE fu_status = 'sending'`)
-    .run().changes;
-  return a + b;
+/** Crash recovery on boot: re-queue what never went out, close out what did.
+ *
+ *  A step left at 'sending' means the process died mid-flight — but "mid-flight"
+ *  covers two very different cases. Sending and recording are separate writes
+ *  (performSend logs to send_log, then the worker calls markOpenerSent), so a
+ *  kill in between leaves a row that LOOKS unsent while the prospect already has
+ *  the email. Blindly re-queueing those is how a force-restart sends the same
+ *  cold opener twice.
+ *
+ *  So each stuck step is checked against send_log for a delivery stamped at or
+ *  after its claim: found -> the message went out, close the step out as sent;
+ *  not found -> it never left, put it back. claimed_at is what makes this safe.
+ *  A bare "has this contact ever been emailed" test would wrongly close out
+ *  re-engage campaigns, which deliberately enqueue with allowResend against an
+ *  existing send_log row.
+ *
+ *  A recovered opener has no op_message_id, so its follow-up replies as a fresh
+ *  email instead of threading into the original — the accepted cost of never
+ *  double-emailing a prospect.
+ */
+export function recoverInterruptedSequences(): { requeued: number; delivered: number } {
+  // LIKE '%addr%' matches how every other send_log lookup in this file joins;
+  // the contact column can hold more than the bare address.
+  const deliveredSince = db.prepare(
+    `SELECT 1 FROM send_log
+     WHERE lower(contact) LIKE '%' || lower(?) || '%' AND date >= ?
+     LIMIT 1`,
+  );
+  const stuck = db
+    .prepare(
+      `SELECT id, to_email, has_follow, op_status, fu_status, claimed_at
+       FROM sequences WHERE op_status = 'sending' OR fu_status = 'sending'`,
+    )
+    .all() as {
+    id: number;
+    to_email: string;
+    has_follow: number;
+    op_status: string;
+    fu_status: string;
+    claimed_at: string;
+  }[];
+
+  const run = db.transaction(() => {
+    let requeued = 0;
+    let delivered = 0;
+    for (const row of stuck) {
+      // No claim stamp (row claimed by a build from before this column existed)
+      // → fall back to the old behaviour rather than guess it was delivered.
+      const wentOut =
+        !!row.claimed_at &&
+        !!deliveredSince.get(row.to_email, row.claimed_at);
+      if (row.op_status === "sending") {
+        if (wentOut) {
+          db.prepare(
+            `UPDATE sequences SET
+               op_status = 'sent', op_sent_at = COALESCE(op_sent_at, ?),
+               fu_status = CASE WHEN has_follow = 1 THEN 'scheduled' ELSE 'skipped' END,
+               last_error = ''
+             WHERE id = ?`,
+          ).run(row.claimed_at, row.id);
+          delivered++;
+        } else {
+          db.prepare(
+            `UPDATE sequences SET op_status = 'pending' WHERE id = ?`,
+          ).run(row.id);
+          requeued++;
+        }
+        continue;
+      }
+      // fu_status === 'sending'
+      if (wentOut) {
+        db.prepare(
+          `UPDATE sequences SET fu_status = 'sent', fu_sent_at = COALESCE(fu_sent_at, ?), last_error = '' WHERE id = ?`,
+        ).run(row.claimed_at, row.id);
+        delivered++;
+      } else {
+        db.prepare(
+          `UPDATE sequences SET fu_status = 'scheduled' WHERE id = ?`,
+        ).run(row.id);
+        requeued++;
+      }
+    }
+    return { requeued, delivered };
+  });
+  return run();
 }
 
 /** Distinct recipient addresses emailed today (local day) — the daily cap is

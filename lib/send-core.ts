@@ -2,7 +2,7 @@
 // background queue worker, so a queued send is logged identically to a manual
 // one (send_log + Google Sheet).
 
-import { listIdentities, sendMail } from "./mail";
+import { isSmtpUnreachable, listIdentities, sendMail } from "./mail";
 import { deriveSite, logSendToSheet } from "./sheets";
 import { logSendToDb } from "./db";
 import { isTrackingEnabled, newTrackToken, pixelUrl } from "./tracking";
@@ -40,6 +40,12 @@ export type SendResult =
        *  back instead of counting an attempt against it. */
       blockKind?: BounceKind;
       statusCode?: string;
+      /** The send never reached Gmail at all — DNS, connect or socket failure.
+       *  Like "policy" this is not the contact's fault, so callers must put the
+       *  item back untouched rather than count an attempt: three connection
+       *  drops would otherwise mark three prospects permanently failed (and
+       *  cancel their follow-ups) for a fault that was entirely our end. */
+      transient?: boolean;
     };
 
 export function isValidEmail(s: string): boolean {
@@ -129,6 +135,15 @@ export async function performSend(ctx: SendContext): Promise<SendResult> {
     // system has detected ..."); `.message` is a prefixed form of the same.
     const raw =
       (err as { response?: string })?.response?.trim() || message;
+    // A link failure produces no SMTP response at all, so classifyBounceText
+    // can only ever call it "other" — check it first and keep it out of the
+    // bounce logic entirely. Notably this must SKIP pauseSender: standing an
+    // account down for the rest of the day because the Wi-Fi blinked would
+    // cost far more than the one send that failed.
+    const transient = isSmtpUnreachable(raw) || isSmtpUnreachable(message);
+    if (transient) {
+      return { ok: false, error: message, status: 503, transient: true };
+    }
     const verdict = classifyBounceText(raw);
     if (verdict.kind === "policy") {
       // Gmail rejected us on reputation/rate. Stand this account down for the

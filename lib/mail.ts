@@ -76,6 +76,15 @@ export function clearTransportCache(): void {
   transportCache.clear();
 }
 
+/** Forget everything we learned about the network: resolved SMTP IPs and the
+ *  transports pinned to them. Called when the queue worker decides the box is
+ *  offline, so the first send after the link returns re-resolves instead of
+ *  retrying an address that went stale while we were down. */
+export function resetSmtpNetworkCaches(): void {
+  dnsCache.clear();
+  clearTransportCache();
+}
+
 export type SmtpConfig = {
   host: string;
   port: number;
@@ -102,6 +111,11 @@ const DOH_ENDPOINTS = [
 ];
 const DOH_TIMEOUT_MS = 4_000;
 const DNS_TTL_MS = 10 * 60 * 1000;
+// Failed lookups expire far sooner than successful ones. A lookup that failed
+// because the link was down would otherwise pin us to system DNS for the full
+// TTL after the connection came back — and system DNS is exactly what the DoH
+// path exists to route around, so every send in that window keeps failing.
+const DNS_FAIL_TTL_MS = 30_000;
 
 // host -> resolved IP. `ip: null` records a failed lookup so an unreachable
 // DoH endpoint (offline box, internal SMTP host) costs one timeout per TTL,
@@ -142,7 +156,10 @@ async function resolveSmtpHost(host: string): Promise<string | null> {
   const cached = dnsCache.get(host);
   if (cached && cached.expires > Date.now()) return cached.ip;
   const ip = await dohResolve4(host);
-  dnsCache.set(host, { ip, expires: Date.now() + DNS_TTL_MS });
+  dnsCache.set(host, {
+    ip,
+    expires: Date.now() + (ip ? DNS_TTL_MS : DNS_FAIL_TTL_MS),
+  });
   return ip;
 }
 
@@ -191,9 +208,15 @@ export async function verifySmtp(cfg: SmtpConfig): Promise<{
 /** True when the SMTP server never answered at all, as opposed to answering and
  *  rejecting the login. Connection-level failures say nothing about whether the
  *  credentials are right — typically a blocked outbound port (common on VPS
- *  hosts and locked-down networks) or a transient network blip. */
+ *  hosts and locked-down networks) or a transient network blip.
+ *
+ *  This is also THE definition of "transient" for the send path: send-core tags
+ *  a failure with it, and the queue worker uses that tag to put the item back
+ *  untouched instead of burning one of its three attempts. Anything matched
+ *  here must therefore be a fault of the LINK, never of the recipient — an
+ *  address-level rejection matched by mistake would retry forever. */
 export function isSmtpUnreachable(error: string): boolean {
-  return /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ESOCKET|EDNS|ENETUNREACH|EHOSTUNREACH|greeting never received|connection timeout/i.test(
+  return /ETIMEDOUT|ETIMEOUT|ECONNREFUSED|ECONNRESET|ECONNABORTED|ESOCKET|EDNS|EAI_AGAIN|EAI_FAIL|ENOTFOUND|ENETUNREACH|ENETDOWN|EHOSTUNREACH|EPIPE|greeting never received|connection timeout|socket close|connection closed|network is unreachable/i.test(
     error,
   );
 }
@@ -328,7 +351,20 @@ async function transportFor(id: MailIdentityFull): Promise<Transporter> {
   const key = `${options.host}:${cfg.port}:${cfg.user}`;
   let t = transportCache.get(key);
   if (!t) {
-    t = nodemailer.createTransport(options);
+    // Bounded like verifySmtp — the send path went without timeouts for a long
+    // time, which meant nodemailer's 10-MINUTE socketTimeout default applied.
+    // A connection that drops mid-send leaves a half-open socket, and because
+    // the queue worker awaits performSend inline, that one socket froze the
+    // whole drip (openers, follow-ups and bumps) until the default expired.
+    // Looser than the verify probe because this call is carrying a real
+    // message: aborting a send Gmail already accepted would duplicate it, so
+    // the socket budget stays generous while still failing in under a minute.
+    t = nodemailer.createTransport({
+      ...options,
+      connectionTimeout: 15_000,
+      greetingTimeout: 15_000,
+      socketTimeout: 45_000,
+    });
     transportCache.set(key, t);
   }
   return t;

@@ -394,6 +394,18 @@ function ensureSchema(db: Database.Database): void {
   if (!seqCols.includes("cc_email")) {
     db.exec(`ALTER TABLE sequences ADD COLUMN cc_email TEXT NOT NULL DEFAULT ''`);
   }
+  // When the worker claimed the step that is currently in flight (ISO). Crash
+  // recovery compares it against send_log to tell "we died before the send"
+  // from "we died after Gmail accepted it" — without that, an interrupted send
+  // is re-queued and the prospect gets the same email twice. One column serves
+  // the opener and follow-up lanes both, since only one of them is ever in
+  // flight (fu_status only reaches 'scheduled' once the opener is 'sent').
+  // NOT the bump lane: a bump has no 'sending' state — bump_sent_at is stamped
+  // as its own claim marker — so a crash mid-bump is still an unrecoverable
+  // lost bump. That errs toward never double-nudging, which is the safe way.
+  if (!seqCols.includes("claimed_at")) {
+    db.exec(`ALTER TABLE sequences ADD COLUMN claimed_at TEXT NOT NULL DEFAULT ''`);
+  }
 
   const contactCols = (
     db.prepare(`PRAGMA table_info(contacts)`).all() as { name: string }[]

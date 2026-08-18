@@ -93,7 +93,18 @@ type QueueStatus = {
   blockedSenders?: SenderBlock[];
   // Every eligible account is blocked — nothing can send until tomorrow.
   allSendersBlocked?: boolean;
+  // The connection dropped: the worker is holding the queue and retrying with
+  // a doubling backoff. Nothing is failed and no attempt is burned meanwhile.
+  offline?: boolean;
+  offlineSince?: string | null;
+  /** Seconds until the worker's next attempt while offline. */
+  retryInSec?: number;
 };
+
+// Live-status poll cadence: healthy, and the ceiling it backs off to while the
+// app server can't be reached.
+const POLL_BASE_MS = 5_000;
+const POLL_MAX_MS = 30_000;
 
 // An account's own daily cap from senderCaps. 0 = unlimited.
 function effCapFor(s: QueueSettings, email: string): number {
@@ -418,6 +429,9 @@ export default function QueueModal({
   const [settings, setSettings] = useState<QueueSettings | null>(null);
   const [status, setStatus] = useState<QueueStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  // The status poll itself couldn't reach the app server — distinct from
+  // status.offline, which is the server telling us IT can't reach Gmail.
+  const [serverDown, setServerDown] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   // Interval input unit — display in seconds or minutes; stored as seconds.
@@ -447,7 +461,7 @@ export default function QueueModal({
   const [rotating, setRotating] = useState(false);
   const rotateInited = useRef(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/queue");
       const data = (await res.json()) as {
@@ -462,16 +476,39 @@ export default function QueueModal({
         setCounts(data.counts ?? {});
         setSettings(data.settings ?? null);
         setStatus(data.status ?? null);
+        setServerDown(false);
+        return true;
       }
+      setServerDown(true);
+      return false;
+    } catch {
+      // This poll had no catch at all, so every failed one left an unhandled
+      // rejection while the modal went on rendering the last good snapshot —
+      // ticking countdown included — as though it were live.
+      setServerDown(true);
+      return false;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Self-rescheduling instead of a fixed interval so a poll that can't get
+  // through backs off (5s → 30s) rather than hammering an unreachable server.
   useEffect(() => {
-    void refresh();
-    const id = window.setInterval(refresh, 5000); // live status while open
-    return () => window.clearInterval(id);
+    let timer = 0;
+    let stopped = false;
+    let delay = POLL_BASE_MS;
+    const tick = async () => {
+      const ok = await refresh();
+      if (stopped) return;
+      delay = ok ? POLL_BASE_MS : Math.min(POLL_MAX_MS, delay * 2);
+      timer = window.setTimeout(() => void tick(), delay);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [refresh]);
 
   // Sync the countdown from the server on each status poll…
@@ -481,13 +518,16 @@ export default function QueueModal({
       status.enabled &&
       !status.capReached &&
       !status.allSendersBlocked &&
+      // Offline: the next send isn't coming on this clock, so don't count to it.
+      !status.offline &&
+      !serverDown &&
       status.nextInSec !== null
     ) {
       setCountdown(status.nextInSec);
     } else {
       setCountdown(null);
     }
-  }, [status]);
+  }, [status, serverDown]);
 
   // ONE display clock drives both the next-send countdown and the per-item
   // ETAs. These were two separate 1s intervals, so every second cost two full
@@ -1279,7 +1319,16 @@ export default function QueueModal({
               </span>
             )}
             <span className="ml-auto tabular-nums">
-              {!status.enabled
+              {/* Connection states come first: while the link is down every
+                  gate below is moot, and a countdown here would be a promise
+                  the worker can't keep. */}
+              {serverDown
+                ? "Not connected to the app server"
+                : status.offline
+                ? `Connection lost — retrying${
+                    status.retryInSec ? ` in ${fmtCountdown(status.retryInSec)}` : ""
+                  } · nothing lost`
+                : !status.enabled
                 ? "Paused"
                 : status.allSendersBlocked
                   ? `Paused — Gmail block · resumes ${resumeAt(blocks[0]?.until ?? "")}`
@@ -1341,10 +1390,27 @@ export default function QueueModal({
           </div>
         )}
 
-        {status?.lastError && (
-          <p className="border-b border-white/10 bg-rose-500/10 px-5 py-2 text-xs text-rose-300">
-            Last error: {status.lastError}
+        {/* While the link is down the last error is just the dropped
+            connection, and a red "Last error" banner reads like something
+            broke. Say what actually happened, and that the queue is intact. */}
+        {status?.offline ? (
+          <p className="border-b border-white/10 bg-amber-500/10 px-5 py-2 text-xs text-amber-200">
+            No connection to Gmail
+            {status.offlineSince
+              ? ` since ${new Date(status.offlineSince).toLocaleTimeString()}`
+              : ""}
+            . The queue is holding — nothing has been failed and no send has been
+            lost. It resumes on its own once the connection is back.
+            {status.lastError ? (
+              <span className="text-amber-200/60"> ({status.lastError})</span>
+            ) : null}
           </p>
+        ) : (
+          status?.lastError && (
+            <p className="border-b border-white/10 bg-rose-500/10 px-5 py-2 text-xs text-rose-300">
+              Last error: {status.lastError}
+            </p>
+          )
         )}
 
         {/* Gmail blocks. Lives here rather than only on the per-account rows

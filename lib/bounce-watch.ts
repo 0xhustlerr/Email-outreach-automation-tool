@@ -20,6 +20,7 @@ import {
 import {
   decodeBase64Url,
   getAccessToken,
+  gmailFetch,
   headerValue,
   parseEmailFromHeader,
   parseGmailAccounts,
@@ -90,7 +91,7 @@ async function listBounceIds(access: string): Promise<string[]> {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
   url.searchParams.set("q", BOUNCE_QUERY);
   url.searchParams.set("maxResults", String(MAX_PER_INBOX));
-  const res = await fetch(url.toString(), {
+  const res = await gmailFetch(url.toString(), {
     headers: { Authorization: `Bearer ${access}` },
   });
   const data = (await res.json()) as ListResponse;
@@ -104,7 +105,7 @@ async function fetchMessage(
   access: string,
   id: string,
 ): Promise<MessageResponse | null> {
-  const res = await fetch(
+  const res = await gmailFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
     { headers: { Authorization: `Bearer ${access}` } },
   );

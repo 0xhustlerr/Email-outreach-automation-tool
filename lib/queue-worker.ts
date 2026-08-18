@@ -11,7 +11,7 @@
 //
 // Started from instrumentation.ts; survives with the tray-kept server.
 
-import { listIdentities } from "./mail";
+import { listIdentities, resetSmtpNetworkCaches } from "./mail";
 import { performSend } from "./send-core";
 import { recordSendEvent } from "./recent-sends";
 import { withinLocalWindow } from "./country";
@@ -33,7 +33,7 @@ import {
   markOpenerFailed,
   markOpenerSent,
   pendingOpenersLastSentBy,
-  resetStuckSequences,
+  recoverInterruptedSequences,
   revertBump,
   revertFollowupToScheduled,
   revertOpenerToPending,
@@ -57,6 +57,12 @@ type WorkerState = {
   lastSender: string; // last account any email actually went out from
   lastError: string;
   lastSentAt: string | null;
+  /** Current offline backoff, 0 when the link is healthy. */
+  netBackoffMs: number;
+  /** When the current outage started, null when healthy. */
+  offlineSince: string | null;
+  /** Epoch ms of the next attempt while offline (drives the UI countdown). */
+  netRetryAt: number;
 };
 
 const globalForWorker = globalThis as unknown as { __queueWorker?: WorkerState };
@@ -69,15 +75,68 @@ const state: WorkerState = globalForWorker.__queueWorker ?? {
   lastSender: "",
   lastError: "",
   lastSentAt: null,
+  netBackoffMs: 0,
+  offlineSince: null,
+  netRetryAt: 0,
 };
 globalForWorker.__queueWorker = state;
 
-state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+// NOTE: neither the generation bump nor `started = false` belongs here. Any
+// route bundle that imports this file (app/api/queue/route.ts pulls in
+// queueWorkerStatus) gets its own copy of the module, and this one SELF-STARTS
+// at the bottom — so resetting either at module scope lets that copy retire the
+// live loop and arm a replacement, which opens with crash recovery and
+// can flip a row the outgoing loop is still mid-performSend on back to
+// 'pending', sending it twice. Same fix as the reply-sync and bounce-watch
+// loops, which can additionally clear `started` here only because they do not
+// self-start. The cost is that a dev edit to THIS file needs a server restart
+// rather than an HMR reload to take effect.
 state.bumpIndex = Number.isFinite(state.bumpIndex) ? state.bumpIndex : 0;
-state.started = false;
-const MY_GEN = state.gen;
+state.netBackoffMs = Number.isFinite(state.netBackoffMs) ? state.netBackoffMs : 0;
+state.netRetryAt = Number.isFinite(state.netRetryAt) ? state.netRetryAt : 0;
+state.offlineSince = state.offlineSince ?? null;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// --- Offline backoff ---------------------------------------------------------
+// A dropped connection is a fault of the LINK, not of the contact being mailed,
+// so a transient send failure marks nothing failed and burns no attempt: the
+// step goes straight back to its queued state and the whole loop waits. Same
+// doubling shape as reply-sync-loop / bounce-watch so every background loop
+// behaves alike on a bad connection.
+const NET_BACKOFF_MIN_MS = 15_000;
+const NET_BACKOFF_MAX_MS = 300_000;
+// How far past a missed retry deadline the outage is considered over. Must
+// comfortably exceed one send attempt's worst case (SMTP connect + greeting +
+// socket timeouts), or a slow-failing retry would look like a cleared outage.
+const NET_STALE_MS = 120_000;
+
+/** Record a link failure and return how long the loop should now wait. */
+function noteNetworkFailure(error: string): number {
+  if (state.netBackoffMs === 0) {
+    // First drop of this outage: the DoH-resolved IP (and the transport pinned
+    // to it) can be stale by the time we're back, so force a re-resolve rather
+    // than retrying a dead address for the length of the DNS TTL.
+    resetSmtpNetworkCaches();
+    state.offlineSince = new Date().toISOString();
+    console.warn(`[queue] connection lost — holding the queue: ${error}`);
+  }
+  state.netBackoffMs = Math.min(
+    NET_BACKOFF_MAX_MS,
+    Math.max(NET_BACKOFF_MIN_MS, state.netBackoffMs * 2),
+  );
+  state.netRetryAt = Date.now() + state.netBackoffMs;
+  state.lastError = error;
+  return state.netBackoffMs;
+}
+
+/** Clear the outage after anything actually gets through. */
+function noteNetworkOk(): void {
+  if (state.netBackoffMs > 0) console.log("[queue] connection restored");
+  state.netBackoffMs = 0;
+  state.offlineSince = null;
+  state.netRetryAt = 0;
+}
 
 function parseHm(hm: string): number {
   const [h, m] = hm.split(":").map((n) => parseInt(n, 10));
@@ -268,17 +327,22 @@ function localEligible(seq: Sequence, s: QueueSettings): boolean {
   );
 }
 
+// What a lane did with the item it claimed, so the loop knows how long to wait:
+//   "attempted" — an email actually went down the wire (drip spacing applies)
+//   "held"      — nothing was sent, item put back (short tick)
+//   "offline"   — the link is down, item put back (offline backoff)
+type LaneOutcome = "attempted" | "held" | "offline";
+
 // Send one sequence's follow-up as a threaded reply to its opener, then record
 // the outcome. Shared by the hot (reply-triggered) and normal follow-up paths.
-// Returns whether a send was attempted; see sendBump for why the caller must
-// sleep when it wasn't.
-async function sendFollowup(fu: Sequence): Promise<boolean> {
+// See sendBump for why the caller must sleep when nothing was attempted.
+async function sendFollowup(fu: Sequence): Promise<LaneOutcome> {
   const sender = pickSender(fu.fromEmail);
   if (!sender) {
     // The account went into a block between the claim and here. Put the step
     // back untouched — it fires tomorrow rather than burning an attempt.
     revertFollowupToScheduled(fu.id);
-    return false;
+    return "held";
   }
   const result = await performSend({
     to: fu.toEmail,
@@ -296,6 +360,17 @@ async function sendFollowup(fu: Sequence): Promise<boolean> {
     inReplyTo: fu.opMessageId,
     references: fu.opMessageId,
   });
+  if (!result.ok && result.transient) {
+    // Nothing left the machine, so don't spend a drip slot on it and don't
+    // count a strike — put the step back and let the loop wait out the outage.
+    revertFollowupToScheduled(fu.id);
+    console.warn(`[queue] follow-up held (offline) → ${fu.toEmail}`);
+    noteNetworkFailure(result.error);
+    return "offline";
+  }
+  // Non-transient means we reached Gmail and it answered — whatever it said,
+  // the link is up.
+  noteNetworkOk();
   state.lastSendMs = Date.now();
   // Count this account as "just used" so the next opener alternates away.
   if (sender) state.lastSender = sender.toLowerCase();
@@ -316,27 +391,27 @@ async function sendFollowup(fu: Sequence): Promise<boolean> {
     state.lastError = result.error;
     console.warn(`[queue] follow-up failed → ${fu.toEmail}: ${result.error}`);
   }
-  return true;
+  return "attempted";
 }
 
 // Send a one-time link-free bump to a non-replier as a threaded reply. The
 // sequence stays 'scheduled' (bump_sent_at already stamped by claimDueBump), so
 // a later reply still triggers the pitch.
 //
-// Returns whether a send was actually ATTEMPTED. The caller must sleep when it
-// wasn't: the bump lane `continue`s, and the paths below that bail early leave
-// state.lastSendMs untouched, so without a sleep the loop would re-claim and
-// spin with no timer in it.
-async function sendBump(seq: Sequence): Promise<boolean> {
+// The caller must sleep whenever nothing was attempted: the bump lane
+// `continue`s, and the paths below that bail early leave state.lastSendMs
+// untouched, so without a sleep the loop would re-claim and spin with no timer
+// in it.
+async function sendBump(seq: Sequence): Promise<LaneOutcome> {
   const body = nextBumpBody(seq.name);
   if (!body) {
     revertBump(seq.id); // no bump templates — don't consume the one chance
-    return false;
+    return "held";
   }
   const sender = pickSender(seq.fromEmail);
   if (!sender) {
     revertBump(seq.id);
-    return false;
+    return "held";
   }
   const result = await performSend({
     to: seq.toEmail,
@@ -353,6 +428,18 @@ async function sendBump(seq: Sequence): Promise<boolean> {
     inReplyTo: seq.opMessageId,
     references: seq.opMessageId,
   });
+  if (!result.ok && result.transient) {
+    // Safe to un-stamp for the same reason as a policy block, and necessary:
+    // a bump has no attempt counter, so every bump attempted during an outage
+    // was previously lost forever. The spin risk the comment below warns about
+    // doesn't apply — an offline revert is followed by the offline backoff, not
+    // by an immediate re-claim.
+    revertBump(seq.id);
+    console.warn(`[queue] bump held (offline) → ${seq.toEmail}`);
+    noteNetworkFailure(result.error);
+    return "offline";
+  }
+  noteNetworkOk(); // reached Gmail — see sendFollowup
   state.lastSendMs = Date.now();
   if (sender) state.lastSender = sender.toLowerCase();
   if (result.ok) {
@@ -373,16 +460,41 @@ async function sendBump(seq: Sequence): Promise<boolean> {
     state.lastError = result.error;
     console.warn(`[queue] bump failed → ${seq.toEmail}: ${result.error}`);
   }
-  return true;
+  return "attempted";
 }
 
-async function loop(): Promise<void> {
-  const reset = resetStuckSequences();
-  if (reset > 0) console.log(`[queue] recovered ${reset} interrupted step(s)`);
+async function loop(myGen: number): Promise<void> {
+  // Guarded because it runs OUTSIDE the per-tick try below: a throw here (a
+  // locked DB on a cold boot, say) would kill the engine before it ever
+  // reached the loop, and nothing would send until the app was restarted.
+  try {
+    const reset = recoverInterruptedSequences();
+    if (reset.requeued > 0 || reset.delivered > 0) {
+      console.log(
+        `[queue] recovered ${reset.requeued} interrupted step(s)` +
+          (reset.delivered > 0
+            ? `, ${reset.delivered} already delivered (kept sent, not re-queued)`
+            : ""),
+      );
+    }
+  } catch (err) {
+    console.error("[queue] crash recovery failed, continuing:", err);
+  }
 
   for (;;) {
-    if (state.gen !== MY_GEN) return;
+    if (state.gen !== myGen) return;
     try {
+      // Only a successful send clears the outage — but if the queue emptied,
+      // was paused, hit its cap or left its window while we were down, no send
+      // is coming to clear it and the UI would claim "connection lost" forever.
+      // Once the retry deadline has passed with no attempt made, the network is
+      // no longer what's holding anything back, so stop reporting it as such.
+      if (
+        state.netBackoffMs > 0 &&
+        Date.now() > state.netRetryAt + NET_STALE_MS
+      ) {
+        noteNetworkOk();
+      }
       const s = getSettings();
       const sinceLast = Date.now() - state.lastSendMs;
       // One snapshot per tick, threaded into every sender decision below so a
@@ -407,7 +519,9 @@ async function loop(): Promise<void> {
             : undefined,
         );
         if (hot) {
-          if (!(await sendFollowup(hot))) await sleep(TICK_MS);
+          const outcome = await sendFollowup(hot);
+          if (outcome === "offline") await sleep(state.netBackoffMs);
+          else if (outcome === "held") await sleep(TICK_MS);
           continue;
         }
       }
@@ -434,7 +548,9 @@ async function loop(): Promise<void> {
           (seq) => localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
         );
         if (bump) {
-          if (!(await sendBump(bump))) await sleep(TICK_MS);
+          const outcome = await sendBump(bump);
+          if (outcome === "offline") await sleep(state.netBackoffMs);
+          else if (outcome === "held") await sleep(TICK_MS);
           continue;
         }
       }
@@ -521,6 +637,17 @@ async function loop(): Promise<void> {
         username: op.username,
         country: op.country,
       });
+      if (!result.ok && result.transient) {
+        // The link is down: nothing reached Gmail, so this contact is blameless.
+        // Put the opener back WITHOUT burning an attempt — three connection
+        // drops used to mark three prospects permanently failed and cancel
+        // their follow-ups — and hold the whole loop until the link returns.
+        revertOpenerToPending(op.id);
+        console.warn(`[queue] opener held (offline) → ${op.toEmail}`);
+        await sleep(noteNetworkFailure(result.error));
+        continue;
+      }
+      noteNetworkOk(); // reached Gmail — see sendFollowup
       state.lastSendMs = Date.now();
       if (sender) state.lastSender = sender.toLowerCase();
       if (result.ok) {
@@ -553,8 +680,19 @@ async function loop(): Promise<void> {
 export function startQueueWorker(): void {
   if (state.started) return;
   state.started = true;
+  // Bumped HERE, not at module scope, so only a real start retires the running
+  // loop — see the note by the state declaration.
+  state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+  const myGen = state.gen;
   console.log("[queue] two-step engine armed");
-  void loop();
+  // If the loop ever dies outright, release `started` so a later arm can
+  // replace it. Since this module no longer clears that flag at import time
+  // (see the note by the state declaration), nothing else would.  A normal
+  // return means a newer generation took over and already owns the flag.
+  void loop(myGen).catch((err) => {
+    console.error("[queue] engine stopped unexpectedly:", err);
+    state.started = false;
+  });
 }
 
 export function queueWorkerStatus() {
@@ -588,9 +726,17 @@ export function queueWorkerStatus() {
   const activeEmails = activeSenderEmails(s);
   const allSendersBlocked =
     activeEmails.length > 0 && activeEmails.every((e) => blockedSet.has(e));
+  // The link is down and the loop is waiting it out. Surfaced so the UI can say
+  // so instead of rendering a next-send countdown that will never fire.
+  const offline = state.netBackoffMs > 0;
   return {
     blockedSenders,
     allSendersBlocked,
+    offline,
+    offlineSince: state.offlineSince,
+    retryInSec: offline
+      ? Math.max(0, Math.ceil((state.netRetryAt - Date.now()) / 1000))
+      : 0,
     enabled: s.enabled,
     withinWindow: withinWindow(s),
     sentToday,

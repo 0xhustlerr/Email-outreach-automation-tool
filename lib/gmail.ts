@@ -14,6 +14,22 @@ type GmailAccountOAuth = {
 
 const tokenCache = new Map<string, TokenCache>();
 
+// Every Google call goes through here so none of them can hang forever.
+// Without a deadline, a connection that drops mid-request leaves a half-open
+// socket and the fetch simply never settles: the reply-sync loop's in-flight
+// guard stays set, its exponential backoff never gets the rejection that would
+// trigger it, and the loop is dead until the app restarts. Since hot follow-ups
+// fire off replies this loop records, that also silently stalls the pitch lane.
+const GMAIL_TIMEOUT_MS = 20_000;
+
+/** fetch() against the Google APIs with a hard per-request deadline. */
+export async function gmailFetch(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(GMAIL_TIMEOUT_MS) });
+}
+
 function envOpt(name: string): string | null {
   const v = process.env[name]?.trim();
   return v ? v : null;
@@ -134,7 +150,7 @@ export async function verifyGmailOAuth(
   refreshToken: string,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
+    const res = await gmailFetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -178,7 +194,7 @@ export async function getAccessToken(senderEmail: string): Promise<string | null
     return cached.accessToken;
   }
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await gmailFetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -235,7 +251,7 @@ export async function hasReplyFromContact(
   url.searchParams.set("q", q);
   url.searchParams.set("maxResults", "1");
 
-  const res = await fetch(url.toString(), {
+  const res = await gmailFetch(url.toString(), {
     headers: { Authorization: `Bearer ${access}` },
   });
 
@@ -356,7 +372,7 @@ async function listLatestMessageId(
   url.searchParams.set("q", q);
   url.searchParams.set("maxResults", "1");
 
-  const res = await fetch(url.toString(), {
+  const res = await gmailFetch(url.toString(), {
     headers: { Authorization: `Bearer ${access}` },
   });
   const data = (await res.json()) as {
@@ -405,7 +421,7 @@ async function fetchFullMessage(
   messageId: string,
 ): Promise<GmailMessageResource> {
   const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${access}` } });
+  const res = await gmailFetch(url, { headers: { Authorization: `Bearer ${access}` } });
   const data = (await res.json()) as GmailMessageResource;
   if (!res.ok) {
     throw new Error(
@@ -547,7 +563,7 @@ async function listRecentInboundIds(
     url.searchParams.set("maxResults", String(Math.min(100, cap - ids.length)));
     if (pageToken) url.searchParams.set("pageToken", pageToken);
 
-    const res = await fetch(url.toString(), {
+    const res = await gmailFetch(url.toString(), {
       headers: { Authorization: `Bearer ${access}` },
     });
     const data = (await res.json()) as {
@@ -577,7 +593,7 @@ async function fetchInboundMeta(
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=Subject`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${access}` } });
+  const res = await gmailFetch(url, { headers: { Authorization: `Bearer ${access}` } });
   if (!res.ok) return null;
   const data = (await res.json()) as GmailMessageResource;
   const from = headerValue(data.payload?.headers, "From");
@@ -635,7 +651,10 @@ export async function getRecentInboundByContact(
       continue;
     }
 
-    const metas = await mapWithPool(ids, 10, (id) =>
+    // Deliberately modest: on a weak link, ten concurrent message fetches
+    // saturate the connection the queue worker is trying to send through, and
+    // each one that times out costs the whole GMAIL_TIMEOUT_MS.
+    const metas = await mapWithPool(ids, 4, (id) =>
       fetchInboundMeta(access!, id, inbox).catch(() => null),
     );
 
@@ -835,7 +854,7 @@ export async function getThreadConversation(
   if (!threadId) return null;
 
   const threadUrl = `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=full`;
-  const threadRes = await fetch(threadUrl, {
+  const threadRes = await gmailFetch(threadUrl, {
     headers: { Authorization: `Bearer ${access}` },
   });
   const thread = (await threadRes.json()) as {
@@ -895,7 +914,7 @@ export async function getGmailMessageReplyHeaders(
   if (!access) return null;
 
   const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMessageId}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Subject`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${access}` } });
+  const res = await gmailFetch(url, { headers: { Authorization: `Bearer ${access}` } });
   const data = (await res.json()) as {
     payload?: { headers?: { name?: string; value?: string }[] };
     error?: { message?: string };
