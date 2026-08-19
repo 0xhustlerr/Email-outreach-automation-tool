@@ -10,6 +10,7 @@
 // month beats one they published on a site five years ago.
 
 import { isPublicEmail } from "./patch";
+import type { DiscoverySourceKind } from "./types";
 
 export type EmailSourceKind =
   | "profile"
@@ -33,6 +34,82 @@ export type EmailCandidate = EmailSignal & {
   /** Human-readable score breakdown, shown in the import log. */
   reasons: string[];
 };
+
+/** Hostname of a profile's linked site, minus `www.` - the value `blogHost`
+ *  wants, so the "own domain" credit is decided the same way everywhere. */
+export function blogHostOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+// lib/discover.ts labels its sources with the same vocabulary this scorer uses,
+// except "readme-link" needs no mapping - keep the switch exhaustive so adding
+// a kind over there is a type error here, not an address that silently scores 0.
+function toSourceKind(kind: DiscoverySourceKind): EmailSourceKind | null {
+  switch (kind) {
+    case "profile":
+      return "profile";
+    case "readme":
+      return "readme";
+    case "readme-link":
+      return "readme-link";
+    case "blog":
+      return "blog";
+    default: {
+      // Unreachable: `never` makes an unmapped kind a compile error. At runtime
+      // the sources can arrive as JSON from /api/discover, so skip the source
+      // rather than throw - this runs inside a render on the profile search.
+      const unreachable: never = kind;
+      void unreachable;
+      return null;
+    }
+  }
+}
+
+/** Fold the two kinds of evidence - where an address was published, and which
+ *  commits it authored - into the per-address signals `scoreEmails` grades.
+ *  Both callers (the CSV import's server pass and the profile search's live
+ *  scan) build the same shape, so they build it here. */
+export function buildEmailSignals(input: {
+  sources: { kind: DiscoverySourceKind; emails: string[] }[];
+  commits: { email: string; date: string | null }[];
+}): EmailSignal[] {
+  const byEmail = new Map<string, EmailSignal>();
+  const touch = (rawEmail: string, kind: EmailSourceKind): EmailSignal => {
+    const email = rawEmail.trim().toLowerCase();
+    let signal = byEmail.get(email);
+    if (!signal) {
+      signal = { email, sources: [], commitCount: 0, lastCommitAt: null };
+      byEmail.set(email, signal);
+    }
+    if (!signal.sources.includes(kind)) signal.sources.push(kind);
+    return signal;
+  };
+
+  for (const c of input.commits) {
+    const signal = touch(c.email, "commit");
+    signal.commitCount++;
+    if (
+      c.date &&
+      (!signal.lastCommitAt ||
+        Date.parse(c.date) > Date.parse(signal.lastCommitAt))
+    ) {
+      signal.lastCommitAt = c.date;
+    }
+  }
+
+  for (const source of input.sources) {
+    const kind = toSourceKind(source.kind);
+    if (!kind) continue;
+    for (const email of source.emails) touch(email, kind);
+  }
+
+  return [...byEmail.values()];
+}
 
 export type EmailChoice = {
   best: EmailCandidate | null;

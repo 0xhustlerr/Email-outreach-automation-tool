@@ -10,6 +10,14 @@ import InsightsModal, {
   computeInsights,
 } from "@/components/InsightsModal";
 import { primaryEmail } from "@/lib/sheet-active";
+import EmailScoreBadge from "@/components/EmailScoreBadge";
+import {
+  blogHostOf,
+  buildEmailSignals,
+  mailboxKey,
+  scoreEmails,
+  type EmailCandidate,
+} from "@/lib/email-score";
 import KnockAppShell from "@/components/knock/KnockAppShell";
 import ReplyNotificationsBell from "@/components/ReplyNotificationsBell";
 import { useNewReplies } from "@/hooks/useNewReplies";
@@ -40,6 +48,11 @@ const DEFAULT_COMMITS_PER_REPO = Number(
 );
 
 const ALL_REPOS = "__all__";
+
+// Appended to every score tooltip in the contacts column so the number is
+// readable next to the CSV import's: the import also weighs how much of a
+// developer's commit history uses an address, and this screen can't see that.
+const SHARE_NOTE = "commit share not measured in profile search";
 
 type Phase = "idle" | "loading-repos" | "scanning" | "done" | "error";
 
@@ -618,6 +631,44 @@ export default function Page() {
     for (const c of contacts) counts[c.kind]++;
     return counts;
   }, [contacts]);
+
+  // Match score per address - how likely it is to be the inbox this developer
+  // reads today - from the same scorer that badges the CSV import
+  // (lib/email-score.ts), fed the evidence this page already streamed in:
+  // the profile/README/blog sources plus the commit authors from the scan. No
+  // extra GitHub calls, and the badges sharpen live as more of both arrive.
+  //
+  // Two things the scan can't tell the scorer, both deliberate:
+  //   - Commit share. /api/scan reports only the FIRST commit per address and
+  //     logs the rest as duplicates, so per-address counts don't exist here.
+  //     totalCommits: 0 switches that factor off rather than scoring against a
+  //     denominator that means something else; SHARE_NOTE says so in the badge.
+  //   - The exact newest commit date, for the same reason. Repos arrive
+  //     pushed-first and commits newest-first, so the one sighting we get is
+  //     the freshest in the scanned window, give or take a window's width.
+  const emailScores = useMemo(() => {
+    const choice = scoreEmails({
+      login: discovery?.login ?? user ?? "",
+      name: discovery?.name ?? "",
+      blogHost: blogHostOf(discovery?.blog),
+      totalCommits: 0,
+      signals: buildEmailSignals({
+        sources: discovery?.sources ?? [],
+        commits: matches.flatMap((m) =>
+          m.author ? [{ email: m.author.email, date: m.date }] : [],
+        ),
+      }),
+    });
+
+    // Keyed by mailbox rather than spelling: `a.b@gmail.com` and `ab@gmail.com`
+    // are one inbox to the scorer but two cards in this column, and both should
+    // show that inbox's score.
+    const byMailbox = new Map<string, EmailCandidate>();
+    for (const cand of choice.candidates) {
+      byMailbox.set(mailboxKey(cand.email), cand);
+    }
+    return byMailbox;
+  }, [discovery, matches, user]);
 
   // Location signals for the scanned profile: the author's commit UTC offset
   // (most recent commit with one) and every phone found — passed to sends so
@@ -1360,6 +1411,13 @@ export default function Page() {
             <ul className="slide-in space-y-5">
               {contacts.map((c) => {
                 const isSent = c.kind === "email" && sentEmails.has(c.value);
+                // Undefined for a non-email card, and for an address the
+                // scorer rejects outright (bot, placeholder, no-reply, social
+                // handle, disposable host).
+                const scored =
+                  c.kind === "email"
+                    ? emailScores.get(mailboxKey(c.value))
+                    : undefined;
                 return (
                   <li key={`${c.kind}:${c.value}`}>
                     {/* Static card. This used to be an <ElectricBorder>, i.e. a
@@ -1421,6 +1479,21 @@ export default function Page() {
                           {c.names.join(", ")}
                         </span>
                       )}
+                      {c.kind === "email" &&
+                        (scored ? (
+                          <EmailScoreBadge
+                            score={scored.score}
+                            reasons={[...scored.reasons, SHARE_NOTE]}
+                            size="md"
+                          />
+                        ) : (
+                          <span
+                            className="shrink-0 rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500"
+                            title="Not scored — this isn't a personal inbox: a bot, placeholder, no-reply, social handle or disposable address."
+                          >
+                            n/a
+                          </span>
+                        ))}
                       {c.kind === "email" ? (
                         <button
                           type="button"

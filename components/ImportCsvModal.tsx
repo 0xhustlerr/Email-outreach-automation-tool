@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CountryFlag } from "@/components/CountryFlag";
+import EmailScoreBadge from "@/components/EmailScoreBadge";
 import { useTemplates } from "@/hooks/useTemplates";
 import { parseLeadCsv, type CsvLead } from "@/lib/csv";
 
@@ -64,22 +65,6 @@ function UploadIcon({ className }: { className?: string }) {
 
 const inputCls =
   "w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40";
-
-function ScoreBadge({ score }: { score: number }) {
-  const tone =
-    score >= 70
-      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
-      : score >= 50
-        ? "border-cyan-400/40 bg-cyan-500/10 text-cyan-200"
-        : "border-amber-400/40 bg-amber-500/10 text-amber-200";
-  return (
-    <span
-      className={`shrink-0 rounded border px-1 py-px text-[10px] font-semibold tabular-nums ${tone}`}
-    >
-      {score}
-    </span>
-  );
-}
 
 export default function ImportCsvModal({
   onClose,
@@ -550,7 +535,7 @@ export default function ImportCsvModal({
                           {r.country}
                         </span>
                       )}
-                      {r.score !== undefined && <ScoreBadge score={r.score} />}
+                      {r.score !== undefined && <EmailScoreBadge score={r.score} />}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[11px]">
                       {r.email ? (

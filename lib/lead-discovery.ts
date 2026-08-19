@@ -20,10 +20,10 @@ import {
 } from "./github";
 import { discoverEmails } from "./discover";
 import {
+  blogHostOf,
+  buildEmailSignals,
   scoreEmails,
   type EmailChoice,
-  type EmailSignal,
-  type EmailSourceKind,
 } from "./email-score";
 
 /** How many of the user's most recently pushed non-fork repos to inspect. */
@@ -48,33 +48,6 @@ export type LeadDiscovery = {
   choice: EmailChoice;
 };
 
-function hostOf(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-// discover.ts labels its sources with the same vocabulary the scorer uses,
-// except "readme-link" needs no mapping — keep this explicit so an added
-// source kind over there fails loudly here instead of silently scoring 0.
-function toSourceKind(kind: string): EmailSourceKind | null {
-  switch (kind) {
-    case "profile":
-      return "profile";
-    case "readme":
-      return "readme";
-    case "readme-link":
-      return "readme-link";
-    case "blog":
-      return "blog";
-    default:
-      return null;
-  }
-}
-
 /** Gather every contact signal for a GitHub login and choose the best email. */
 export async function discoverLeadEmails(login: string): Promise<LeadDiscovery> {
   const [user, discovery] = await Promise.all([getUser(login), discoverEmails(login)]);
@@ -96,43 +69,21 @@ export async function discoverLeadEmails(login: string): Promise<LeadDiscovery> 
     // (A rate limit propagates from discoverEmails above, which runs first.)
   }
 
-  // Fold commit authorship into per-address stats.
-  const byEmail = new Map<string, EmailSignal>();
-  const touch = (rawEmail: string, kind: EmailSourceKind): EmailSignal => {
-    const email = rawEmail.trim().toLowerCase();
-    let s = byEmail.get(email);
-    if (!s) {
-      s = { email, sources: [], commitCount: 0, lastCommitAt: null };
-      byEmail.set(email, s);
-    }
-    if (!s.sources.includes(kind)) s.sources.push(kind);
-    return s;
-  };
-
-  for (const c of commits) {
-    const s = touch(c.email, "commit");
-    s.commitCount++;
-    if (c.date && (!s.lastCommitAt || Date.parse(c.date) > Date.parse(s.lastCommitAt))) {
-      s.lastCommitAt = c.date;
-    }
-  }
-
-  for (const source of discovery.sources) {
-    const kind = toSourceKind(source.kind);
-    if (!kind) continue;
-    for (const email of source.emails) touch(email, kind);
-  }
+  const signals = buildEmailSignals({
+    sources: discovery.sources,
+    commits,
+  });
 
   const phones = [...new Set(discovery.sources.flatMap((s) => s.phones))];
   const telegrams = [...new Set(discovery.sources.flatMap((s) => s.telegrams))];
 
-  const blogHost = hostOf(discovery.blog);
+  const blogHost = blogHostOf(discovery.blog);
   const choice = scoreEmails({
     login: user.login,
     name: user.name ?? "",
     blogHost,
     totalCommits: commits.length,
-    signals: [...byEmail.values()],
+    signals,
   });
 
   // Their working timezone, for local-time send scheduling. The commits API
