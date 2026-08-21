@@ -484,6 +484,64 @@ export function claimDueBump(
   return r ? toSeq(r) : null;
 }
 
+/** Pending queue-lane Openers in claim order, lean columns only — the Send
+ *  plan's per-tick snapshot (lib/send-plan.ts). */
+export function listPendingOpeners(): {
+  id: number;
+  fromEmail: string;
+  timezone: string;
+  opSendAfter: string | null;
+}[] {
+  const rows = db
+    .prepare(
+      `SELECT id, from_email, timezone, op_send_after FROM sequences
+       WHERE lane = 'queue' AND op_status = 'pending'
+       ORDER BY id ASC`,
+    )
+    .all() as {
+    id: number;
+    from_email: string;
+    timezone: string;
+    op_send_after: string | null;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    fromEmail: r.from_email,
+    timezone: r.timezone,
+    opSendAfter: r.op_send_after,
+  }));
+}
+
+/** Bump candidates in claim order (oldest opener first): sent Opener, no Bump
+ *  yet. Reply state is DELIBERATELY not consulted — the Send plan flags these
+ *  conditional, and the Claim is the authority on it (ADR-0001). */
+export function listBumpCandidates(): {
+  id: number;
+  fromEmail: string;
+  timezone: string;
+  opSentAt: string;
+}[] {
+  const rows = db
+    .prepare(
+      `SELECT id, from_email, timezone, op_sent_at FROM sequences
+       WHERE fu_status = 'scheduled' AND bump_sent_at IS NULL
+         AND op_sent_at IS NOT NULL
+       ORDER BY op_sent_at ASC, id ASC`,
+    )
+    .all() as {
+    id: number;
+    from_email: string;
+    timezone: string;
+    op_sent_at: string;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    fromEmail: r.from_email,
+    timezone: r.timezone,
+    opSentAt: r.op_sent_at,
+  }));
+}
+
 /** The account that most recently emailed this contact (lowercased), or "".
  *  Used to send a re-engaged contact's new opener from a DIFFERENT account. */
 export function lastSenderForContact(email: string): string {
