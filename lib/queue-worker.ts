@@ -47,11 +47,13 @@ import {
   noteNetworkFailure,
   noteNetworkOk,
   noteSent,
+  planPayload,
   pooledEligibility,
   senderAllowed,
   withinWindow,
   TICK_MS,
   type PlanInputs,
+  type SendPlan,
   type SendPlanState,
 } from "./send-plan";
 import {
@@ -92,6 +94,12 @@ type WorkerState = SendPlanState & {
   tick: () => Promise<void>;
   lastError: string;
   lastSentAt: string | null;
+  /**
+   * The plan the last tick computed and executed — cached so the status
+   * endpoint serves the very Send plan the worker acted on, staleness bounded
+   * by the tick. Null until the first tick of a freshly booted process.
+   */
+  plan: SendPlan | null;
 };
 
 const globalForWorker = globalThis as unknown as { __queueWorker?: WorkerState };
@@ -108,6 +116,7 @@ const state: WorkerState = globalForWorker.__queueWorker ?? {
   netBackoffMs: 0,
   offlineSince: null,
   netRetryAt: 0,
+  plan: null,
 };
 globalForWorker.__queueWorker = state;
 
@@ -126,6 +135,7 @@ state.bumpIndex = Number.isFinite(state.bumpIndex) ? state.bumpIndex : 0;
 state.netBackoffMs = Number.isFinite(state.netBackoffMs) ? state.netBackoffMs : 0;
 state.netRetryAt = Number.isFinite(state.netRetryAt) ? state.netRetryAt : 0;
 state.offlineSince = state.offlineSince ?? null;
+state.plan = state.plan ?? null;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -420,6 +430,9 @@ async function tick(): Promise<void> {
       console.log("[queue] connection restored");
     }
     applyRam(nextState);
+    // Cache what this tick is about to execute — the status endpoint serves
+    // exactly this plan (ticket 05), so the UI never re-derives it.
+    state.plan = plan;
 
     const anyFree = identities.some((i) => !blocked.has(i.toLowerCase()));
     const elig = pooledEligibility(s, identities, load, blocked);
@@ -621,6 +634,11 @@ export function queueWorkerStatus() {
   // so instead of rendering a next-send countdown that will never fire.
   const offline = state.netBackoffMs > 0;
   return {
+    // The last tick's Send plan, reduced to its wire shape with the aggregates
+    // computed server-side (next-send anchor, finish estimate). Null only
+    // before the first tick of a freshly booted process. Every other field
+    // below survives unchanged — deletions belong to ticket 06's reader audit.
+    plan: state.plan ? planPayload(state.plan) : null,
     blockedSenders,
     allSendersBlocked,
     offline,

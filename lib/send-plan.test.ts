@@ -23,6 +23,7 @@ import {
   hasDifferentFreeSender,
   pooledEligibility,
   effectiveDailyCap,
+  planPayload,
   TICK_MS,
   type PlanInputs,
   type SendPlanState,
@@ -752,6 +753,99 @@ describe("noteSent", () => {
     const next = noteSent(state(), now, "A@x.com");
     expect(next.lastSendMs).toBe(now);
     expect(next.lastSender).toBe("a@x.com");
+  });
+});
+
+// --- The status-seam payload (.scratch/send-plan ticket 05) ------------------
+// planPayload is what the queue status endpoint serves: the worker's cached
+// plan reduced to its wire shape, plus the two aggregates the UI used to
+// derive itself (next-send anchor, whole-queue finish estimate).
+
+describe("planPayload (status seam)", () => {
+  const now = at(10, 0);
+
+  it("carries the plan's entries verbatim, in send order, with its stamp and paused flag", () => {
+    const { plan } = computeSendPlan(
+      state(),
+      inputs({
+        nowMs: now,
+        settings: settings({ intervalSec: 60, bumpEnabled: true }),
+        openers: [opener(2), opener(5)],
+        bumps: [bump(9, daysAgo(4, now))],
+        bumpTemplateCount: 1,
+      }),
+    );
+    const payload = planPayload(plan);
+    expect(payload.computedAtMs).toBe(now);
+    expect(payload.paused).toBe(false);
+    expect(payload.entries).toEqual(plan.entries);
+    expect(payload.entries.map((e) => e.id)).toEqual([2, 5, 9]);
+  });
+
+  it("Bump entries keep their conditional flag through the payload", () => {
+    const { plan } = computeSendPlan(
+      state(),
+      inputs({
+        nowMs: now,
+        settings: settings({ bumpEnabled: true }),
+        bumps: [bump(9, daysAgo(4, now))],
+        bumpTemplateCount: 1,
+      }),
+    );
+    const payload = planPayload(plan);
+    expect(payload.entries[0]).toMatchObject({ lane: "bump", conditional: true });
+  });
+
+  it("nextSendAtMs is the earliest predicted ETA — a not-due head doesn't hide a sooner item", () => {
+    // Opener 1 is scheduled for tomorrow; the Claim skips not-due rows, so
+    // opener 2 sends first and the anchor must say so.
+    const sendAfter = new Date(at(9, 0, 21)).toISOString();
+    const { plan } = computeSendPlan(
+      state(),
+      inputs({
+        nowMs: now,
+        settings: settings({ intervalSec: 60 }),
+        openers: [opener(1, { opSendAfter: sendAfter }), opener(2)],
+      }),
+    );
+    const payload = planPayload(plan);
+    // Head entry predicts tomorrow; the anchor is opener 2's slot instead.
+    expect(plan.entries[0].etaMs).toBe(at(9, 0, 21));
+    expect(payload.nextSendAtMs).toBe(now + 60_000);
+  });
+
+  it("finishAtMs is the latest predicted ETA — a not-yet-due Bump's floor holds the queue open", () => {
+    const { plan } = computeSendPlan(
+      state(),
+      inputs({
+        nowMs: now,
+        settings: settings({ intervalSec: 60, bumpEnabled: true, bumpAfterDays: 2 }),
+        openers: [opener(1)],
+        bumps: [bump(9, daysAgo(1, now))], // due a full day from now
+        bumpTemplateCount: 1,
+      }),
+    );
+    const payload = planPayload(plan);
+    expect(payload.finishAtMs).toBe(now + 86_400_000);
+  });
+
+  it("a paused queue predicts nothing: both aggregates are null", () => {
+    const { plan } = computeSendPlan(
+      state(),
+      inputs({ settings: settings({ enabled: false }), openers: [opener(1)] }),
+    );
+    const payload = planPayload(plan);
+    expect(payload.paused).toBe(true);
+    expect(payload.nextSendAtMs).toBeNull();
+    expect(payload.finishAtMs).toBeNull();
+  });
+
+  it("an empty queue has no entries and no aggregates", () => {
+    const { plan } = computeSendPlan(state(), inputs({ nowMs: now }));
+    const payload = planPayload(plan);
+    expect(payload.entries).toEqual([]);
+    expect(payload.nextSendAtMs).toBeNull();
+    expect(payload.finishAtMs).toBeNull();
   });
 });
 

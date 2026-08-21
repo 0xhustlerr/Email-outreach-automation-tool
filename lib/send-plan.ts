@@ -530,6 +530,42 @@ export function computeSendPlan(
   };
 }
 
+// --- the status-seam payload -------------------------------------------------
+
+/** What the queue status endpoint serves: the worker's cached plan reduced to
+ *  its wire shape. The tick directive (attempt/holdMs) stays private to the
+ *  worker — the UI renders entries, it doesn't execute them. */
+export type SendPlanPayload = Pick<
+  SendPlan,
+  "computedAtMs" | "paused" | "entries"
+> & {
+  /** Countdown anchor: epoch ms of the earliest predicted ETA. Null when the
+   *  queue is empty or paused (nothing is predicted). Not simply the head
+   *  entry's — the Claims skip not-due rows, so a head not due until next week
+   *  doesn't hide an item sending in a minute. */
+  nextSendAtMs: number | null;
+  /** Whole-queue finish estimate: epoch ms of the latest predicted ETA. A
+   *  not-yet-due Bump's due floor holds the queue open past the last drip
+   *  slot. Null when nothing is predicted. */
+  finishAtMs: number | null;
+};
+
+/** Reduce a plan to the payload the status endpoint ships. Pure: aggregates
+ *  come from the plan's own entries, never re-derived from settings — that
+ *  re-derivation is exactly the mirror drift this seam exists to end. */
+export function planPayload(plan: SendPlan): SendPlanPayload {
+  const etas = plan.entries
+    .map((e) => e.etaMs)
+    .filter((ms): ms is number => ms !== null);
+  return {
+    computedAtMs: plan.computedAtMs,
+    paused: plan.paused,
+    entries: plan.entries,
+    nextSendAtMs: etas.length > 0 ? Math.min(...etas) : null,
+    finishAtMs: etas.length > 0 ? Math.max(...etas) : null,
+  };
+}
+
 // --- the projection ----------------------------------------------------------
 
 type ProjectionCtx = {
