@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
-import { getSettings } from "@/lib/queue-store";
+import { getSettings } from "@/lib/queue-settings-store";
 import {
   displayName,
   enqueueSequence,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
-import { getSettings, saveSettings, type QueueSettings } from "@/lib/queue-store";
+import { getSettings, saveSettings, type QueueSettings } from "@/lib/queue-settings-store";
 import {
   backfillSequenceLocations,
   cancelAllPendingFollowups,

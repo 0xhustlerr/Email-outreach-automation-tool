@@ -20,7 +20,7 @@ import { listIdentities, resetSmtpNetworkCaches } from "./mail";
 import { performSend } from "./send-core";
 import { recordSendEvent } from "./recent-sends";
 import { withinLocalWindow } from "./country";
-import { getSettings, type QueueSettings } from "./queue-store";
+import { getSettings, type QueueSettings } from "./queue-settings-store";
 import { listTemplates } from "./templates-store";
 import {
   blockedSenderSet,

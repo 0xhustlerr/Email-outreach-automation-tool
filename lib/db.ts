@@ -104,28 +104,6 @@ function ensureSchema(db: Database.Database): void {
       updated_at  TEXT NOT NULL
     );
 
-    -- Outbound send queue. Emails are enqueued with fully-rendered subject/body
-    -- and dripped out by the background worker (see lib/queue-worker.ts) to
-    -- stay under provider spam thresholds.
-    CREATE TABLE IF NOT EXISTS send_queue (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      to_email    TEXT NOT NULL,
-      from_email  TEXT NOT NULL DEFAULT '',    -- '' = auto-rotate at send time
-      name        TEXT NOT NULL DEFAULT '',
-      link        TEXT NOT NULL DEFAULT '',
-      username    TEXT NOT NULL DEFAULT '',
-      country     TEXT NOT NULL DEFAULT '',
-      subject     TEXT NOT NULL,               -- already rendered
-      body        TEXT NOT NULL,               -- already rendered
-      status      TEXT NOT NULL DEFAULT 'queued', -- queued|sending|sent|failed|canceled
-      attempts    INTEGER NOT NULL DEFAULT 0,
-      last_error  TEXT NOT NULL DEFAULT '',
-      message_id  TEXT NOT NULL DEFAULT '',
-      created_at  TEXT NOT NULL,
-      sent_at     TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_send_queue_status ON send_queue (status, id);
-
     -- Single-row worker configuration (id is always 1).
     CREATE TABLE IF NOT EXISTS queue_settings (
       id             INTEGER PRIMARY KEY CHECK (id = 1),

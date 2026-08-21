@@ -7,7 +7,7 @@ import { markUserActivity } from "@/lib/avatar-prefetch";
 import { decideCountry, isTargetRegion } from "@/lib/country";
 import { GitHubError, parseGitHubUsername } from "@/lib/github";
 import { discoverLeadEmails } from "@/lib/lead-discovery";
-import { getSettings } from "@/lib/queue-store";
+import { getSettings } from "@/lib/queue-settings-store";
 import {
   displayName,
   enqueueSequence,

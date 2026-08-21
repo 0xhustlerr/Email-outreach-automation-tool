@@ -264,23 +264,14 @@ export function seedIdentitiesFromEnvOnce(): void {
 
 export function deleteSenderData(email: string): {
   history: number;
-  queued: number;
   sequences: number;
 } {
   const e = email.trim().toLowerCase();
   let history = 0;
-  let queued = 0;
   let sequences = 0;
   try {
     history = db
       .prepare(`UPDATE send_log SET deleted = 1 WHERE lower(sender) = ? AND deleted = 0`)
-      .run(e).changes;
-  } catch {
-    // ignore
-  }
-  try {
-    queued = db
-      .prepare(`DELETE FROM send_queue WHERE lower(from_email) = ?`)
       .run(e).changes;
   } catch {
     // ignore
@@ -300,7 +291,7 @@ export function deleteSenderData(email: string): {
   } catch {
     // ignore
   }
-  return { history, queued, sequences };
+  return { history, sequences };
 }
 
 // Import env identities on first load so the app is immediately manageable.

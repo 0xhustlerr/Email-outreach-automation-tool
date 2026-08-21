@@ -63,7 +63,7 @@ type SendersState = {
   senderBlocks?: SenderBlock[];
 };
 
-type RemovedCounts = { history: number; queued: number; sequences: number };
+type RemovedCounts = { history: number; sequences: number };
 
 export default function SendersModal({
   onClose,
@@ -381,7 +381,6 @@ export default function SendersModal({
       const r = body.removed;
       const extra = r
         ? ` Deleted ${r.history} history row${r.history === 1 ? "" : "s"}` +
-          (r.queued ? `, ${r.queued} queued` : "") +
           (r.sequences ? `, ${r.sequences} sequence${r.sequences === 1 ? "" : "s"}` : "") +
           "."
         : "";
