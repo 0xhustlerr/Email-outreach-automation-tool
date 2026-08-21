@@ -14,7 +14,8 @@
 //      lane 2 is gated by, AND held until the opener queue is fully drained and
 //      no pitch is waiting. A bump has no deadline, so it yields to both.
 //
-// Started from instrumentation.ts; survives with the tray-kept server.
+// Armed only by instrumentation.ts at server boot (ADR-0002) — importing this
+// module never starts the loop. Survives with the tray-kept server.
 
 import { listIdentities, resetSmtpNetworkCaches } from "./mail";
 import { performSend } from "./send-core";
@@ -55,8 +56,18 @@ const MAX_ATTEMPTS = 3;
 const HOT_MIN_GAP_MS = 30_000;
 
 type WorkerState = {
-  started: boolean;
   gen: number;
+  /**
+   * Completion of the most recently armed loop (and everything chained after
+   * it). A new arm awaits this before running crash recovery, so a successor
+   * can never flip a row the retiring loop is still mid-send on.
+   */
+  running: Promise<void> | null;
+  /**
+   * The newest module instance's scheduling pass. The loop calls through this
+   * pointer every iteration — see the publish note below the state setup.
+   */
+  tick: () => Promise<void>;
   lastSendMs: number;
   rotateIndex: number;
   bumpIndex: number; // rotates the bump templates
@@ -73,8 +84,9 @@ type WorkerState = {
 
 const globalForWorker = globalThis as unknown as { __queueWorker?: WorkerState };
 const state: WorkerState = globalForWorker.__queueWorker ?? {
-  started: false,
   gen: 0,
+  running: null,
+  tick,
   lastSendMs: 0,
   rotateIndex: 0,
   bumpIndex: 0,
@@ -87,16 +99,17 @@ const state: WorkerState = globalForWorker.__queueWorker ?? {
 };
 globalForWorker.__queueWorker = state;
 
-// NOTE: neither the generation bump nor `started = false` belongs here. Any
-// route bundle that imports this file (app/api/queue/route.ts pulls in
-// queueWorkerStatus) gets its own copy of the module, and this one SELF-STARTS
-// at the bottom — so resetting either at module scope lets that copy retire the
-// live loop and arm a replacement, which opens with crash recovery and
-// can flip a row the outgoing loop is still mid-performSend on back to
-// 'pending', sending it twice. Same fix as the reply-sync and bounce-watch
-// loops, which can additionally clear `started` here only because they do not
-// self-start. The cost is that a dev edit to THIS file needs a server restart
-// rather than an HMR reload to take effect.
+// Publish this module instance's tick so the running loop always executes the
+// newest compiled code. Deliberately NOT a lifecycle action (ADR-0002): it
+// retires nothing and arms nothing — the same single loop simply calls through
+// the pointer. In production every copy of this module is built from the same
+// source, so the swap changes nothing; in dev it is what lets an HMR reload of
+// this file reach the loop on its next tick, with no server restart. (Next
+// runs instrumentation's register() once per server process and caches it, so
+// a re-arm can never be the HMR path.)
+state.tick = tick;
+
+// Backfill fields added after an older module instance created this state.
 state.bumpIndex = Number.isFinite(state.bumpIndex) ? state.bumpIndex : 0;
 state.netBackoffMs = Number.isFinite(state.netBackoffMs) ? state.netBackoffMs : 0;
 state.netRetryAt = Number.isFinite(state.netRetryAt) ? state.netRetryAt : 0;
@@ -404,8 +417,8 @@ async function sendFollowup(fu: Sequence): Promise<LaneOutcome> {
 // sequence stays 'scheduled' (bump_sent_at already stamped by claimDueBump), so
 // a later reply still triggers the pitch.
 //
-// The caller must sleep whenever nothing was attempted: the bump lane
-// `continue`s, and the paths below that bail early leave state.lastSendMs
+// The caller must sleep whenever nothing was attempted: the bump lane ends its
+// tick there, and the paths below that bail early leave state.lastSendMs
 // untouched, so without a sleep the loop would re-claim and spin with no timer
 // in it.
 async function sendBump(seq: Sequence): Promise<LaneOutcome> {
@@ -469,10 +482,245 @@ async function sendBump(seq: Sequence): Promise<LaneOutcome> {
   return "attempted";
 }
 
+// One scheduling pass: pick a lane, attempt at most one send, and do whatever
+// pacing sleep that outcome calls for before returning. The loop calls it
+// through state.tick, so the pass that runs is always the newest module
+// instance's — see the publish note by the state declaration.
+async function tick(): Promise<void> {
+  try {
+    // Only a successful send clears the outage — but if the queue emptied,
+    // was paused, hit its cap or left its window while we were down, no send
+    // is coming to clear it and the UI would claim "connection lost" forever.
+    // Once the retry deadline has passed with no attempt made, the network is
+    // no longer what's holding anything back, so stop reporting it as such.
+    if (
+      state.netBackoffMs > 0 &&
+      Date.now() > state.netRetryAt + NET_STALE_MS
+    ) {
+      noteNetworkOk();
+    }
+    const s = getSettings();
+    const sinceLast = Date.now() - state.lastSendMs;
+    // One snapshot per tick, threaded into every sender decision below so a
+    // single claim scan can't issue 200 queries.
+    const blocked = blockedSenderSet();
+    const anyFree = listIdentities().some(
+      (i) => !blocked.has(i.email.toLowerCase()),
+    );
+
+    // 1) HOT follow-ups: the opener already got a reply → send the pitch fast
+    // (a small spacing only, bypassing the normal drip interval) while the
+    // lead is warm. Not gated by the recipient's local window — they just
+    // replied, so they're online now.
+    //
+    // Set when this lane RAN and found nothing: the bump lane needs "no pitch
+    // is waiting" and this is the only cheap proof of it. Testing it directly
+    // would mean a second EXISTS(send_log …) on every idle tick, and that
+    // correlation uses LIKE '%…%' so it can't touch idx_send_log_contact —
+    // a full send_log scan every 10s. Note it inherits this lane's own blind
+    // spots: a reply the sync loop hasn't recorded yet (up to SYNC_MS) and an
+    // opener younger than the 3-minute floor both read as "clear".
+    let noPitchWaiting = false;
+    if ((state.lastSendMs === 0 || sinceLast >= HOT_MIN_GAP_MS) && anyFree) {
+      // Pass the eligibility filter ONLY when something is actually blocked:
+      // with no predicate the claim runs LIMIT 1, with one it scans 200 rows
+      // through a correlated EXISTS subquery. Keep the common path identical.
+      const hot = claimRepliedFollowup(
+        3,
+        blocked.size > 0
+          ? (seq) => senderAllowed(seq, blocked, anyFree)
+          : undefined,
+      );
+      if (hot) {
+        const outcome = await sendFollowup(hot);
+        if (outcome === "offline") await sleep(state.netBackoffMs);
+        else if (outcome === "held") await sleep(TICK_MS);
+        return;
+      }
+      noPitchWaiting = true;
+    }
+
+    // Respect send spacing for the normal drip (one email per interval).
+    const gap = nextGapMs(s);
+    if (state.lastSendMs > 0 && sinceLast < gap) {
+      await sleep(Math.min(gap - sinceLast, TICK_MS));
+      return;
+    }
+
+    // 2) Queue-lane openers. Gated by enabled + total cap. The window check is
+    // the global window in normal mode, or the PER-RECIPIENT window in
+    // local-time mode (so the drip runs across all hours per contact).
+    const globalWindowOk = s.localTimeSend || withinWindow(s);
+    if (
+      !s.enabled ||
+      !globalWindowOk ||
+      distinctClientsToday() >= effectiveDailyCap(s)
+    ) {
+      await sleep(TICK_MS);
+      return;
+    }
+    // If a pool is set and every account hit its cap (or is blocked), wait
+    // (don't strand a claim).
+    const elig = pooledEligibility(s, blocked);
+    if (elig === "capped") {
+      await sleep(TICK_MS);
+      return;
+    }
+    // No pool + every configured account blocked: nothing can send. Bail
+    // before claiming, otherwise we'd claim and revert an opener every tick.
+    if (elig === "none" && !anyFree) {
+      await sleep(TICK_MS);
+      return;
+    }
+    // HARD RULE: a re-send must NOT reuse the account that already emailed the
+    // contact. Fold that into claim eligibility so we SKIP (don't claim) any
+    // opener whose only free account is its original sender — it waits until a
+    // different account has budget (or tomorrow) instead of reusing the same.
+    const load = elig === "ok" ? sentTodayBySender() : {};
+    const op = claimNextQueuedOpener((seq) => {
+      if (!localEligible(seq, s)) return false;
+      // No pool → the item's own sender is used verbatim, so it must be free.
+      if (elig !== "ok") return senderAllowed(seq, blocked, anyFree);
+      return hasDifferentFreeSender(
+        s,
+        lastSenderForContact(seq.toEmail),
+        load,
+        blocked,
+      );
+    });
+    if (!op) {
+      // 3) Bump non-repliers: one short LINK-FREE nudge N days after the
+      // opener. (The pitch itself is reply-only — lane 1 above.) The sequence
+      // stays 'scheduled', so a later reply still fires the pitch.
+      //
+      // Lowest lane, and it lives INSIDE this branch on purpose. The opener
+      // path below has no trailing `return` — it falls off the bottom of
+      // the try — so a bump block placed after it would send an opener and
+      // then immediately claim and send a bump on the same tick, bypassing
+      // the drip gap entirely. Nesting it here makes that impossible.
+      //
+      // hasPendingOpeners(), not just `!op`: a null claim only means nothing
+      // is sendable THIS INSTANT (all held by local window, sender rules, the
+      // different-sender rule). A bump waits for the queue to be genuinely
+      // drained, so a still-loaded campaign always outranks it.
+      //
+      // Sitting below the enabled/window/cap and pool gates is the point —
+      // bumps now pause, respect the window, and spend the daily cap like
+      // every other send. Two consequences worth knowing: a pooled cap can
+      // hold a bump whose own account is free (bumps reuse the opener's
+      // sender verbatim for thread continuity), and a queue that never drains
+      // starves bumps indefinitely. Nothing is lost when that happens —
+      // claimDueBump has no upper age bound, so the bump just fires late, and
+      // a reply in the meantime cancels it in favour of the pitch.
+      //
+      // The template check is BEFORE the claim on purpose: with no bump
+      // templates, claiming would only be undone again on the next line, and
+      // the lane would churn a claim/revert pair every tick forever.
+      if (
+        s.bumpEnabled &&
+        anyFree &&
+        noPitchWaiting &&
+        !hasPendingOpeners() &&
+        listTemplates("bump").length > 0
+      ) {
+        // Gate in the PREDICATE, never after the claim: claimDueBump stamps
+        // bump_sent_at as it claims and only ever claims rows where that is
+        // NULL, so an early return here would lose the bump forever.
+        const bump = claimDueBump(
+          s.bumpAfterDays,
+          (seq) =>
+            localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
+        );
+        if (bump) {
+          const outcome = await sendBump(bump);
+          if (outcome === "offline") await sleep(state.netBackoffMs);
+          else if (outcome === "held") await sleep(TICK_MS);
+          return;
+        }
+      }
+      await sleep(TICK_MS);
+      return;
+    }
+    // Pool active → a FREE account different from the one that already emailed
+    // this contact is guaranteed by the eligibility check above. If somehow
+    // gone (race), put the opener back rather than reuse the original sender.
+    let sender: string;
+    if (elig === "ok") {
+      const picked = pickPooledSender(
+        s,
+        lastSenderForContact(op.toEmail),
+        blocked,
+      );
+      if (!picked) {
+        revertOpenerToPending(op.id);
+        await sleep(TICK_MS);
+        return;
+      }
+      sender = picked;
+    } else {
+      sender = pickSender(op.fromEmail, blocked);
+      if (!sender) {
+        revertOpenerToPending(op.id);
+        await sleep(TICK_MS);
+        return;
+      }
+    }
+    const result = await performSend({
+      to: op.toEmail,
+      cc: op.ccEmail,
+      subject: op.opSubject,
+      body: op.opBody,
+      fromEmail: sender,
+      name: op.name,
+      link: op.link,
+      linkLinkedin: op.linkLinkedin,
+      linkGithub: op.linkGithub,
+      username: op.username,
+      country: op.country,
+    });
+    if (!result.ok && result.transient) {
+      // The link is down: nothing reached Gmail, so this contact is blameless.
+      // Put the opener back WITHOUT burning an attempt — three connection
+      // drops used to mark three prospects permanently failed and cancel
+      // their follow-ups — and hold the whole loop until the link returns.
+      revertOpenerToPending(op.id);
+      console.warn(`[queue] opener held (offline) → ${op.toEmail}`);
+      await sleep(noteNetworkFailure(result.error));
+      return;
+    }
+    noteNetworkOk(); // reached Gmail — see sendFollowup
+    state.lastSendMs = Date.now();
+    if (sender) state.lastSender = sender.toLowerCase();
+    if (result.ok) {
+      markOpenerSent(op.id, result.messageId, result.sender);
+      recordSendEvent(op.toEmail, "opener", result.sender);
+      state.lastError = "";
+      state.lastSentAt = new Date().toISOString();
+      console.log(`[queue] opener sent → ${op.toEmail} (as ${result.sender})`);
+    } else if (result.blockKind === "policy") {
+      // Gmail blocked the ACCOUNT, not this contact. Put the opener back
+      // untouched. Without this, markOpenerFailed would count a strike and —
+      // since claims are ORDER BY id ASC — the same head-of-queue contact
+      // gets re-claimed and permanently killed after three tries, then the
+      // next one, for as long as the block lasts.
+      revertOpenerToPending(op.id);
+      state.lastError = result.error;
+      console.warn(`[queue] opener held (sender blocked) → ${op.toEmail}`);
+    } else {
+      markOpenerFailed(op.id, result.error, MAX_ATTEMPTS);
+      state.lastError = result.error;
+      console.warn(`[queue] opener failed → ${op.toEmail}: ${result.error}`);
+    }
+  } catch (err) {
+    state.lastError = err instanceof Error ? err.message : String(err);
+    await sleep(TICK_MS);
+  }
+}
+
 async function loop(myGen: number): Promise<void> {
-  // Guarded because it runs OUTSIDE the per-tick try below: a throw here (a
-  // locked DB on a cold boot, say) would kill the engine before it ever
-  // reached the loop, and nothing would send until the app was restarted.
+  // Guarded because it runs OUTSIDE tick's own try: a throw here (a locked DB
+  // on a cold boot, say) would kill the engine before it ever reached the
+  // loop, and nothing would send until the app was restarted.
   try {
     const reset = recoverInterruptedSequences();
     if (reset.requeued > 0 || reset.delivered > 0) {
@@ -489,253 +737,46 @@ async function loop(myGen: number): Promise<void> {
 
   for (;;) {
     if (state.gen !== myGen) return;
-    try {
-      // Only a successful send clears the outage — but if the queue emptied,
-      // was paused, hit its cap or left its window while we were down, no send
-      // is coming to clear it and the UI would claim "connection lost" forever.
-      // Once the retry deadline has passed with no attempt made, the network is
-      // no longer what's holding anything back, so stop reporting it as such.
-      if (
-        state.netBackoffMs > 0 &&
-        Date.now() > state.netRetryAt + NET_STALE_MS
-      ) {
-        noteNetworkOk();
-      }
-      const s = getSettings();
-      const sinceLast = Date.now() - state.lastSendMs;
-      // One snapshot per tick, threaded into every sender decision below so a
-      // single claim scan can't issue 200 queries.
-      const blocked = blockedSenderSet();
-      const anyFree = listIdentities().some(
-        (i) => !blocked.has(i.email.toLowerCase()),
-      );
-
-      // 1) HOT follow-ups: the opener already got a reply → send the pitch fast
-      // (a small spacing only, bypassing the normal drip interval) while the
-      // lead is warm. Not gated by the recipient's local window — they just
-      // replied, so they're online now.
-      //
-      // Set when this lane RAN and found nothing: the bump lane needs "no pitch
-      // is waiting" and this is the only cheap proof of it. Testing it directly
-      // would mean a second EXISTS(send_log …) on every idle tick, and that
-      // correlation uses LIKE '%…%' so it can't touch idx_send_log_contact —
-      // a full send_log scan every 10s. Note it inherits this lane's own blind
-      // spots: a reply the sync loop hasn't recorded yet (up to SYNC_MS) and an
-      // opener younger than the 3-minute floor both read as "clear".
-      let noPitchWaiting = false;
-      if ((state.lastSendMs === 0 || sinceLast >= HOT_MIN_GAP_MS) && anyFree) {
-        // Pass the eligibility filter ONLY when something is actually blocked:
-        // with no predicate the claim runs LIMIT 1, with one it scans 200 rows
-        // through a correlated EXISTS subquery. Keep the common path identical.
-        const hot = claimRepliedFollowup(
-          3,
-          blocked.size > 0
-            ? (seq) => senderAllowed(seq, blocked, anyFree)
-            : undefined,
-        );
-        if (hot) {
-          const outcome = await sendFollowup(hot);
-          if (outcome === "offline") await sleep(state.netBackoffMs);
-          else if (outcome === "held") await sleep(TICK_MS);
-          continue;
-        }
-        noPitchWaiting = true;
-      }
-
-      // Respect send spacing for the normal drip (one email per interval).
-      const gap = nextGapMs(s);
-      if (state.lastSendMs > 0 && sinceLast < gap) {
-        await sleep(Math.min(gap - sinceLast, TICK_MS));
-        continue;
-      }
-
-      // 2) Queue-lane openers. Gated by enabled + total cap. The window check is
-      // the global window in normal mode, or the PER-RECIPIENT window in
-      // local-time mode (so the drip runs across all hours per contact).
-      const globalWindowOk = s.localTimeSend || withinWindow(s);
-      if (
-        !s.enabled ||
-        !globalWindowOk ||
-        distinctClientsToday() >= effectiveDailyCap(s)
-      ) {
-        await sleep(TICK_MS);
-        continue;
-      }
-      // If a pool is set and every account hit its cap (or is blocked), wait
-      // (don't strand a claim).
-      const elig = pooledEligibility(s, blocked);
-      if (elig === "capped") {
-        await sleep(TICK_MS);
-        continue;
-      }
-      // No pool + every configured account blocked: nothing can send. Bail
-      // before claiming, otherwise we'd claim and revert an opener every tick.
-      if (elig === "none" && !anyFree) {
-        await sleep(TICK_MS);
-        continue;
-      }
-      // HARD RULE: a re-send must NOT reuse the account that already emailed the
-      // contact. Fold that into claim eligibility so we SKIP (don't claim) any
-      // opener whose only free account is its original sender — it waits until a
-      // different account has budget (or tomorrow) instead of reusing the same.
-      const load = elig === "ok" ? sentTodayBySender() : {};
-      const op = claimNextQueuedOpener((seq) => {
-        if (!localEligible(seq, s)) return false;
-        // No pool → the item's own sender is used verbatim, so it must be free.
-        if (elig !== "ok") return senderAllowed(seq, blocked, anyFree);
-        return hasDifferentFreeSender(
-          s,
-          lastSenderForContact(seq.toEmail),
-          load,
-          blocked,
-        );
-      });
-      if (!op) {
-        // 3) Bump non-repliers: one short LINK-FREE nudge N days after the
-        // opener. (The pitch itself is reply-only — lane 1 above.) The sequence
-        // stays 'scheduled', so a later reply still fires the pitch.
-        //
-        // Lowest lane, and it lives INSIDE this branch on purpose. The opener
-        // path below has no trailing `continue` — it falls off the bottom of
-        // the try — so a bump block placed after it would send an opener and
-        // then immediately claim and send a bump on the same tick, bypassing
-        // the drip gap entirely. Nesting it here makes that impossible.
-        //
-        // hasPendingOpeners(), not just `!op`: a null claim only means nothing
-        // is sendable THIS INSTANT (all held by local window, sender rules, the
-        // different-sender rule). A bump waits for the queue to be genuinely
-        // drained, so a still-loaded campaign always outranks it.
-        //
-        // Sitting below the enabled/window/cap and pool gates is the point —
-        // bumps now pause, respect the window, and spend the daily cap like
-        // every other send. Two consequences worth knowing: a pooled cap can
-        // hold a bump whose own account is free (bumps reuse the opener's
-        // sender verbatim for thread continuity), and a queue that never drains
-        // starves bumps indefinitely. Nothing is lost when that happens —
-        // claimDueBump has no upper age bound, so the bump just fires late, and
-        // a reply in the meantime cancels it in favour of the pitch.
-        //
-        // The template check is BEFORE the claim on purpose: with no bump
-        // templates, claiming would only be undone again on the next line, and
-        // the lane would churn a claim/revert pair every tick forever.
-        if (
-          s.bumpEnabled &&
-          anyFree &&
-          noPitchWaiting &&
-          !hasPendingOpeners() &&
-          listTemplates("bump").length > 0
-        ) {
-          // Gate in the PREDICATE, never after the claim: claimDueBump stamps
-          // bump_sent_at as it claims and only ever claims rows where that is
-          // NULL, so an early return here would lose the bump forever.
-          const bump = claimDueBump(
-            s.bumpAfterDays,
-            (seq) =>
-              localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
-          );
-          if (bump) {
-            const outcome = await sendBump(bump);
-            if (outcome === "offline") await sleep(state.netBackoffMs);
-            else if (outcome === "held") await sleep(TICK_MS);
-            continue;
-          }
-        }
-        await sleep(TICK_MS);
-        continue;
-      }
-      // Pool active → a FREE account different from the one that already emailed
-      // this contact is guaranteed by the eligibility check above. If somehow
-      // gone (race), put the opener back rather than reuse the original sender.
-      let sender: string;
-      if (elig === "ok") {
-        const picked = pickPooledSender(
-          s,
-          lastSenderForContact(op.toEmail),
-          blocked,
-        );
-        if (!picked) {
-          revertOpenerToPending(op.id);
-          await sleep(TICK_MS);
-          continue;
-        }
-        sender = picked;
-      } else {
-        sender = pickSender(op.fromEmail, blocked);
-        if (!sender) {
-          revertOpenerToPending(op.id);
-          await sleep(TICK_MS);
-          continue;
-        }
-      }
-      const result = await performSend({
-        to: op.toEmail,
-        cc: op.ccEmail,
-        subject: op.opSubject,
-        body: op.opBody,
-        fromEmail: sender,
-        name: op.name,
-        link: op.link,
-        linkLinkedin: op.linkLinkedin,
-        linkGithub: op.linkGithub,
-        username: op.username,
-        country: op.country,
-      });
-      if (!result.ok && result.transient) {
-        // The link is down: nothing reached Gmail, so this contact is blameless.
-        // Put the opener back WITHOUT burning an attempt — three connection
-        // drops used to mark three prospects permanently failed and cancel
-        // their follow-ups — and hold the whole loop until the link returns.
-        revertOpenerToPending(op.id);
-        console.warn(`[queue] opener held (offline) → ${op.toEmail}`);
-        await sleep(noteNetworkFailure(result.error));
-        continue;
-      }
-      noteNetworkOk(); // reached Gmail — see sendFollowup
-      state.lastSendMs = Date.now();
-      if (sender) state.lastSender = sender.toLowerCase();
-      if (result.ok) {
-        markOpenerSent(op.id, result.messageId, result.sender);
-        recordSendEvent(op.toEmail, "opener", result.sender);
-        state.lastError = "";
-        state.lastSentAt = new Date().toISOString();
-        console.log(`[queue] opener sent → ${op.toEmail} (as ${result.sender})`);
-      } else if (result.blockKind === "policy") {
-        // Gmail blocked the ACCOUNT, not this contact. Put the opener back
-        // untouched. Without this, markOpenerFailed would count a strike and —
-        // since claims are ORDER BY id ASC — the same head-of-queue contact
-        // gets re-claimed and permanently killed after three tries, then the
-        // next one, for as long as the block lasts.
-        revertOpenerToPending(op.id);
-        state.lastError = result.error;
-        console.warn(`[queue] opener held (sender blocked) → ${op.toEmail}`);
-      } else {
-        markOpenerFailed(op.id, result.error, MAX_ATTEMPTS);
-        state.lastError = result.error;
-        console.warn(`[queue] opener failed → ${op.toEmail}: ${result.error}`);
-      }
-    } catch (err) {
-      state.lastError = err instanceof Error ? err.message : String(err);
-      await sleep(TICK_MS);
-    }
+    await state.tick();
   }
 }
 
+// --- Lifecycle (ADR-0002) ----------------------------------------------------
+// instrumentation.ts is the sole armer; module scope resets nothing and starts
+// nothing. Arms are CHAINED on `state.running`: a new generation's loop (and
+// its crash recovery) only begins once the retired loop has fully exited, and
+// the retired loop only exits at an iteration boundary — never mid-send. So a
+// successor's recovery can't flip a row a live loop is still sending, which is
+// the double-send hazard the old self-start convention could only ward off
+// with a module-scope rule.
+
 export function startQueueWorker(): void {
-  if (state.started) return;
-  state.started = true;
-  // Bumped HERE, not at module scope, so only a real start retires the running
-  // loop — see the note by the state declaration.
+  // Bumping the generation retires the running loop at its next safe point;
+  // repeated arms are harmless (each supersedes the one before).
   state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
   const myGen = state.gen;
-  console.log("[queue] two-step engine armed");
-  // If the loop ever dies outright, release `started` so a later arm can
-  // replace it. Since this module no longer clears that flag at import time
-  // (see the note by the state declaration), nothing else would.  A normal
-  // return means a newer generation took over and already owns the flag.
-  void loop(myGen).catch((err) => {
-    console.error("[queue] engine stopped unexpectedly:", err);
-    state.started = false;
-  });
+  const prev = state.running ?? Promise.resolve();
+  state.running = prev
+    .then(() => {
+      // A newer start (or a stop) won while the old loop drained — never arm
+      // a stale generation.
+      if (state.gen !== myGen) return;
+      console.log("[queue] two-step engine armed");
+      return loop(myGen);
+    })
+    .catch((err) => {
+      console.error("[queue] engine stopped unexpectedly:", err);
+    });
+}
+
+/**
+ * Retire the running loop without arming a replacement. Resolves once the
+ * loop has fully exited — after that, no further tick runs and no send is
+ * attempted until a subsequent start arms a fresh generation.
+ */
+export async function stopQueueWorker(): Promise<void> {
+  state.gen = (Number.isFinite(state.gen) ? state.gen : 0) + 1;
+  await state.running;
 }
 
 export function queueWorkerStatus() {
@@ -816,5 +857,3 @@ export function queueWorkerStatus() {
     }, {}),
   };
 }
-
-startQueueWorker();
