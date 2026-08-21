@@ -20,7 +20,12 @@
 // module never starts the loop. Survives with the tray-kept server.
 
 import { listIdentities, resetSmtpNetworkCaches } from "./mail";
-import { performSend } from "./send-core";
+import { performSend, type SendContext } from "./send-core";
+import {
+  applyAttemptOutcome,
+  type LaneAdapter,
+  type LaneOutcome,
+} from "./attempt-step";
 import { recordSendEvent } from "./recent-sends";
 import { getSettings } from "./queue-settings-store";
 import { listTemplates } from "./templates-store";
@@ -209,92 +214,110 @@ function replySubject(openerSubject: string): string {
   return /^re:/i.test(s) ? s : `Re: ${s}`;
 }
 
-// What a lane did with the item it claimed, so the loop knows how long to wait:
-//   "attempted" — an email actually went down the wire (drip spacing applies)
-//   "held"      — nothing was sent, item put back (short tick)
-//   "offline"   — the link is down, item put back (offline backoff)
-type LaneOutcome = "attempted" | "held" | "offline";
+// --- the attempt Lanes as data ----------------------------------------------
+// Each lane is a label for the log lines, the send-event kind, and the
+// store-backed LaneAdapter the attempt step drives. The transient / policy /
+// success / fail policy itself lives ONCE in applyAttemptOutcome
+// (lib/attempt-step.ts); nothing lane-specific below decides an outcome.
 
-// Send one sequence's follow-up as a threaded reply to its opener, then record
-// the outcome. Shared by the hot (reply-triggered) and normal follow-up paths.
-// See sendBump for why the caller must sleep when nothing was attempted.
-async function sendFollowup(fu: Sequence): Promise<LaneOutcome> {
-  const sender = pickSender(fu.fromEmail);
-  if (!sender) {
-    // The account went into a block between the claim and here. Put the step
-    // back untouched — it fires tomorrow rather than burning an attempt.
-    revertFollowupToScheduled(fu.id);
-    return "held";
-  }
-  const result = await performSend({
-    to: fu.toEmail,
-    // Keep the same Cc as the opener so the thread stays consistent.
-    cc: fu.ccEmail,
-    subject: replySubject(fu.opSubject),
-    body: fu.fuBody,
-    fromEmail: sender,
-    name: fu.name,
-    link: fu.link,
-    linkLinkedin: fu.linkLinkedin,
-    linkGithub: fu.linkGithub,
-    username: fu.username,
-    country: fu.country,
-    inReplyTo: fu.opMessageId,
-    references: fu.opMessageId,
-  });
-  if (!result.ok && result.transient) {
-    // Nothing left the machine, so don't spend a drip slot on it and don't
-    // count a strike — put the step back and let the loop wait out the outage.
-    revertFollowupToScheduled(fu.id);
-    console.warn(`[queue] follow-up held (offline) → ${fu.toEmail}`);
-    recordNetworkFailure(result.error);
+type LaneSpec = {
+  label: string;
+  eventKind: "opener" | "followup";
+  adapter: LaneAdapter;
+};
+
+function pitchLane(fu: Sequence): LaneSpec {
+  return {
+    // Glossary term for the log lines; the store still says "followup" in its
+    // carried-over identifiers and event kinds.
+    label: "pitch",
+    eventKind: "followup",
+    adapter: {
+      revert: () => revertFollowupToScheduled(fu.id),
+      markSent: (messageId) => markFollowupSent(fu.id, messageId),
+      markFailed: (error) => markFollowupFailed(fu.id, error, MAX_ATTEMPTS),
+    },
+  };
+}
+
+function openerLane(op: Sequence): LaneSpec {
+  return {
+    label: "opener",
+    eventKind: "opener",
+    adapter: {
+      revert: () => revertOpenerToPending(op.id),
+      // Persist the account that actually sent, so the threaded follow-up
+      // replies from the same address.
+      markSent: (messageId, sender) => markOpenerSent(op.id, messageId, sender),
+      markFailed: (error) => markOpenerFailed(op.id, error, MAX_ATTEMPTS),
+    },
+  };
+}
+
+function bumpLane(seq: Sequence): LaneSpec {
+  return {
+    label: "bump",
+    eventKind: "followup",
+    adapter: {
+      // claimDueBump stamped bump_sent_at as it claimed; un-stamp so the one
+      // chance isn't consumed. For an offline revert the spin risk below
+      // doesn't apply — the revert is followed by the offline backoff, not an
+      // immediate re-claim.
+      revert: () => revertBump(seq.id),
+      // Already stamped at claim — success has nothing left to write.
+      markSent: () => {},
+      // A bump has no attempt counter, and reverting here would be wrong: a
+      // permanently-failing one (dead address) would be re-claimed every
+      // interval forever — re-mailing a bad address and, since claims are
+      // ORDER BY op_sent_at ASC, starving every bump queued behind it. The one
+      // chance is simply spent.
+      markFailed: () => {},
+    },
+  };
+}
+
+// The one attempt step for all three Lanes: put the claimed item on the wire,
+// apply the outcome policy through the lane's adapter, and do the lane-agnostic
+// shell bookkeeping (offline backoff, drip stamp, status fields, log lines).
+async function attemptSend(lane: LaneSpec, ctx: SendContext): Promise<LaneOutcome> {
+  const result = await performSend(ctx);
+  const step = applyAttemptOutcome(result, lane.adapter);
+  if (step.outcome === "offline") {
+    // Nothing left the machine — the item is already back untouched; hold the
+    // whole loop until the link returns.
+    console.warn(`[queue] ${lane.label} held (offline) → ${ctx.to}`);
+    recordNetworkFailure(step.error);
     return "offline";
   }
   // Non-transient means we reached Gmail and it answered — whatever it said,
   // the link is up.
   recordNetworkOk();
-  recordAttempt(sender);
-  if (result.ok) {
-    markFollowupSent(fu.id, result.messageId);
-    recordSendEvent(fu.toEmail, "followup", result.sender);
+  recordAttempt(ctx.fromEmail);
+  if (step.disposition === "sent") {
+    recordSendEvent(ctx.to, lane.eventKind, step.sender);
     state.lastError = "";
     state.lastSentAt = new Date().toISOString();
-    console.log(`[queue] follow-up sent → ${fu.toEmail}`);
-  } else if (result.blockKind === "policy") {
-    // The ACCOUNT is blocked, not this contact — reschedule instead of
-    // counting a strike toward the permanent 'failed' state.
-    revertFollowupToScheduled(fu.id);
-    state.lastError = result.error;
-    console.warn(`[queue] follow-up held (sender blocked) → ${fu.toEmail}`);
+    console.log(`[queue] ${lane.label} sent → ${ctx.to} (as ${step.sender})`);
+  } else if (step.disposition === "sender-blocked") {
+    state.lastError = step.error;
+    console.warn(`[queue] ${lane.label} held (sender blocked) → ${ctx.to}`);
   } else {
-    markFollowupFailed(fu.id, result.error, MAX_ATTEMPTS);
-    state.lastError = result.error;
-    console.warn(`[queue] follow-up failed → ${fu.toEmail}: ${result.error}`);
+    state.lastError = step.error;
+    console.warn(`[queue] ${lane.label} failed → ${ctx.to}: ${step.error}`);
   }
   return "attempted";
 }
 
-// Send a one-time link-free bump to a non-replier as a threaded reply. The
-// sequence stays 'scheduled' (bump_sent_at already stamped by claimDueBump), so
-// a later reply still triggers the pitch.
-//
-// The caller must sleep whenever nothing was attempted: the bump lane ends its
-// tick there, and the paths below that bail early leave the last-send stamp
-// untouched, so without a sleep the loop would re-claim and spin with no timer
-// in it.
-async function sendBump(seq: Sequence): Promise<LaneOutcome> {
-  const body = nextBumpBody(seq.name);
-  if (!body) {
-    revertBump(seq.id); // no bump templates — don't consume the one chance
-    return "held";
-  }
-  const sender = pickSender(seq.fromEmail);
-  if (!sender) {
-    revertBump(seq.id);
-    return "held";
-  }
-  const result = await performSend({
+// The Pitch and Bump lanes both send as a threaded reply to the sequence's
+// opener, from an already-chosen Sender.
+function threadedReplyContext(
+  seq: Sequence,
+  body: string,
+  sender: string,
+): SendContext {
+  return {
     to: seq.toEmail,
+    // Keep the same Cc as the opener so the thread stays consistent.
     cc: seq.ccEmail,
     subject: replySubject(seq.opSubject),
     body,
@@ -307,39 +330,61 @@ async function sendBump(seq: Sequence): Promise<LaneOutcome> {
     country: seq.country,
     inReplyTo: seq.opMessageId,
     references: seq.opMessageId,
+  };
+}
+
+// Send one sequence's Pitch as a threaded reply to its opener. See sendBump
+// for why the caller must sleep when nothing was attempted.
+async function sendFollowup(fu: Sequence): Promise<LaneOutcome> {
+  const lane = pitchLane(fu);
+  const sender = pickSender(fu.fromEmail);
+  if (!sender) {
+    // The account went into a block between the claim and here. Put the step
+    // back untouched — it fires tomorrow rather than burning an attempt.
+    lane.adapter.revert();
+    return "held";
+  }
+  return attemptSend(lane, threadedReplyContext(fu, fu.fuBody, sender));
+}
+
+// Send a one-time link-free bump to a non-replier as a threaded reply. The
+// sequence stays 'scheduled' (bump_sent_at already stamped by claimDueBump), so
+// a later reply still triggers the pitch.
+//
+// The caller must sleep whenever nothing was attempted: the bump lane ends its
+// tick there, and the paths below that bail early leave the last-send stamp
+// untouched, so without a sleep the loop would re-claim and spin with no timer
+// in it.
+async function sendBump(seq: Sequence): Promise<LaneOutcome> {
+  const lane = bumpLane(seq);
+  const body = nextBumpBody(seq.name);
+  if (!body) {
+    lane.adapter.revert(); // no bump templates — don't consume the one chance
+    return "held";
+  }
+  const sender = pickSender(seq.fromEmail);
+  if (!sender) {
+    lane.adapter.revert();
+    return "held";
+  }
+  return attemptSend(lane, threadedReplyContext(seq, body, sender));
+}
+
+/** Send a claimed opener from the already-chosen Sender. */
+async function sendOpener(op: Sequence, sender: string): Promise<LaneOutcome> {
+  return attemptSend(openerLane(op), {
+    to: op.toEmail,
+    cc: op.ccEmail,
+    subject: op.opSubject,
+    body: op.opBody,
+    fromEmail: sender,
+    name: op.name,
+    link: op.link,
+    linkLinkedin: op.linkLinkedin,
+    linkGithub: op.linkGithub,
+    username: op.username,
+    country: op.country,
   });
-  if (!result.ok && result.transient) {
-    // Safe to un-stamp for the same reason as a policy block, and necessary:
-    // a bump has no attempt counter, so every bump attempted during an outage
-    // was previously lost forever. The spin risk the comment below warns about
-    // doesn't apply — an offline revert is followed by the offline backoff, not
-    // by an immediate re-claim.
-    revertBump(seq.id);
-    console.warn(`[queue] bump held (offline) → ${seq.toEmail}`);
-    recordNetworkFailure(result.error);
-    return "offline";
-  }
-  recordNetworkOk(); // reached Gmail — see sendFollowup
-  recordAttempt(sender);
-  if (result.ok) {
-    recordSendEvent(seq.toEmail, "followup", result.sender);
-    state.lastError = "";
-    state.lastSentAt = new Date().toISOString();
-    console.log(`[queue] bump sent → ${seq.toEmail}`);
-  } else if (result.blockKind === "policy") {
-    // Only un-stamp for an ACCOUNT-level block, which will clear by itself.
-    // Reverting on every failure would be wrong: a bump has no attempt counter,
-    // so a permanently-failing one (dead address) would be re-claimed every
-    // interval forever — re-mailing a bad address and, since claims are ORDER BY
-    // op_sent_at ASC, starving every other bump queued behind it.
-    revertBump(seq.id);
-    state.lastError = result.error;
-    console.warn(`[queue] bump held (sender blocked) → ${seq.toEmail}`);
-  } else {
-    state.lastError = result.error;
-    console.warn(`[queue] bump failed → ${seq.toEmail}: ${result.error}`);
-  }
-  return "attempted";
 }
 
 // One scheduling pass: gather the Send plan's inputs, run the pure decision,
@@ -443,52 +488,10 @@ async function tick(): Promise<void> {
             return;
           }
         }
-        const result = await performSend({
-          to: op.toEmail,
-          cc: op.ccEmail,
-          subject: op.opSubject,
-          body: op.opBody,
-          fromEmail: sender,
-          name: op.name,
-          link: op.link,
-          linkLinkedin: op.linkLinkedin,
-          linkGithub: op.linkGithub,
-          username: op.username,
-          country: op.country,
-        });
-        if (!result.ok && result.transient) {
-          // The link is down: nothing reached Gmail, so this contact is
-          // blameless. Put the opener back WITHOUT burning an attempt — three
-          // connection drops used to mark three prospects permanently failed
-          // and cancel their follow-ups — and hold the whole loop until the
-          // link returns.
-          revertOpenerToPending(op.id);
-          console.warn(`[queue] opener held (offline) → ${op.toEmail}`);
-          await sleep(recordNetworkFailure(result.error));
-          return;
-        }
-        recordNetworkOk(); // reached Gmail — see sendFollowup
-        recordAttempt(sender);
-        if (result.ok) {
-          markOpenerSent(op.id, result.messageId, result.sender);
-          recordSendEvent(op.toEmail, "opener", result.sender);
-          state.lastError = "";
-          state.lastSentAt = new Date().toISOString();
-          console.log(`[queue] opener sent → ${op.toEmail} (as ${result.sender})`);
-        } else if (result.blockKind === "policy") {
-          // Gmail blocked the ACCOUNT, not this contact. Put the opener back
-          // untouched. Without this, markOpenerFailed would count a strike
-          // and — since claims are ORDER BY id ASC — the same head-of-queue
-          // contact gets re-claimed and permanently killed after three tries,
-          // then the next one, for as long as the block lasts.
-          revertOpenerToPending(op.id);
-          state.lastError = result.error;
-          console.warn(`[queue] opener held (sender blocked) → ${op.toEmail}`);
-        } else {
-          markOpenerFailed(op.id, result.error, MAX_ATTEMPTS);
-          state.lastError = result.error;
-          console.warn(`[queue] opener failed → ${op.toEmail}: ${result.error}`);
-        }
+        const outcome = await sendOpener(op, sender);
+        // The offline backoff state was just written by the attempt step, so
+        // this sleeps exactly the wait recordNetworkFailure computed.
+        if (outcome === "offline") await sleep(state.netBackoffMs);
         return;
       } else {
         // Bump: lowest Lane. The plan only opens it on a tick where the Pitch
