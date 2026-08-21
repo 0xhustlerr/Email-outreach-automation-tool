@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { GmailReplyMessage, GmailThreadMessage } from "@/lib/gmail";
-import type { ReplyNotification } from "@/lib/reply-alerts";
+import type { InboxScanError, ReplyNotification } from "@/lib/reply-alerts";
 import { inboxContextLabel, type ReplyInboxContext } from "@/lib/reply-inbox";
 import type { SheetHistoryRow } from "@/lib/sheets";
 import { primaryEmail, rowKey } from "@/lib/sheet-active";
@@ -34,6 +34,9 @@ type Props = {
   isUnread: (row: SheetHistoryRow) => boolean;
   messageIds: Record<string, string>;
   syncing?: boolean;
+  /** Inboxes the last sync could not read. Shown as a banner: an unreadable
+   *  inbox is not "no replies", and the two used to look identical here. */
+  inboxErrors?: InboxScanError[];
   senders: MailIdentity[];
   smtpConfigured: boolean;
 };
@@ -406,6 +409,7 @@ export default function ReplyNotificationsBell({
   isUnread,
   messageIds,
   syncing,
+  inboxErrors,
   senders,
   smtpConfigured,
 }: Props) {
@@ -826,6 +830,28 @@ export default function ReplyNotificationsBell({
                   </button>
                 )}
               </div>
+
+              {(inboxErrors?.length ?? 0) > 0 && (
+                <div className="mx-3 mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                  <span className="font-medium">
+                    {inboxErrors!.length} inbox
+                    {inboxErrors!.length === 1 ? "" : "es"} could not be read
+                  </span>{" "}
+                  &mdash; replies sent to{" "}
+                  {inboxErrors!.length === 1 ? "it" : "them"} will not appear
+                  here.
+                  <ul className="mt-1 space-y-0.5">
+                    {inboxErrors!.map((e) => (
+                      <li key={e.inbox} className="text-amber-300/80">
+                        {e.inbox}: {e.error}
+                        {e.needsReauth
+                          ? " — reconnect this account on the Accounts page."
+                          : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <div className="min-h-0 max-h-[min(240px,36vh)] flex-1 overflow-y-auto min-[720px]:max-h-none">
                 {displayRows.length === 0 ? (

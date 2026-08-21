@@ -14,7 +14,11 @@
 // long-lived background scanner over the connected inboxes.
 
 import { isGmailReplySyncConfigured } from "./gmail";
-import type { ReplyNotification, ReplySyncResult } from "./reply-alerts";
+import type {
+  InboxScanError,
+  ReplyNotification,
+  ReplySyncResult,
+} from "./reply-alerts";
 import {
   loadPersistedMessageIds,
   savePersistedMessageIds,
@@ -40,6 +44,10 @@ export type ReplySyncSnapshot = {
   notifications: ReplyNotification[];
   messageIds: Record<string, string>;
   receivedInboxes: Record<string, string>;
+  /** Inboxes the last cycle could not read. Empty on a clean scan. A cycle can
+   *  be ok and still be partially blind, so this is deliberately separate from
+   *  lastError — it must not make the UI shout "sync failed". */
+  inboxErrors: InboxScanError[];
   checked: number;
   updated: number;
   lastSyncAt: string | null;
@@ -67,6 +75,7 @@ const emptySnapshot: ReplySyncSnapshot = {
   notifications: [],
   messageIds: {},
   receivedInboxes: {},
+  inboxErrors: [],
   checked: 0,
   updated: 0,
   lastSyncAt: null,
@@ -136,6 +145,7 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
         state.snapshot = {
           ...state.snapshot,
           syncing: false,
+          inboxErrors: result.inboxErrors,
           lastError: result.error ?? "Reply sync failed.",
         };
         return;
@@ -172,6 +182,7 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
         notifications: pending,
         messageIds: result.messageIds,
         receivedInboxes: result.receivedInboxes,
+        inboxErrors: result.inboxErrors,
         checked: result.checked,
         updated: result.updated,
         lastSyncAt: new Date().toISOString(),

@@ -3,6 +3,7 @@
 
 import { htmlToPlainForQuote, stripQuotedReplyBody } from "@/lib/email-quote";
 import { getGmailClient, listStoredIdentities } from "@/lib/identities-store";
+import type { InboxScanError } from "@/lib/reply-alerts";
 
 type TokenCache = { accessToken: string; expiresAt: number };
 
@@ -209,9 +210,18 @@ export async function getAccessToken(senderEmail: string): Promise<string | null
     access_token?: string;
     expires_in?: number;
     error?: string;
+    error_description?: string;
   };
   if (!res.ok || !data.access_token) {
-    throw new Error(data.error ?? `Gmail token refresh failed (${res.status}).`);
+    // Keep the raw OAuth code in the message — callers classify on it (see
+    // isReauth in getRecentInboundByContact), and 'unauthorized_client' vs
+    // 'invalid_grant' is the difference between "wrong OAuth client" and
+    // "token revoked". The description is what makes it readable in the UI.
+    const code = data.error ?? `HTTP ${res.status}`;
+    const detail = data.error_description?.trim();
+    throw new Error(
+      detail ? `${code}: ${detail}` : `Gmail token refresh failed (${code}).`,
+    );
   }
 
   tokenCache.set(key, {
@@ -624,30 +634,52 @@ async function fetchInboundMeta(
 export async function getRecentInboundByContact(
   sinceDays = 30,
   capPerInbox = 300,
-): Promise<Map<string, InboundReply>> {
+): Promise<{
+  byContact: Map<string, InboundReply>;
+  inboxErrors: InboxScanError[];
+}> {
   const accounts = Object.keys(parseGmailAccounts());
   const byContact = new Map<string, InboundReply>();
+  const inboxErrors: InboxScanError[] = [];
   let authFailures = 0;
   let lastAuthError = "";
+
+  // Google says 'unauthorized_client' when the refresh token was minted by a
+  // DIFFERENT OAuth client than the one now configured, and 'invalid_grant'
+  // when it was revoked or expired. Both need the account reconnected; a
+  // network blip or a 5xx does not, so only these two are worth nagging about.
+  const isReauth = (msg: string) =>
+    /unauthorized_client|invalid_grant|invalid_client/i.test(msg);
 
   for (const inbox of accounts) {
     let access: string | null;
     try {
       access = await getAccessToken(inbox);
     } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
       authFailures++;
-      lastAuthError = e instanceof Error ? e.message : String(e);
+      lastAuthError = error;
+      inboxErrors.push({ inbox, error, needsReauth: isReauth(error) });
       continue;
     }
     if (!access) {
       authFailures++;
+      inboxErrors.push({
+        inbox,
+        error: "No OAuth credentials for this inbox.",
+        needsReauth: true,
+      });
       continue;
     }
 
     let ids: string[];
     try {
       ids = await listRecentInboundIds(access, sinceDays, capPerInbox);
-    } catch {
+    } catch (e) {
+      // Previously a bare `continue`: an inbox that authenticated but could not
+      // be listed vanished from the result with nothing recorded anywhere.
+      const error = e instanceof Error ? e.message : String(e);
+      inboxErrors.push({ inbox, error, needsReauth: isReauth(error) });
       continue;
     }
 
@@ -657,6 +689,17 @@ export async function getRecentInboundByContact(
     const metas = await mapWithPool(ids, 4, (id) =>
       fetchInboundMeta(access!, id, inbox).catch(() => null),
     );
+
+    // Listed messages but could not read a single one: same blindness as a
+    // failed list, and just as invisible before this. Usually the link dying
+    // mid-scan, since each fetch swallows its own error above.
+    if (ids.length > 0 && metas.every((m) => m === null)) {
+      inboxErrors.push({
+        inbox,
+        error: `Could not read any of the ${ids.length} recent message(s).`,
+        needsReauth: false,
+      });
+    }
 
     for (const meta of metas) {
       if (!meta) continue;
@@ -670,16 +713,18 @@ export async function getRecentInboundByContact(
   }
 
   // Every inbox failed auth - surface it instead of silently reporting "no
-  // replies", which hides expired/revoked refresh tokens.
+  // replies", which hides expired/revoked refresh tokens. A PARTIAL failure is
+  // not fatal (the inboxes that did answer are still worth matching), so it
+  // travels back in inboxErrors instead of throwing.
   if (accounts.length > 0 && authFailures === accounts.length) {
     throw new Error(
       `Gmail authorization failed for all inbox(es)` +
         (lastAuthError ? ` (${lastAuthError})` : "") +
-        `. Regenerate the refresh token(s) in GMAIL_REFRESH_TOKENS.`,
+        `. Reconnect the account(s) on the Accounts page.`,
     );
   }
 
-  return byContact;
+  return { byContact, inboxErrors };
 }
 
 export function parseEmailFromHeader(fromHeader: string): string {

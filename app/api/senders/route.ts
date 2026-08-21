@@ -39,6 +39,7 @@ import {
 } from "@/lib/tracking";
 import { isSheetsLoggerConfigured } from "@/lib/sheets";
 import { listActiveBlocks } from "@/lib/sender-blocks";
+import { getReplySyncSnapshot } from "@/lib/reply-sync-loop";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,6 +51,13 @@ function snapshot() {
   // refresh token) OR the environment (GMAIL_REFRESH_TOKENS on the dev machine),
   // so an env-configured account shows "on" instead of a misleading "off".
   const activeSync = parseGmailAccounts();
+  // Read the background loop's last result rather than exchanging tokens here:
+  // this route is polled, and an OAuth round-trip per poll per account would be
+  // both slow and rate-limited.
+  const replySnapshot = getReplySyncSnapshot();
+  const syncFailures = new Map(
+    replySnapshot.inboxErrors.map((e) => [e.inbox.toLowerCase(), e]),
+  );
   const envClient = !!(
     process.env.GMAIL_CLIENT_ID?.trim() && process.env.GMAIL_CLIENT_SECRET?.trim()
   );
@@ -83,9 +91,29 @@ function snapshot() {
     // returned — only booleans.
     replySync: {
       clientConfigured: !!client || envClient,
+      // Having a refresh token on file is NOT the same as that token working.
+      // A token minted by a since-replaced OAuth client still sits in the DB and
+      // still shows up in parseGmailAccounts, but every refresh returns
+      // unauthorized_client — so this used to report a green "sync on" for an
+      // inbox that had not been read in weeks. Subtract whatever the last sync
+      // cycle actually failed to read.
       accounts: Object.fromEntries(
-        stored.map((i) => [i.email, i.email.toLowerCase() in activeSync]),
+        stored.map((i) => {
+          const key = i.email.toLowerCase();
+          return [i.email, key in activeSync && !syncFailures.has(key)];
+        }),
       ) as Record<string, boolean>,
+      // Why each failing inbox failed, so the page can say "reconnect this
+      // account" instead of just going grey.
+      accountErrors: Object.fromEntries(
+        [...syncFailures].map(([email, e]) => [
+          email,
+          { error: e.error, needsReauth: e.needsReauth },
+        ]),
+      ),
+      // Null until the first cycle completes. While null the account flags are
+      // "token present", not "token verified" — nothing has been tried yet.
+      lastSyncAt: replySnapshot.lastSyncAt,
     },
     // Accounts Gmail policy-blocked; they resume on their own at `until` (the
     // next local midnight). An ARRAY, not a map, so the C# tray DTO stays a

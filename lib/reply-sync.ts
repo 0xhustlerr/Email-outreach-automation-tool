@@ -4,7 +4,11 @@ import {
   type InboundReply,
 } from "@/lib/gmail";
 import { notifyNewReply } from "@/lib/knock-server";
-import type { ReplyNotification, ReplySyncResult } from "@/lib/reply-alerts";
+import type {
+  InboxScanError,
+  ReplyNotification,
+  ReplySyncResult,
+} from "@/lib/reply-alerts";
 import {
   batchUpdateSheetRows,
   fetchSheetHistory,
@@ -46,6 +50,7 @@ export async function syncRepliesToSheet(
       replies: [],
       messageIds: {},
       receivedInboxes: {},
+      inboxErrors: [],
     };
   }
 
@@ -70,6 +75,7 @@ export async function syncRepliesToSheet(
       replies: [],
       messageIds: {},
       receivedInboxes: {},
+      inboxErrors: [],
       error: err instanceof Error ? err.message : "Failed to load sheet.",
     };
   }
@@ -86,12 +92,15 @@ export async function syncRepliesToSheet(
     Math.max(50, Number(process.env.GMAIL_INBOX_SCAN_CAP ?? "400") || 400),
   );
 
+  // inboxErrors: the inboxes that could not be read. The scan still succeeds on
+  // whatever answered, so these ride along with an ok result instead of failing
+  // the cycle — but they must reach the UI, or a dead token on some accounts is
+  // indistinguishable from "nobody replied".
   let inboundByContact: Map<string, InboundReply>;
+  let inboxErrors: InboxScanError[];
   try {
-    inboundByContact = await getRecentInboundByContact(
-      replyWindowDays,
-      inboxScanCap,
-    );
+    ({ byContact: inboundByContact, inboxErrors } =
+      await getRecentInboundByContact(replyWindowDays, inboxScanCap));
   } catch (err) {
     return {
       ok: false,
@@ -102,6 +111,7 @@ export async function syncRepliesToSheet(
       replies: [],
       messageIds: {},
       receivedInboxes: {},
+      inboxErrors: [],
       error: err instanceof Error ? err.message : "Failed to scan inboxes.",
     };
   }
@@ -252,6 +262,7 @@ export async function syncRepliesToSheet(
         replies,
         messageIds,
         receivedInboxes,
+        inboxErrors,
         error: err instanceof Error ? err.message : "Sheet update failed.",
       };
     }
@@ -273,5 +284,6 @@ export async function syncRepliesToSheet(
     replies,
     messageIds,
     receivedInboxes,
+    inboxErrors,
   };
 }

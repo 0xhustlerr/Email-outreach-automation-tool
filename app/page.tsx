@@ -1035,6 +1035,7 @@ export default function Page() {
                   isUnread={newReplies.isUnread}
                   messageIds={sheetHistory.messageIds}
                   syncing={sheetHistory.syncingReplies}
+                  inboxErrors={sheetHistory.inboxErrors}
                   senders={senders}
                   smtpConfigured={smtpConfigured}
                 />

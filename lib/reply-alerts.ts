@@ -17,6 +17,22 @@ export type ReplyNotification = {
   firstSheetUpdate: boolean;
 };
 
+/** One connected inbox that could not be read on the last scan.
+ *
+ *  A cycle where SOME inboxes fail still returns ok — the rows it could match
+ *  are matched — so this is the only record that the scan was partially blind.
+ *  Without it a dead refresh token on 2 of 3 accounts looks identical to "no
+ *  replies": ok, no error, and a UI saying you're all caught up. */
+export type InboxScanError = {
+  /** The inbox that failed, lowercased. */
+  inbox: string;
+  /** Why, verbatim from Google where possible (e.g. "unauthorized_client"). */
+  error: string;
+  /** True when the refresh token itself was rejected — the account has to be
+   *  reconnected, and no amount of retrying will fix it. */
+  needsReauth: boolean;
+};
+
 export type ReplySyncResult = {
   ok: boolean;
   configured: boolean;
@@ -35,5 +51,7 @@ export type ReplySyncResult = {
   messageIds: Record<string, string>;
   /** Inbox that holds the latest reply, per sheet row. */
   receivedInboxes: Record<string, string>;
+  /** Inboxes that could not be read this cycle. Empty on a clean scan. */
+  inboxErrors: InboxScanError[];
   error?: string;
 };

@@ -48,7 +48,15 @@ type SendersState = {
   smtpConfigured: boolean;
   smtp?: Record<string, SmtpInfo>;
   health?: SenderHealth[];
-  replySync?: { clientConfigured: boolean; accounts: Record<string, boolean> };
+  replySync?: {
+    clientConfigured: boolean;
+    accounts: Record<string, boolean>;
+    /** Why an account's inbox could not be read on the last sync cycle. */
+    accountErrors?: Record<string, { error: string; needsReauth: boolean }>;
+    /** Null until the first cycle runs — until then `accounts` means "token on
+     *  file", not "token verified". */
+    lastSyncAt?: string | null;
+  };
   github?: { tokenSet: boolean };
   tracking?: { urlSet: boolean; enabled: boolean; url: string };
   /** Accounts Gmail policy-blocked; they resume at the next local midnight. */
@@ -154,6 +162,7 @@ export default function SendersModal({
 
   const clientConfigured = !!data?.replySync?.clientConfigured;
   const syncAccounts = data?.replySync?.accounts ?? {};
+  const syncErrors = data?.replySync?.accountErrors ?? {};
   const blockByEmail = new Map(
     (data?.senderBlocks ?? []).map((b) => [b.sender, b]),
   );
@@ -521,6 +530,9 @@ export default function SendersModal({
               {(data?.identities ?? []).map((id) => {
                 const key = id.email.toLowerCase();
                 const syncOn = !!syncAccounts[key];
+                // Token on file but the last scan couldn't read the inbox —
+                // the state that used to render as a healthy green pill.
+                const syncErr = syncErrors[key];
                 const block = blockByEmail.get(key);
                 const hp = healthByEmail.get(key);
                 const smtp = smtpByEmail[key];
@@ -590,14 +602,32 @@ export default function SendersModal({
                           onClick={() => setReplyFor(id.email)}
                           className={
                             "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition " +
-                            (syncOn
-                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                              : "border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10")
+                            (syncErr
+                              ? "border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                              : syncOn
+                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                                : "border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10")
                           }
-                          title="Set up reading of incoming replies for this account"
+                          title={
+                            syncErr
+                              ? `Replies to this inbox are NOT being read: ${syncErr.error}` +
+                                (syncErr.needsReauth
+                                  ? " Reconnect this account to fix it."
+                                  : "")
+                              : "Set up reading of incoming replies for this account"
+                          }
                         >
-                          <span className={"h-1.5 w-1.5 rounded-full " + (syncOn ? "bg-emerald-400" : "bg-slate-500")} />
-                          Reply sync
+                          <span
+                            className={
+                              "h-1.5 w-1.5 rounded-full " +
+                              (syncErr
+                                ? "bg-amber-400"
+                                : syncOn
+                                  ? "bg-emerald-400"
+                                  : "bg-slate-500")
+                            }
+                          />
+                          {syncErr ? "Reply sync broken" : "Reply sync"}
                         </button>
                         {pendingRemove === id.email ? (
                           <>

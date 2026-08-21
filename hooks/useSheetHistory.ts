@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReplyNotification } from "@/lib/reply-alerts";
+import type { InboxScanError, ReplyNotification } from "@/lib/reply-alerts";
 import type { SheetHistoryRow } from "@/lib/sheets";
 
 const STALE_MS = 60_000;
@@ -35,6 +35,10 @@ export function useSheetHistory(enabled: boolean) {
   >([]);
   const [replies, setReplies] = useState<ReplyNotification[]>([]);
   const [messageIds, setMessageIds] = useState<Record<string, string>>({});
+  // Inboxes the last sync cycle could not read. A partial failure still returns
+  // ok, so without this the bell shows "all caught up" while replies to those
+  // accounts are simply never looked at.
+  const [inboxErrors, setInboxErrors] = useState<InboxScanError[]>([]);
   const [receivedInboxes, setReceivedInboxes] = useState<Record<string, string>>(
     () => ({}),
   );
@@ -72,8 +76,10 @@ export function useSheetHistory(enabled: boolean) {
         notifications?: ReplyNotification[];
         messageIds?: Record<string, string>;
         receivedInboxes?: Record<string, string>;
+        inboxErrors?: InboxScanError[];
       };
       if (res.ok && data.ok) {
+        setInboxErrors(data.inboxErrors ?? []);
         if (data.messageIds) setMessageIds(data.messageIds);
         if (data.receivedInboxes) {
           receivedInboxRef.current = {
@@ -210,6 +216,7 @@ export function useSheetHistory(enabled: boolean) {
     replies,
     messageIds,
     receivedInboxes,
+    inboxErrors,
     refresh: async () => {
       await load(readyRef.current, { forceSync: true });
     },
