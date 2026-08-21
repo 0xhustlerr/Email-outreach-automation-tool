@@ -89,6 +89,9 @@ type QueueStatus = {
   // Resolved daily cap per pooled account (0 = unlimited).
   capBySender?: Record<string, number>;
   waitingForSender?: number;
+  // How many bump templates are saved. Zero means the worker's bump lane can
+  // never fire, however 'bumpEnabled' is set — a gate only the server sees.
+  bumpTemplates?: number;
   // Accounts paused for today by a Gmail block; they resume on their own.
   blockedSenders?: SenderBlock[];
   // Every eligible account is blocked — nothing can send until tomorrow.
@@ -111,13 +114,21 @@ function effCapFor(s: QueueSettings, email: string): number {
   return s.senderCaps?.[email] ?? 0;
 }
 
-// When this item's link-free bump becomes eligible, or null if it can never get
-// one (bumps off, already bumped, opener not sent, or the pitch already moved on
-// from 'scheduled'). Mirrors claimDueBump in lib/sequences-store.ts, minus the
-// "has this contact replied?" test — only the server can answer that, so a row
-// may show a bump ETA that a reply quietly cancels.
-function bumpDueAt(item: QueueItem, s: QueueSettings): number | null {
-  if (!s.bumpEnabled) return null;
+// When this item's link-free bump becomes ELIGIBLE, or null if it can never get
+// one (bumps off, no bump template saved, already bumped, opener not sent, or
+// the pitch already moved on from 'scheduled'). Mirrors claimDueBump in
+// lib/sequences-store.ts, minus the "has this contact replied?" test — only the
+// server can answer that, so a row may show a bump ETA that a reply quietly
+// cancels.
+//
+// Eligible, not "sends at": the bump lane is last and waits for the opener
+// queue to drain, so this is a floor. slotTimes projects the real send time.
+function bumpDueAt(
+  item: QueueItem,
+  s: QueueSettings,
+  bumpsPossible: boolean,
+): number | null {
+  if (!s.bumpEnabled || !bumpsPossible) return null;
   if (item.fuStatus !== "scheduled" || item.bumpSentAt || !item.opSentAt) return null;
   return new Date(item.opSentAt).getTime() + s.bumpAfterDays * 86_400_000;
 }
@@ -405,7 +416,7 @@ function QueueStatusPill({ item }: { item: QueueItem }) {
       return pill(
         "⏳ Follow-up",
         "border-indigo-400/30 bg-indigo-500/15 text-indigo-200",
-        "Opener sent · the pitch waits for a reply (a link-free bump may go out first)",
+        "Opener sent · the pitch waits for a reply. A link-free bump follows once the queue's openers are done.",
       );
     }
     return pill(
@@ -550,33 +561,58 @@ export default function QueueModal({
     .filter((it) => it.opStatus === "pending")
     .map((it) => it.id)
     .sort((a, b) => a - b);
+  // Can a bump physically send? 'bumpEnabled' isn't enough — the worker also
+  // requires at least one bump template. Default true so an older status
+  // payload (or a poll that hasn't landed) doesn't blank every bump ETA.
+  const bumpsPossible = (status?.bumpTemplates ?? 1) > 0;
+
   // Due BUMPS, not due follow-ups: the timed follow-up lane is not wired into
   // the worker (claimDueFollowup is exported but never imported), so a scheduled
   // pitch waits on a reply and never claims a drip slot. The bump lane does —
-  // it runs ahead of the openers and `continue`s (lib/queue-worker.ts:422).
-  const dueBumpCount = !settings
-    ? 0
-    : items.filter((it) => {
-        const due = bumpDueAt(it, settings);
-        return due !== null && due <= now;
-      }).length;
+  // but it runs LAST, only on a tick where the opener queue is fully drained.
+  //
+  // Ordered oldest-opener-first to mirror claimDueBump's ORDER BY op_sent_at
+  // ASC, because the position in this list is the bump's place in the queue.
+  // Only DUE bumps get a slot: one still counting down takes the `due > now`
+  // path in itemEta and never reads slotTimes.
+  //
+  // Caveat: `items` is listSequences(500), ordered id DESC. Bumps are claimed
+  // oldest-first, so on a long history the oldest owed bumps are exactly the
+  // rows outside that window — a rank here can under-count. Pre-existing.
+  const dueBumpIds = !settings
+    ? []
+    : items
+        .filter((it) => {
+          const due = bumpDueAt(it, settings, bumpsPossible);
+          return due !== null && due <= now;
+        })
+        .sort((a, b) => {
+          const ta = a.opSentAt ? new Date(a.opSentAt).getTime() : 0;
+          const tb = b.opSentAt ? new Date(b.opSentAt).getTime() : 0;
+          return ta - tb || a.id - b.id; // stable when two openers share a stamp
+        })
+        .map((it) => it.id);
+  const dueBumpCount = dueBumpIds.length;
 
   // When each remaining drip slot actually fires. A flat `now + rank ×
   // interval` over-promises: it hands out clock times past the window end and
   // past the daily cap, both of which the worker enforces (withinWindow /
   // effectiveDailyCap in lib/queue-worker.ts) — with an 18:00 window end and a
   // long queue it would print "sends at 19:00" for a lane that stops at 18:00.
-  // Walk the worker's rules instead. Slots 0..dueBumpCount-1 are the due bumps
-  // that jump the line; the rest are pending openers in id order.
+  // Walk the worker's rules instead. Slots 0..P-1 are the pending openers in id
+  // order; the rest are the due bumps, oldest opener first. The bump lane sits
+  // below the enabled/window/cap gate now, so every slot is gated the same way
+  // and nothing jumps the line.
   const slotTimes = useMemo<number[]>(() => {
     if (!settings || !status) return [];
-    const total = dueBumpCount + pendingOpenerIds.length;
+    const total = pendingOpenerIds.length + dueBumpCount;
     if (total === 0) return [];
     const intervalMs = Math.max(5, settings.intervalSec) * 1000;
     const startMin = parseHm(settings.windowStart);
     const endMin = parseHm(settings.windowEnd);
-    // Local-time mode bypasses the global window entirely (queue-worker.ts:445)
-    // — each contact is gated by its own local window instead, per item below.
+    // Local-time mode bypasses the global window entirely (the globalWindowOk
+    // gate above the opener lane in lib/queue-worker.ts) — each contact is
+    // gated by its own local window instead, per item below.
     const windowed = !settings.localTimeSend && startMin !== endMin;
     const nextWindowStart = (ms: number) => {
       const d = new Date(ms);
@@ -611,21 +647,19 @@ export default function QueueModal({
     const times: number[] = [];
     for (let k = 0; k < total; k++) {
       // Push t forward until it lands on a moment the worker would send in:
-      // inside the window, and on a day with cap headroom left. Neither gate
-      // applies to the bump slots (k < dueBumpCount) — the bump lane runs above
-      // both checks in lib/queue-worker.ts, so a due bump goes out off-window
-      // and over cap. It still SPENDS cap, which is why capLeft drops below for
-      // every slot.
-      const gated = k >= dueBumpCount;
+      // inside the window, and on a day with cap headroom left. This applies to
+      // every slot, bumps included — the bump lane now sits below both checks
+      // in lib/queue-worker.ts. Each slot also SPENDS cap, which is why capLeft
+      // drops below regardless.
       for (let guard = 0; guard < 400; guard++) {
-        if (gated && windowed && !inHmWindow(minutesOf(t), startMin, endMin)) {
+        if (windowed && !inHmWindow(minutesOf(t), startMin, endMin)) {
           t = nextWindowStart(t);
         }
         if (dayKey(t) !== day) {
           day = dayKey(t);
           capLeft = capPerDay;
         }
-        if (gated && capLeft <= 0) {
+        if (capLeft <= 0) {
           t = nextMidnight(t); // cap resets at local midnight; re-check window
           continue;
         }
@@ -644,7 +678,7 @@ export default function QueueModal({
   const itemEta = (
     item: QueueItem,
     openerRank: number,
-    dueBumps: number,
+    bumpRank: number,
   ): { text: string; title: string } | null => {
     if (!status || !settings) return null;
     // Absolute stamp for the hover, with NO live countdown in it: this list
@@ -656,45 +690,16 @@ export default function QueueModal({
         timeStyle: "short",
       });
 
-    // Opener sent, pitch still pending. The pitch is reply-triggered — the
-    // worker only runs claimRepliedFollowup, which ignores fu_send_after — so
-    // there is no timed send to promise here. The one thing still on a clock is
-    // the link-free bump, when it's turned on.
-    if (item.fuStatus === "scheduled") {
-      const base = "pitch on reply";
-      const baseTitle =
-        "Pitch (message 2) sends in-thread within minutes of a reply — there is no timed send.";
-      if (item.bumpSentAt) {
-        return {
-          text: `${base} · bumped`,
-          title: `${baseTitle}\nLink-free bump sent ${stamp(new Date(item.bumpSentAt).getTime())}.`,
-        };
-      }
-      const due = bumpDueAt(item, settings);
-      if (due === null) {
-        return { text: base, title: `${baseTitle}\nBumps are off — nothing else is scheduled.` };
-      }
-      return due > now
-        ? {
-            text: `${base} · bump ${fmtClock(due, now)}`,
-            title: `${baseTitle}\nLink-free bump due ${stamp(due)} if they stay quiet.`,
-          }
-        : {
-            text: `${base} · bump due`,
-            title: `${baseTitle}\nLink-free bump was due ${stamp(due)} — sends on the next pass.`,
-          };
-    }
-
-    if (item.opStatus === "pending") {
-      // When paused, the header already says so — don't repeat it on every row.
-      if (!status.enabled) return null;
-      const slot = slotTimes[dueBumps + openerRank];
-      if (slot === undefined) return null;
-      let eta = Math.max(
-        slot,
-        item.opSendAfter ? new Date(item.opSendAfter).getTime() : 0,
-      );
+    // Why this row can't leave yet, and the earliest moment it could. Shared by
+    // the bump and opener branches below because both lanes now sit under the
+    // same window / cap / sender-block gates — a reason that holds one holds
+    // the other. Keeping one copy is what stops the two ETAs drifting apart:
+    // the bump branch has to honour local-time mode, since claimDueBump's
+    // predicate applies localEligible just like the opener claim does
+    // (see the bump lane in lib/queue-worker.ts).
+    const sendBlockers = (): { why: string[]; notBefore: number } => {
       const why: string[] = [];
+      let notBefore = 0;
       if (status.capReached)
         why.push(
           `daily cap reached (${status.sentToday}/${status.dailyCap} contacts today)`,
@@ -711,7 +716,7 @@ export default function QueueModal({
           now,
         );
         if (opensAt !== null) {
-          eta = Math.max(eta, opensAt);
+          notBefore = Math.max(notBefore, opensAt);
           why.push(
             `outside ${settings.localStart}–${settings.localEnd} for ${item.timezone}`,
           );
@@ -722,9 +727,83 @@ export default function QueueModal({
         const lifts = blocks
           .map((b) => new Date(b.until).getTime())
           .filter((ms) => Number.isFinite(ms));
-        if (lifts.length > 0) eta = Math.max(eta, Math.min(...lifts));
+        if (lifts.length > 0) notBefore = Math.max(notBefore, Math.min(...lifts));
         why.push("every sender is blocked");
       }
+      return { why, notBefore };
+    };
+
+    // Opener sent, pitch still pending. The pitch is reply-triggered — the
+    // worker only runs claimRepliedFollowup, which ignores fu_send_after — so
+    // there is no timed send to promise here. The one thing still on a clock is
+    // the link-free bump, when it's turned on.
+    if (item.fuStatus === "scheduled") {
+      const base = "pitch on reply";
+      const baseTitle =
+        "Pitch (message 2) sends in-thread within minutes of a reply — there is no timed send.";
+      if (item.bumpSentAt) {
+        return {
+          text: `${base} · bumped`,
+          title: `${baseTitle}\nLink-free bump sent ${stamp(new Date(item.bumpSentAt).getTime())}.`,
+        };
+      }
+      const due = bumpDueAt(item, settings, bumpsPossible);
+      if (due === null) {
+        return {
+          text: base,
+          title: `${baseTitle}\n${
+            settings.bumpEnabled && !bumpsPossible
+              ? "No bump templates saved, so no bump can send — nothing else is scheduled."
+              : "Bumps are off — nothing else is scheduled."
+          }`,
+        };
+      }
+      // The bump lane is LAST: it only runs on a tick where the opener queue is
+      // drained, and it obeys the window and the daily cap like everything else.
+      // So `due` is only a FLOOR — the projected slot is the real ETA. slotTimes
+      // assumes the drip is running, so while paused fall back to the floor.
+      const slot =
+        bumpRank >= 0
+          ? slotTimes[pendingOpenerIds.length + bumpRank]
+          : undefined;
+      const { why: gateWhy, notBefore } = sendBlockers();
+      const eta = Math.max(due, status.enabled ? (slot ?? 0) : 0, notBefore);
+      const why = [
+        ...(status.enabled ? [] : ["queue paused"]),
+        ...(pendingOpenerIds.length > 0
+          ? [
+              `${pendingOpenerIds.length} opener${pendingOpenerIds.length === 1 ? "" : "s"} still queued ahead of it`,
+            ]
+          : []),
+        ...gateWhy,
+      ];
+      const tail = why.length > 0 ? ` (${why.join("; ")})` : "";
+      return eta > now
+        ? {
+            text: `${base} · bump ${fmtClock(eta, now)}`,
+            title: `${baseTitle}\n${
+              due > now
+                ? `Link-free bump comes due ${stamp(due)} if they stay quiet`
+                : `Link-free bump has been owed since ${stamp(due)}`
+            }; it sends after the queue's openers, around ${stamp(eta)}${tail}.`,
+          }
+        : {
+            text: `${base} · bump due`,
+            title: `${baseTitle}\nLink-free bump has been owed since ${stamp(due)} — it sends once the openers are done${tail}.`,
+          };
+    }
+
+    if (item.opStatus === "pending") {
+      // When paused, the header already says so — don't repeat it on every row.
+      if (!status.enabled) return null;
+      const slot = slotTimes[openerRank];
+      if (slot === undefined) return null;
+      const { why, notBefore } = sendBlockers();
+      const eta = Math.max(
+        slot,
+        item.opSendAfter ? new Date(item.opSendAfter).getTime() : 0,
+        notBefore,
+      );
       return {
         text: `~ sends at ${fmtClock(eta, now)}`,
         title:
@@ -744,10 +823,11 @@ export default function QueueModal({
     let n = 0;
     for (const it of items) {
       if (it.opStatus === "pending") n += 1;
-      else if (settings && bumpDueAt(it, settings) !== null) n += 1;
+      else if (settings && bumpDueAt(it, settings, bumpsPossible) !== null)
+        n += 1;
     }
     return n;
-  }, [items, settings]);
+  }, [items, settings, bumpsPossible]);
 
   // Estimate when the whole queue finishes: walk day-by-day respecting the
   // window hours, one send per interval, and the daily cap (by client).
@@ -816,15 +896,21 @@ export default function QueueModal({
     }
     if (remaining > 0) return null;
     // A bump owed for a date still ahead can't leave early however idle the
-    // drip goes, so the queue isn't drained until the last one is due. No
-    // window snap: the bump lane runs above the window check.
+    // drip goes, so the queue isn't drained until the last one is due — and
+    // once due it still waits for the sending window, like every other lane now.
     let lastBumpDue = 0;
     for (const it of items) {
-      const due = bumpDueAt(it, settings);
+      const due = bumpDueAt(it, settings, bumpsPossible);
       if (due !== null) lastBumpDue = Math.max(lastBumpDue, due);
     }
-    return lastBumpDue > t.getTime() ? new Date(lastBumpDue) : t;
-  }, [items, settings, status, remainingSends, now]);
+    if (lastBumpDue <= t.getTime()) return t;
+    // Only snap when there IS a window to snap to. advance() pushes to tomorrow
+    // whenever d is at or past the window end, and with a 24-hour window
+    // (startMin === endMin) that boundary is the window start too, so every
+    // date would roll forward a day.
+    const windowed = !settings.localTimeSend && startMin !== endMin;
+    return windowed ? advance(new Date(lastBumpDue)) : new Date(lastBumpDue);
+  }, [items, settings, status, remainingSends, now, bumpsPossible]);
 
   const finishLabel = useMemo(() => {
     if (!finishEstimate) return null;
@@ -1342,7 +1428,13 @@ export default function QueueModal({
                         ? `Next send in ${fmtCountdown(countdown)}`
                         : num("queued") > 0
                           ? "Sending…"
-                          : "Idle — queue empty"}
+                          : dueBumpCount > 0
+                            ? // Client-derived, so it doesn't know the reply
+                              // test: a due bump whose contact has since
+                              // replied is counted here but fires as a pitch
+                              // instead. Brief over-report, not a false lane.
+                              "Sending bumps — openers done"
+                            : "Idle — queue empty"}
             </span>
           </div>
         )}
@@ -1924,7 +2016,7 @@ export default function QueueModal({
                 const eta = itemEta(
                   it,
                   Math.max(0, pendingOpenerIds.indexOf(it.id)),
-                  dueBumpCount,
+                  dueBumpIds.indexOf(it.id), // -1 when this row owes no due bump
                 );
                 return (
                 <div

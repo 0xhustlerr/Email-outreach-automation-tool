@@ -1,13 +1,18 @@
 // Background send engine for two-step sequences.
 //
-// Two jobs, at most one email per interval (± jitter) so the total send rate
-// stays safe:
-//   1. Fire DUE follow-ups (both lanes) — threaded replies to openers already
-//      sent. These run regardless of the queue enabled flag / window, since
-//      they're commitments made when the opener went out. Not capped (the
-//      client was already counted when the opener sent).
+// Three lanes, at most one email per interval (± jitter) so the total send rate
+// stays safe. Strict priority — a lane only runs when every lane above it had
+// nothing to send:
+//   1. Reply-triggered PITCH — a threaded reply to a contact who answered the
+//      opener. Runs regardless of the enabled flag, window and daily cap, and
+//      bypasses the drip interval (a small spacing aside): it's a commitment
+//      made when the opener went out, and the lead is warm right now. Not
+//      capped — the client was already counted when the opener sent.
 //   2. Drip QUEUE-lane openers — only while enabled, inside the window, under
 //      the daily cap (by distinct address), spaced by the interval.
+//   3. Link-free BUMP to a non-replier — lowest priority. Gated by everything
+//      lane 2 is gated by, AND held until the opener queue is fully drained and
+//      no pitch is waiting. A bump has no deadline, so it yields to both.
 //
 // Started from instrumentation.ts; survives with the tray-kept server.
 
@@ -27,6 +32,7 @@ import {
   claimNextQueuedOpener,
   claimRepliedFollowup,
   distinctClientsToday,
+  hasPendingOpeners,
   lastSenderForContact,
   markFollowupFailed,
   markFollowupSent,
@@ -450,9 +456,9 @@ async function sendBump(seq: Sequence): Promise<LaneOutcome> {
   } else if (result.blockKind === "policy") {
     // Only un-stamp for an ACCOUNT-level block, which will clear by itself.
     // Reverting on every failure would be wrong: a bump has no attempt counter,
-    // so a permanently-failing one (dead address) would be re-claimed forever
-    // and — because this lane runs before the openers and `continue`s — would
-    // consume every drip slot and stall the queue indefinitely.
+    // so a permanently-failing one (dead address) would be re-claimed every
+    // interval forever — re-mailing a bad address and, since claims are ORDER BY
+    // op_sent_at ASC, starving every other bump queued behind it.
     revertBump(seq.id);
     state.lastError = result.error;
     console.warn(`[queue] bump held (sender blocked) → ${seq.toEmail}`);
@@ -504,10 +510,19 @@ async function loop(myGen: number): Promise<void> {
         (i) => !blocked.has(i.email.toLowerCase()),
       );
 
-      // 0) HOT follow-ups: the opener already got a reply → send the pitch fast
+      // 1) HOT follow-ups: the opener already got a reply → send the pitch fast
       // (a small spacing only, bypassing the normal drip interval) while the
       // lead is warm. Not gated by the recipient's local window — they just
       // replied, so they're online now.
+      //
+      // Set when this lane RAN and found nothing: the bump lane needs "no pitch
+      // is waiting" and this is the only cheap proof of it. Testing it directly
+      // would mean a second EXISTS(send_log …) on every idle tick, and that
+      // correlation uses LIKE '%…%' so it can't touch idx_send_log_contact —
+      // a full send_log scan every 10s. Note it inherits this lane's own blind
+      // spots: a reply the sync loop hasn't recorded yet (up to SYNC_MS) and an
+      // opener younger than the 3-minute floor both read as "clear".
+      let noPitchWaiting = false;
       if ((state.lastSendMs === 0 || sinceLast >= HOT_MIN_GAP_MS) && anyFree) {
         // Pass the eligibility filter ONLY when something is actually blocked:
         // with no predicate the claim runs LIMIT 1, with one it scans 200 rows
@@ -524,6 +539,7 @@ async function loop(myGen: number): Promise<void> {
           else if (outcome === "held") await sleep(TICK_MS);
           continue;
         }
+        noPitchWaiting = true;
       }
 
       // Respect send spacing for the normal drip (one email per interval).
@@ -531,28 +547,6 @@ async function loop(myGen: number): Promise<void> {
       if (state.lastSendMs > 0 && sinceLast < gap) {
         await sleep(Math.min(gap - sinceLast, TICK_MS));
         continue;
-      }
-
-      // 1) Bump non-repliers: one short LINK-FREE nudge N days after the opener.
-      // (The pitch itself is reply-only — handled by the hot path above.) The
-      // sequence stays 'scheduled', so a later reply still fires the pitch.
-      // The template check is BEFORE the claim on purpose: with no bump
-      // templates, claiming would only be undone again on the next line, and
-      // the lane would churn a claim/revert pair every tick forever.
-      if (s.bumpEnabled && anyFree && listTemplates("bump").length > 0) {
-        // Gate in the PREDICATE, never after the claim: claimDueBump stamps
-        // bump_sent_at as it claims and only ever claims rows where that is
-        // NULL, so an early return here would lose the bump forever.
-        const bump = claimDueBump(
-          s.bumpAfterDays,
-          (seq) => localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
-        );
-        if (bump) {
-          const outcome = await sendBump(bump);
-          if (outcome === "offline") await sleep(state.netBackoffMs);
-          else if (outcome === "held") await sleep(TICK_MS);
-          continue;
-        }
       }
 
       // 2) Queue-lane openers. Gated by enabled + total cap. The window check is
@@ -597,6 +591,55 @@ async function loop(myGen: number): Promise<void> {
         );
       });
       if (!op) {
+        // 3) Bump non-repliers: one short LINK-FREE nudge N days after the
+        // opener. (The pitch itself is reply-only — lane 1 above.) The sequence
+        // stays 'scheduled', so a later reply still fires the pitch.
+        //
+        // Lowest lane, and it lives INSIDE this branch on purpose. The opener
+        // path below has no trailing `continue` — it falls off the bottom of
+        // the try — so a bump block placed after it would send an opener and
+        // then immediately claim and send a bump on the same tick, bypassing
+        // the drip gap entirely. Nesting it here makes that impossible.
+        //
+        // hasPendingOpeners(), not just `!op`: a null claim only means nothing
+        // is sendable THIS INSTANT (all held by local window, sender rules, the
+        // different-sender rule). A bump waits for the queue to be genuinely
+        // drained, so a still-loaded campaign always outranks it.
+        //
+        // Sitting below the enabled/window/cap and pool gates is the point —
+        // bumps now pause, respect the window, and spend the daily cap like
+        // every other send. Two consequences worth knowing: a pooled cap can
+        // hold a bump whose own account is free (bumps reuse the opener's
+        // sender verbatim for thread continuity), and a queue that never drains
+        // starves bumps indefinitely. Nothing is lost when that happens —
+        // claimDueBump has no upper age bound, so the bump just fires late, and
+        // a reply in the meantime cancels it in favour of the pitch.
+        //
+        // The template check is BEFORE the claim on purpose: with no bump
+        // templates, claiming would only be undone again on the next line, and
+        // the lane would churn a claim/revert pair every tick forever.
+        if (
+          s.bumpEnabled &&
+          anyFree &&
+          noPitchWaiting &&
+          !hasPendingOpeners() &&
+          listTemplates("bump").length > 0
+        ) {
+          // Gate in the PREDICATE, never after the claim: claimDueBump stamps
+          // bump_sent_at as it claims and only ever claims rows where that is
+          // NULL, so an early return here would lose the bump forever.
+          const bump = claimDueBump(
+            s.bumpAfterDays,
+            (seq) =>
+              localEligible(seq, s) && senderAllowed(seq, blocked, anyFree),
+          );
+          if (bump) {
+            const outcome = await sendBump(bump);
+            if (outcome === "offline") await sleep(state.netBackoffMs);
+            else if (outcome === "held") await sleep(TICK_MS);
+            continue;
+          }
+        }
         await sleep(TICK_MS);
         continue;
       }
@@ -749,6 +792,11 @@ export function queueWorkerStatus() {
     senderCaps: s.senderCaps,
     senderPool: s.senderPool,
     waitingForSender,
+    // The bump lane can't fire without at least one bump template — a
+    // worker-side gate the client can't otherwise see, so it would promise a
+    // bump that can never send and let a phantom due date drag the "all sent"
+    // estimate out forever.
+    bumpTemplates: listTemplates("bump").length,
     // Distinct contacts each account has sent today (for the UI meters and
     // the Send modal's cap warning). Covers pool + all configured identities.
     sentBySender: [...new Set([...s.senderPool, ...configured])].reduce<

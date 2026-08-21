@@ -334,6 +334,31 @@ export function claimNextQueuedOpener(
   return r ? toSeq(r) : null;
 }
 
+/** Is ANY queue-lane opener still outstanding? The bump lane's gate: a bump is
+ *  the lowest-priority send and only goes out on a tick where the outreach
+ *  queue is FULLY drained.
+ *
+ *  Deliberately ignores op_send_after — an opener scheduled for next week still
+ *  counts. "Drained" is a statement about the campaign, not about this instant;
+ *  the worker only calls this after claimNextQueuedOpener already returned null,
+ *  which IS the "nothing sendable right now" test. This is the stronger one.
+ *  Without it, a queue holding a Monday batch would fire bumps all weekend and
+ *  then start the batch — exactly the line-jumping this gate removes.
+ *
+ *  'pending' only, not IN ('pending','sending'): the in-flight race can't happen
+ *  (one loop, and this runs right after a null claim), while a stranded
+ *  'sending' row — cleared only by recoverInterruptedSequences at next boot —
+ *  would silently block every bump while the UI reports an empty queue.
+ *  Matches sequenceCounts().queued exactly, so the "Queued" chip and this gate
+ *  can never disagree. Seeks the leading column of idx_sequences_op. */
+export function hasPendingOpeners(): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM sequences WHERE lane = 'queue' AND op_status = 'pending' LIMIT 1`,
+    )
+    .get();
+}
+
 /** Put a claimed opener back to 'pending' (e.g. when no eligible sender is
  *  available right now, so it retries later instead of stranding as 'sending'). */
 export function revertOpenerToPending(id: number): void {
