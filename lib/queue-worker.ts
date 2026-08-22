@@ -602,10 +602,6 @@ export function queueWorkerStatus() {
   const s = getSettings();
   const identities = listIdentities().map((i) => i.email);
   const sentToday = distinctClientsToday();
-  const gap = Math.max(5, s.intervalSec) * 1000;
-  const since = Date.now() - state.lastSendMs;
-  const nextInSec =
-    state.lastSendMs > 0 && since < gap ? Math.ceil((gap - since) / 1000) : 0;
   const load = sentTodayBySender();
   const totalCap = effectiveDailyCap(s, identities);
   // Openers held back by the hard "different sender" rule: only possible when
@@ -636,8 +632,9 @@ export function queueWorkerStatus() {
   return {
     // The last tick's Send plan, reduced to its wire shape with the aggregates
     // computed server-side (next-send anchor, finish estimate). Null only
-    // before the first tick of a freshly booted process. Every other field
-    // below survives unchanged — deletions belong to ticket 06's reader audit.
+    // before the first tick of a freshly booted process. This is the ONLY
+    // scheduling projection in the payload — anything timed the UI shows must
+    // come from here, never be re-derived from the fields below.
     plan: state.plan ? planPayload(state.plan) : null,
     blockedSenders,
     allSendersBlocked,
@@ -651,18 +648,12 @@ export function queueWorkerStatus() {
     sentToday,
     dailyCap: totalCap, // overall ceiling = sum of each active account's cap
     capReached: sentToday >= totalCap,
-    nextInSec,
     startAt: s.startAt,
     lastError: state.lastError,
     lastSentAt: state.lastSentAt,
     senderCaps: s.senderCaps,
     senderPool: s.senderPool,
     waitingForSender,
-    // The bump lane can't fire without at least one bump template — a
-    // worker-side gate the client can't otherwise see, so it would promise a
-    // bump that can never send and let a phantom due date drag the "all sent"
-    // estimate out forever.
-    bumpTemplates: listTemplates("bump").length,
     // Distinct contacts each account has sent today (for the UI meters and
     // the Send modal's cap warning). Covers pool + all configured identities.
     sentBySender: [...new Set([...s.senderPool, ...configured])].reduce<
