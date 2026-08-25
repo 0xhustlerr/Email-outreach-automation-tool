@@ -246,8 +246,9 @@ export default function SendersModal({
   };
 
   // Re-run the SMTP connect + login. Without an address every account is
-  // checked; with one, `probe` also tries the other standard port when the
-  // account's own one can't be reached, so a blocked 465 has an obvious fix.
+  // checked — including a fresh reply-sync token exchange per account — while
+  // with one, `probe` also tries the other standard port when the account's
+  // own one can't be reached, so a blocked 465 has an obvious fix.
   const recheck = async (addr?: string) => {
     clearMsgs();
     setSuggestion(null);
@@ -263,6 +264,9 @@ export default function SendersModal({
         error?: string;
         results?: SenderHealth[];
         suggestion?: Suggestion | null;
+        /** Present on the all-accounts check: reply-sync tokens re-verified.
+         *  Counts only — the per-inbox detail lands in the refetched snapshot. */
+        replySync?: { checked: number; broken: number };
       };
       if (!res.ok || !body.ok) {
         setError(body.error ?? "Could not check the connection.");
@@ -271,13 +275,24 @@ export default function SendersModal({
       const results = body.results ?? [];
       mergeHealth(results);
       if (body.suggestion) setSuggestion(body.suggestion);
+      // The all-accounts check also re-verified reply sync server-side; refetch
+      // the snapshot so the per-account badges pick up the fresh result.
+      if (!addr) void refresh();
 
       const failed = results.filter((r) => !r.ok);
-      if (failed.length === 0) {
+      const replyChecked = body.replySync?.checked ?? 0;
+      const replyBroken = body.replySync?.broken ?? 0;
+      const replyNote =
+        replyChecked === 0
+          ? ""
+          : replyBroken === 0
+            ? ` Reply sync verified on ${replyChecked} inbox(es).`
+            : ` Reply sync is broken on ${replyBroken} of ${replyChecked} inbox(es) — hover its badge for the reason.`;
+      if (failed.length === 0 && replyBroken === 0) {
         flash(
           addr
             ? `${addr} — connected and signed in.`
-            : `All ${results.length} account(s) connected and signed in.`,
+            : `All ${results.length} account(s) connected and signed in.${replyNote}`,
         );
       } else if (body.suggestion) {
         clearMsgs();
@@ -289,7 +304,9 @@ export default function SendersModal({
         setWarnMsg(
           addr
             ? `${addr} — ${failed[0]?.error || "could not connect"}`
-            : `${failed.length} of ${results.length} account(s) could not connect. Open Reconnect on each to fix it.`,
+            : failed.length > 0
+              ? `${failed.length} of ${results.length} account(s) could not connect. Open Reconnect on each to fix it.${replyNote}`
+              : `All ${results.length} account(s) connected and signed in.${replyNote}`,
         );
       }
     } catch {
@@ -510,7 +527,7 @@ export default function SendersModal({
                   type="button"
                   onClick={() => recheck()}
                   disabled={busy || checking !== null}
-                  title="Open a real SMTP connection for every account and sign in, right now"
+                  title="Check every account right now: open a real SMTP connection and sign in, and verify its reply-sync token with Google"
                   className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/5 disabled:opacity-40"
                 >
                   {checking === "*" ? (

@@ -15,6 +15,22 @@ type GmailAccountOAuth = {
 
 const tokenCache = new Map<string, TokenCache>();
 
+/** Drop cached access tokens after OAuth credentials change. A cached access
+ *  token can outlive a replaced client or refresh token by up to an hour, which
+ *  would make a broken account look healthy (or a fixed one look broken). */
+export function clearGmailTokenCache(email?: string): void {
+  if (email) tokenCache.delete(email.trim().toLowerCase());
+  else tokenCache.clear();
+}
+
+// Google says 'unauthorized_client' when the refresh token was minted by a
+// DIFFERENT OAuth client than the one now configured, and 'invalid_grant' when
+// it was revoked or expired. Both need the account reconnected; a network blip
+// or a 5xx does not, so only these are worth nagging about.
+export function isGmailReauthError(msg: string): boolean {
+  return /unauthorized_client|invalid_grant|invalid_client/i.test(msg);
+}
+
 // Every Google call goes through here so none of them can hang forever.
 // Without a deadline, a connection that drops mid-request leaves a half-open
 // socket and the fetch simply never settles: the reply-sync loop's in-flight
@@ -167,9 +183,15 @@ export async function verifyGmailOAuth(
       error_description?: string;
     };
     if (!res.ok || !data.access_token) {
+      // Keep the raw OAuth code in the message (mirrors getAccessToken below):
+      // callers classify on it via isGmailReauthError, and 'unauthorized_client'
+      // vs 'invalid_grant' is the difference between "wrong OAuth client" and
+      // "token revoked".
+      const code = data.error ?? `HTTP ${res.status}`;
+      const detail = data.error_description?.trim();
       return {
         ok: false,
-        error: data.error_description || data.error || `Token exchange failed (${res.status}).`,
+        error: detail ? `${code}: ${detail}` : `Token exchange failed (${code}).`,
       };
     }
     return { ok: true };
@@ -180,6 +202,38 @@ export async function verifyGmailOAuth(
 
 export function isGmailReplySyncConfigured(): boolean {
   return Object.keys(parseGmailAccounts()).length > 0;
+}
+
+/** Fresh refresh-token exchange for every connected inbox — the auth half of a
+ *  sync cycle without the inbox scan, so "Recheck all" can verify reply sync in
+ *  seconds. Deliberately bypasses the access-token cache: a cached token can
+ *  outlive a revoked or re-issued refresh token by up to an hour. */
+export async function verifyReplySyncAuth(): Promise<{
+  checked: number;
+  errors: InboxScanError[];
+}> {
+  const accounts = Object.entries(parseGmailAccounts());
+  const results = await Promise.all(
+    accounts.map(async ([inbox, creds]): Promise<InboxScanError | null> => {
+      const check = await verifyGmailOAuth(
+        creds.clientId,
+        creds.clientSecret,
+        creds.refreshToken,
+      );
+      if (check.ok) return null;
+      const error = check.error ?? "OAuth verification failed.";
+      return {
+        inbox,
+        error,
+        needsReauth: isGmailReauthError(error),
+        stage: "auth",
+      };
+    }),
+  );
+  return {
+    checked: accounts.length,
+    errors: results.filter((e): e is InboxScanError => e !== null),
+  };
 }
 
 /** Exported for bounce-watch, which scans the same inboxes for mailer-daemon
@@ -644,13 +698,6 @@ export async function getRecentInboundByContact(
   let authFailures = 0;
   let lastAuthError = "";
 
-  // Google says 'unauthorized_client' when the refresh token was minted by a
-  // DIFFERENT OAuth client than the one now configured, and 'invalid_grant'
-  // when it was revoked or expired. Both need the account reconnected; a
-  // network blip or a 5xx does not, so only these two are worth nagging about.
-  const isReauth = (msg: string) =>
-    /unauthorized_client|invalid_grant|invalid_client/i.test(msg);
-
   for (const inbox of accounts) {
     let access: string | null;
     try {
@@ -659,7 +706,12 @@ export async function getRecentInboundByContact(
       const error = e instanceof Error ? e.message : String(e);
       authFailures++;
       lastAuthError = error;
-      inboxErrors.push({ inbox, error, needsReauth: isReauth(error) });
+      inboxErrors.push({
+        inbox,
+        error,
+        needsReauth: isGmailReauthError(error),
+        stage: "auth",
+      });
       continue;
     }
     if (!access) {
@@ -668,6 +720,7 @@ export async function getRecentInboundByContact(
         inbox,
         error: "No OAuth credentials for this inbox.",
         needsReauth: true,
+        stage: "auth",
       });
       continue;
     }
@@ -679,7 +732,12 @@ export async function getRecentInboundByContact(
       // Previously a bare `continue`: an inbox that authenticated but could not
       // be listed vanished from the result with nothing recorded anywhere.
       const error = e instanceof Error ? e.message : String(e);
-      inboxErrors.push({ inbox, error, needsReauth: isReauth(error) });
+      inboxErrors.push({
+        inbox,
+        error,
+        needsReauth: isGmailReauthError(error),
+        stage: "read",
+      });
       continue;
     }
 
@@ -698,6 +756,7 @@ export async function getRecentInboundByContact(
         inbox,
         error: `Could not read any of the ${ids.length} recent message(s).`,
         needsReauth: false,
+        stage: "read",
       });
     }
 

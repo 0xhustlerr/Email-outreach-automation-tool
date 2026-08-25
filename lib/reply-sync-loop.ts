@@ -13,7 +13,11 @@
 // exponential backoff on Gmail failures) because it has the same job: a
 // long-lived background scanner over the connected inboxes.
 
-import { isGmailReplySyncConfigured } from "./gmail";
+import {
+  clearGmailTokenCache,
+  isGmailReplySyncConfigured,
+  verifyReplySyncAuth,
+} from "./gmail";
 import type {
   InboxScanError,
   ReplyNotification,
@@ -58,6 +62,11 @@ export type ReplySyncSnapshot = {
 type LoopState = {
   started: boolean;
   gen: number;
+  /** Bumped whenever OAuth credentials or their recorded errors change OUTSIDE
+   *  a scan cycle (manual recheck, token saved/cleared). A cycle that was
+   *  already in flight across such a bump computed its inboxErrors with the old
+   *  credentials, so it must not publish them over the fresher state. */
+  authGen: number;
   busy: boolean;
   backoffMs: number;
   snapshot: ReplySyncSnapshot;
@@ -87,6 +96,7 @@ const globalForLoop = globalThis as unknown as { __replySyncLoop?: LoopState };
 const state: LoopState = globalForLoop.__replySyncLoop ?? {
   started: false,
   gen: 0,
+  authGen: 0,
   busy: false,
   backoffMs: 0,
   snapshot: { ...emptySnapshot },
@@ -99,6 +109,8 @@ globalForLoop.__replySyncLoop = state;
 // Allow a re-executed module to arm a fresh loop (see startReplySyncLoop for
 // where the generation is actually bumped).
 state.started = false;
+// A state object persisted by an older module instance predates authGen.
+state.authGen = Number.isFinite(state.authGen) ? state.authGen : 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -136,6 +148,14 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
   state.snapshot = { ...state.snapshot, syncing: true };
 
   const run = (async () => {
+    // Credentials as of when this cycle started. If they change mid-flight
+    // (manual recheck, token saved/cleared bumps authGen), the errors this
+    // cycle computed describe the OLD credentials — keep the snapshot's
+    // fresher ones instead of landing stale state on top of them.
+    const authGenAtStart = state.authGen;
+    const cycleInboxErrors = (fresh: InboxScanError[]): InboxScanError[] =>
+      state.authGen === authGenAtStart ? fresh : state.snapshot.inboxErrors;
+
     try {
       const result: ReplySyncResult = await syncRepliesToSheet(
         loadPersistedMessageIds(),
@@ -145,7 +165,7 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
         state.snapshot = {
           ...state.snapshot,
           syncing: false,
-          inboxErrors: result.inboxErrors,
+          inboxErrors: cycleInboxErrors(result.inboxErrors),
           lastError: result.error ?? "Reply sync failed.",
         };
         return;
@@ -182,7 +202,7 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
         notifications: pending,
         messageIds: result.messageIds,
         receivedInboxes: result.receivedInboxes,
-        inboxErrors: result.inboxErrors,
+        inboxErrors: cycleInboxErrors(result.inboxErrors),
         checked: result.checked,
         updated: result.updated,
         lastSyncAt: new Date().toISOString(),
@@ -207,6 +227,45 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
     state.inflight = null;
   }
   return state.snapshot;
+}
+
+/** Re-verify reply-sync auth for every connected inbox and publish the result
+ *  into the snapshot the UI reads (Accounts → "Recheck all", saving the shared
+ *  OAuth client), instead of waiting up to a full backoff interval for the next
+ *  loop cycle. Only the auth stage was re-tested, so read-stage errors survive
+ *  for inboxes that pass — a full cycle is what clears those. Returns the
+ *  errors as published, read-stage carryovers included. */
+export async function recheckInboxAuthNow(): Promise<{
+  checked: number;
+  errors: InboxScanError[];
+}> {
+  // Cached access tokens can outlive the credentials that minted them by up to
+  // an hour; drop them so the next cycle runs on what is stored NOW.
+  clearGmailTokenCache();
+  const fresh = await verifyReplySyncAuth();
+  const failing = new Set(fresh.errors.map((e) => e.inbox));
+  const errors = [
+    ...fresh.errors,
+    ...state.snapshot.inboxErrors.filter(
+      (e) => e.stage === "read" && !failing.has(e.inbox),
+    ),
+  ];
+  state.authGen++;
+  state.snapshot = { ...state.snapshot, inboxErrors: errors };
+  return { checked: fresh.checked, errors };
+}
+
+/** Forget one inbox's reply-sync auth state — cached access token and recorded
+ *  error — after its refresh token was replaced (it just verified), cleared
+ *  (sync off must not keep showing "broken"), or its Sender was removed. */
+export function forgetInboxAuth(inbox: string): void {
+  const key = inbox.trim().toLowerCase();
+  clearGmailTokenCache(key);
+  state.authGen++;
+  state.snapshot = {
+    ...state.snapshot,
+    inboxErrors: state.snapshot.inboxErrors.filter((e) => e.inbox !== key),
+  };
 }
 
 /** Latest cached result. Cheap - safe to call per request. */

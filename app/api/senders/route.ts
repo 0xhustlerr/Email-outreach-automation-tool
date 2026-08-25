@@ -39,7 +39,11 @@ import {
 } from "@/lib/tracking";
 import { isSheetsLoggerConfigured } from "@/lib/sheets";
 import { listActiveBlocks } from "@/lib/sender-blocks";
-import { getReplySyncSnapshot } from "@/lib/reply-sync-loop";
+import {
+  forgetInboxAuth,
+  getReplySyncSnapshot,
+  recheckInboxAuthNow,
+} from "@/lib/reply-sync-loop";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -347,7 +351,27 @@ export async function PUT(req: Request) {
       );
     }
     setGmailClient(clientId, clientSecret);
-    return NextResponse.json({ ok: true, ...snapshot() });
+    // A refresh token only works with the OAuth client that issued it, so
+    // replacing the shared client silently kills reply sync for every inbox
+    // whose token the OLD client minted. Verify each stored token against the
+    // new client right now and name the casualties, instead of letting the
+    // next sync cycle discover them as an unexplained "Reply sync broken".
+    const replyAuth = await recheckInboxAuthNow();
+    const broken = replyAuth.errors
+      .filter((e) => e.needsReauth)
+      .map((e) => e.inbox);
+    return NextResponse.json({
+      ok: true,
+      ...(broken.length > 0
+        ? {
+            warning:
+              `This client does not match the refresh token${broken.length === 1 ? "" : "s"} already saved for ` +
+              `${broken.join(", ")}. Reply sync for ${broken.length === 1 ? "that inbox" : "those inboxes"} ` +
+              `stays broken until each token is re-generated in the OAuth Playground with THIS client.`,
+          }
+        : {}),
+      ...snapshot(),
+    });
   }
 
   // Set (or clear) an account's refresh token.
@@ -359,6 +383,7 @@ export async function PUT(req: Request) {
     }
     if (!refreshToken) {
       setOAuthRefreshToken(email, "");
+      forgetInboxAuth(email);
       return NextResponse.json({ ok: true, cleared: true, ...snapshot() });
     }
     const client = getGmailClient();
@@ -381,6 +406,10 @@ export async function PUT(req: Request) {
       );
     }
     setOAuthRefreshToken(email, refreshToken);
+    // The token just verified against the current client, so any recorded
+    // failure for this inbox is stale — drop it now rather than leaving it
+    // "broken" until the next sync cycle.
+    forgetInboxAuth(email);
     return NextResponse.json({ ok: true, ...snapshot() });
   }
 
@@ -410,6 +439,7 @@ export async function DELETE(req: Request) {
   const removed = deleteSenderData(email);
   forgetSenderHealth(email);
   clearTransportCache();
+  forgetInboxAuth(email);
 
   return NextResponse.json({ ok: true, removed, ...snapshot() });
 }

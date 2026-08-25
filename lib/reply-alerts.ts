@@ -31,6 +31,10 @@ export type InboxScanError = {
   /** True when the refresh token itself was rejected — the account has to be
    *  reconnected, and no amount of retrying will fix it. */
   needsReauth: boolean;
+  /** Which half of the scan failed: exchanging the refresh token ("auth") or
+   *  reading the inbox after auth succeeded ("read"). Lets a manual auth-only
+   *  recheck replace exactly the errors it re-tested and no others. */
+  stage: "auth" | "read";
 };
 
 export type ReplySyncResult = {

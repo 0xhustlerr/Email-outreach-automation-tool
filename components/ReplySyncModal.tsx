@@ -30,6 +30,9 @@ export default function ReplySyncModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  // The save succeeded but broke something else — e.g. a replaced OAuth client
+  // that invalidates other accounts' refresh tokens. Amber, not green.
+  const [warnMsg, setWarnMsg] = useState<string | null>(null);
   const [clientDone, setClientDone] = useState(clientConfigured);
 
   useEffect(() => {
@@ -43,6 +46,7 @@ export default function ReplySyncModal({
   const saveClient = async () => {
     setError(null);
     setOkMsg(null);
+    setWarnMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -50,7 +54,11 @@ export default function ReplySyncModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId, clientSecret }),
       });
-      const body = (await res.json()) as Snapshot & { ok: boolean; error?: string };
+      const body = (await res.json()) as Snapshot & {
+        ok: boolean;
+        error?: string;
+        warning?: string;
+      };
       if (!res.ok || !body.ok) {
         setError(body.error ?? "Could not save the OAuth client.");
         return;
@@ -58,7 +66,11 @@ export default function ReplySyncModal({
       setClientId("");
       setClientSecret("");
       setClientDone(true);
-      setOkMsg("Client saved. Now paste this account's refresh token below.");
+      if (body.warning) {
+        setWarnMsg(`Client saved — but: ${body.warning}`);
+      } else {
+        setOkMsg("Client saved. Now paste this account's refresh token below.");
+      }
       onChanged?.(body);
     } catch {
       setError("Network error while saving the OAuth client.");
@@ -70,6 +82,7 @@ export default function ReplySyncModal({
   const saveToken = async (token: string) => {
     setError(null);
     setOkMsg(null);
+    setWarnMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -133,6 +146,11 @@ export default function ReplySyncModal({
               {okMsg}
             </p>
           )}
+          {warnMsg && !error && (
+            <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+              {warnMsg}
+            </p>
+          )}
 
           {/* Step 1: shared OAuth client */}
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -178,6 +196,12 @@ export default function ReplySyncModal({
               {busy ? <SpinnerIcon className="h-4 w-4 animate-spin" /> : null}
               Save client
             </button>
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+              Every inbox shares this one client — set it once and reuse it for
+              each inbox you connect. A refresh token only works with the client
+              that issued it, so replacing the client breaks reply sync for the
+              inboxes already connected until their tokens are re-generated.
+            </p>
           </div>
 
           {/* Step 2: this account's refresh token */}
@@ -240,7 +264,8 @@ export default function ReplySyncModal({
                 <ol className="space-y-3">
                   <Step n={1} title="Open Google Cloud Console">
                     Go to <Ext href="https://console.cloud.google.com/">console.cloud.google.com</Ext>{" "}
-                    and create a project.
+                    and create a project — once. Reuse the same project and OAuth
+                    client for every inbox; only step B is per inbox.
                   </Step>
                   <Step n={2} title="Enable the Gmail API">
                     <Ext href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">

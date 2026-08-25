@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { clearTransportCache } from "@/lib/mail";
+import { recheckInboxAuthNow } from "@/lib/reply-sync-loop";
 import {
   checkSendAccountsNow,
   getSenderHealth,
@@ -39,8 +40,19 @@ export async function POST(req: Request) {
 
   const email = (body.email ?? "").trim().toLowerCase();
   if (!email) {
-    const results = await checkSendAccountsNow();
-    return NextResponse.json({ ok: true, results });
+    // "Recheck all" verifies both halves of an account: SMTP (sending) and the
+    // reply-sync refresh token (reading). The recheck publishes into the loop
+    // snapshot, which is where the modal's badges read from (GET /api/senders);
+    // the response only carries the counts its status line needs.
+    const [results, replyAuth] = await Promise.all([
+      checkSendAccountsNow(),
+      recheckInboxAuthNow(),
+    ]);
+    return NextResponse.json({
+      ok: true,
+      results,
+      replySync: { checked: replyAuth.checked, broken: replyAuth.errors.length },
+    });
   }
 
   const res = await recheckSendAccount(email, { probe: !!body.probe });
