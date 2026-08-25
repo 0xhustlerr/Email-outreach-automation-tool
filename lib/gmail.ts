@@ -135,22 +135,28 @@ export function parseGmailAccounts(): Record<string, GmailAccountOAuth> {
     }
   }
 
-  // Database (UI-managed) takes precedence over env: a global client id/secret
-  // in app_meta, paired with each account's own refresh token. This is what the
+  // Database (UI-managed) takes precedence over env. Each inbox uses its OWN
+  // stored client when it has one (one Google Cloud project per inbox is a
+  // supported setup — tokens only work with the client that issued them), and
+  // falls back to the global client in app_meta otherwise. This is what the
   // Accounts page writes, so a shipped build needs no env at all.
   try {
-    const client = getGmailClient();
-    if (client) {
-      for (const s of listStoredIdentities()) {
-        const rt = s.oauthRefreshToken?.trim();
-        if (rt) {
-          out[s.email.toLowerCase()] = {
-            clientId: client.clientId,
-            clientSecret: client.clientSecret,
-            refreshToken: rt,
-          };
-        }
-      }
+    const globalClient = getGmailClient();
+    for (const s of listStoredIdentities()) {
+      const rt = s.oauthRefreshToken?.trim();
+      if (!rt) continue;
+      const ownId = s.oauthClientId?.trim();
+      const ownSecret = s.oauthClientSecret?.trim();
+      const client =
+        ownId && ownSecret
+          ? { clientId: ownId, clientSecret: ownSecret }
+          : globalClient;
+      if (!client) continue;
+      out[s.email.toLowerCase()] = {
+        clientId: client.clientId,
+        clientSecret: client.clientSecret,
+        refreshToken: rt,
+      };
     }
   } catch {
     // DB not ready — env values (if any) still apply

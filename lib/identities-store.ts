@@ -14,6 +14,12 @@ export type StoredIdentity = {
   smtpPass: string;
   /** Per-account Gmail OAuth refresh token for reply sync ('' = not set). */
   oauthRefreshToken: string;
+  /** This inbox's own OAuth client ('' = fall back to the global one in
+   *  app_meta). Refresh tokens only work with the client that issued them, so
+   *  an install with one Google Cloud project per inbox stores each client
+   *  here — connecting one inbox then never touches the others'. */
+  oauthClientId: string;
+  oauthClientSecret: string;
 };
 
 type Row = {
@@ -25,6 +31,8 @@ type Row = {
   smtp_user: string;
   smtp_pass: string;
   oauth_refresh_token: string;
+  oauth_client_id: string;
+  oauth_client_secret: string;
 };
 
 function fromRow(r: Row): StoredIdentity {
@@ -37,6 +45,8 @@ function fromRow(r: Row): StoredIdentity {
     smtpUser: r.smtp_user,
     smtpPass: r.smtp_pass,
     oauthRefreshToken: r.oauth_refresh_token ?? "",
+    oauthClientId: r.oauth_client_id ?? "",
+    oauthClientSecret: r.oauth_client_secret ?? "",
   };
 }
 
@@ -128,6 +138,27 @@ export function deleteStoredIdentity(email: string): boolean {
   }
 }
 
+/** Set (or clear, with '') one inbox's own OAuth client. Empty means this
+ *  inbox falls back to the global client in app_meta. */
+export function setInboxOAuthClient(
+  email: string,
+  clientId: string,
+  clientSecret: string,
+): boolean {
+  try {
+    const info = db
+      .prepare(
+        `UPDATE mail_identities
+           SET oauth_client_id = ?, oauth_client_secret = ?
+         WHERE email = ?`,
+      )
+      .run(clientId.trim(), clientSecret.trim(), email.trim().toLowerCase());
+    return info.changes > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Set (or clear, with '') the per-account reply-sync refresh token. */
 export function setOAuthRefreshToken(email: string, token: string): boolean {
   try {
@@ -164,7 +195,9 @@ function setMeta(key: string, value: string): void {
   }
 }
 
-// --- global Gmail OAuth client (shared across accounts for reply sync) -------
+// --- global Gmail OAuth client ----------------------------------------------
+// Fallback only: an inbox with its own oauth_client_id/secret ignores this.
+// Kept for installs set up before per-inbox clients existed.
 
 export function getGmailClient(): { clientId: string; clientSecret: string } | null {
   const clientId = getMeta("gmail_client_id");

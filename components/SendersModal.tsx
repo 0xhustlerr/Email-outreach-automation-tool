@@ -49,7 +49,10 @@ type SendersState = {
   smtp?: Record<string, SmtpInfo>;
   health?: SenderHealth[];
   replySync?: {
+    /** Global fallback client exists (legacy shared-client setups / env). */
     clientConfigured: boolean;
+    /** Per inbox: its own stored client, or the global fallback. */
+    accountClients?: Record<string, boolean>;
     accounts: Record<string, boolean>;
     /** Why an account's inbox could not be read on the last sync cycle. */
     accountErrors?: Record<string, { error: string; needsReauth: boolean }>;
@@ -1157,7 +1160,10 @@ export default function SendersModal({
       {replyFor && (
         <ReplySyncModal
           email={replyFor}
-          clientConfigured={clientConfigured}
+          clientConfigured={
+            data?.replySync?.accountClients?.[replyFor.toLowerCase()] ??
+            clientConfigured
+          }
           syncOn={!!syncAccounts[replyFor.toLowerCase()]}
           onClose={() => setReplyFor(null)}
           onChanged={(snap) => {

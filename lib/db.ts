@@ -166,9 +166,13 @@ function ensureSchema(db: Database.Database): void {
       smtp_secure INTEGER NOT NULL DEFAULT 1,
       smtp_user   TEXT NOT NULL DEFAULT '',
       smtp_pass   TEXT NOT NULL DEFAULT '',
-      -- Per-account Gmail OAuth refresh token for READING replies (reply sync).
-      -- Paired with the global client id/secret in app_meta. Empty = no sync.
+      -- Per-account Gmail OAuth for READING replies (reply sync). Each inbox
+      -- may carry its own client (one Google Cloud project per inbox is a
+      -- supported setup); empty client falls back to the global one in
+      -- app_meta. Empty refresh token = no sync.
       oauth_refresh_token TEXT NOT NULL DEFAULT '',
+      oauth_client_id     TEXT NOT NULL DEFAULT '',
+      oauth_client_secret TEXT NOT NULL DEFAULT '',
       created_at  TEXT NOT NULL
     );
 
@@ -231,6 +235,23 @@ function ensureSchema(db: Database.Database): void {
     // One-time: the built-in long pitch templates are follow-ups (message 2).
     db.exec(
       `UPDATE templates SET kind = 'followup' WHERE id IN ('collaboration', 'remote-teamup')`,
+    );
+  }
+
+  // Per-inbox OAuth client for reply sync (one Google Cloud project per inbox).
+  // Older databases predate these columns; empty = fall back to the global
+  // client in app_meta, which is how those installs keep working unchanged.
+  const miCols = (
+    db.prepare(`PRAGMA table_info(mail_identities)`).all() as { name: string }[]
+  ).map((c) => c.name);
+  if (!miCols.includes("oauth_client_id")) {
+    db.exec(
+      `ALTER TABLE mail_identities ADD COLUMN oauth_client_id TEXT NOT NULL DEFAULT ''`,
+    );
+  }
+  if (!miCols.includes("oauth_client_secret")) {
+    db.exec(
+      `ALTER TABLE mail_identities ADD COLUMN oauth_client_secret TEXT NOT NULL DEFAULT ''`,
     );
   }
 

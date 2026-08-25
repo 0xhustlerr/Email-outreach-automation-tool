@@ -16,6 +16,7 @@ import {
   listStoredIdentities,
   setGithubToken,
   setGmailClient,
+  setInboxOAuthClient,
   setOAuthRefreshToken,
   upsertStoredIdentity,
 } from "@/lib/identities-store";
@@ -94,7 +95,20 @@ function snapshot() {
     // client is set, and which accounts have working sync. Secrets are never
     // returned — only booleans.
     replySync: {
+      // Whether the GLOBAL fallback client exists (legacy shared-client setups
+      // and the env). Per-inbox truth lives in accountClients below.
       clientConfigured: !!client || envClient,
+      // Whether each inbox can verify a refresh token right now: its own
+      // stored client, or the global fallback. Drives the Reply sync modal's
+      // step gating per inbox.
+      accountClients: Object.fromEntries(
+        stored.map((i) => [
+          i.email,
+          !!(i.oauthClientId.trim() && i.oauthClientSecret.trim()) ||
+            !!client ||
+            envClient,
+        ]),
+      ) as Record<string, boolean>,
       // Having a refresh token on file is NOT the same as that token working.
       // A token minted by a since-replaced OAuth client still sits in the DB and
       // still shows up in parseGmailAccounts, but every refresh returns
@@ -271,9 +285,10 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, renewed: !!existing, ...snapshot() });
 }
 
-// Reply-sync configuration. Two shapes:
-//   { clientId, clientSecret }      -> save the shared OAuth client
-//   { email, refreshToken }         -> set/clear an account's refresh token
+// Reply-sync configuration. Three shapes:
+//   { email, clientId, clientSecret } -> save that inbox's own OAuth client
+//   { clientId, clientSecret }        -> save the global fallback client
+//   { email, refreshToken }           -> set/clear an inbox's refresh token
 export async function PUT(req: Request) {
   let body: {
     clientId?: string;
@@ -340,7 +355,47 @@ export async function PUT(req: Request) {
     return NextResponse.json({ ok: true, ...snapshot() });
   }
 
-  // Save the shared OAuth client id/secret.
+  // Save one inbox's own OAuth client (one Google Cloud project per inbox).
+  // Scoped to that identity row, so connecting or re-connecting this inbox can
+  // never invalidate the tokens of the others — which is exactly what saving a
+  // new client into the shared slot used to do.
+  if (
+    body.email !== undefined &&
+    (body.clientId !== undefined || body.clientSecret !== undefined)
+  ) {
+    const email = (body.email ?? "").trim().toLowerCase();
+    const clientId = (body.clientId ?? "").trim();
+    const clientSecret = (body.clientSecret ?? "").trim();
+    if (!isStoredIdentity(email)) {
+      return NextResponse.json({ ok: false, error: "That account was not found." }, { status: 404 });
+    }
+    if (!clientId || !clientSecret) {
+      return NextResponse.json(
+        { ok: false, error: "Enter both the OAuth Client ID and Client Secret." },
+        { status: 400 },
+      );
+    }
+    setInboxOAuthClient(email, clientId, clientSecret);
+    // Re-verify so a token already on file that was issued by a different
+    // client shows up as broken NOW, with a message saying what to do.
+    const replyAuth = await recheckInboxAuthNow();
+    const mine = replyAuth.errors.find((e) => e.inbox === email && e.needsReauth);
+    return NextResponse.json({
+      ok: true,
+      ...(mine
+        ? {
+            warning:
+              `Saved — but the refresh token already on file for ${email} was issued by a different ` +
+              `client (${mine.error}). Re-generate this inbox's token in the OAuth Playground with ` +
+              `this client, then Save & verify below.`,
+          }
+        : {}),
+      ...snapshot(),
+    });
+  }
+
+  // Save the global fallback OAuth client id/secret (legacy shared-client
+  // setups; the Accounts UI now writes per-inbox clients above).
   if (body.clientId !== undefined || body.clientSecret !== undefined) {
     const clientId = (body.clientId ?? "").trim();
     const clientSecret = (body.clientSecret ?? "").trim();
@@ -386,10 +441,18 @@ export async function PUT(req: Request) {
       forgetInboxAuth(email);
       return NextResponse.json({ ok: true, cleared: true, ...snapshot() });
     }
-    const client = getGmailClient();
+    // Verify with the client this inbox will actually sync through: its own
+    // stored client when set, the global fallback otherwise.
+    const stored = getStoredIdentity(email);
+    const ownId = stored?.oauthClientId.trim();
+    const ownSecret = stored?.oauthClientSecret.trim();
+    const client =
+      ownId && ownSecret
+        ? { clientId: ownId, clientSecret: ownSecret }
+        : getGmailClient();
     if (!client) {
       return NextResponse.json(
-        { ok: false, error: "Set the OAuth Client ID and Secret first, then add the refresh token." },
+        { ok: false, error: "Set this inbox's OAuth Client ID and Secret first, then add the refresh token." },
         { status: 400 },
       );
     }
@@ -399,7 +462,7 @@ export async function PUT(req: Request) {
         {
           ok: false,
           error:
-            "That refresh token didn't work with your Client ID/Secret. Re-generate it in the OAuth Playground for this exact account. Details: " +
+            "That refresh token didn't work with this inbox's Client ID/Secret. Re-generate it in the OAuth Playground for this exact account, using the same client saved above. Details: " +
             (check.error ?? "token exchange failed"),
         },
         { status: 400 },

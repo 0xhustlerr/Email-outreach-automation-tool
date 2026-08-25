@@ -29,7 +29,12 @@ below are needed only if you want reply sync.
 > save time — the app saves it with a warning, but sending will keep failing
 > until the port is open.
 
-## Part 2 — Create the OAuth client (once, shared by all accounts)
+## Part 2 — Create the OAuth client (per account, or one shared by all)
+
+Each account saves its own Client ID/Secret in the app, so you can create a
+separate Google Cloud project per Gmail account **or** reuse one project for
+all of them — both work. The only rule: each account's refresh token (Part 3)
+must be generated with the client saved for that account.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com/) and
    create a project (any name).

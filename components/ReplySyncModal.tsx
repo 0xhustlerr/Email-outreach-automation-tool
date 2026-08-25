@@ -3,11 +3,18 @@
 import { useEffect, useState } from "react";
 
 // Per-account reply-sync setup, opened from an account's "Reply sync" button in
-// the Accounts modal. One shared Google OAuth client (Client ID + Secret) plus
-// this account's refresh token. Includes a from-zero guide.
+// the Accounts modal. Each inbox stores its OWN Google OAuth client (Client ID
+// + Secret) plus its refresh token — one Google Cloud project per inbox is a
+// supported setup, and connecting one inbox never touches the others. Inboxes
+// without their own client fall back to the legacy global one. Includes a
+// from-zero guide.
 
 type Snapshot = {
-  replySync?: { clientConfigured: boolean; accounts: Record<string, boolean> };
+  replySync?: {
+    clientConfigured: boolean;
+    accountClients?: Record<string, boolean>;
+    accounts: Record<string, boolean>;
+  };
 };
 
 export default function ReplySyncModal({
@@ -52,7 +59,7 @@ export default function ReplySyncModal({
       const res = await fetch("/api/senders", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, clientSecret }),
+        body: JSON.stringify({ email, clientId, clientSecret }),
       });
       const body = (await res.json()) as Snapshot & {
         ok: boolean;
@@ -156,7 +163,7 @@ export default function ReplySyncModal({
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h4 className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                1 · Google OAuth client (shared)
+                1 · Google OAuth client (this inbox)
               </h4>
               <span
                 className={
@@ -197,10 +204,10 @@ export default function ReplySyncModal({
               Save client
             </button>
             <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-              Every inbox shares this one client — set it once and reuse it for
-              each inbox you connect. A refresh token only works with the client
-              that issued it, so replacing the client breaks reply sync for the
-              inboxes already connected until their tokens are re-generated.
+              Saved for {email} only — other inboxes keep their own clients, so
+              setting or replacing this one can&apos;t break them. One Google Cloud
+              project per inbox and one project shared by all both work; just make
+              sure the refresh token below comes from the client saved here.
             </p>
           </div>
 
@@ -259,13 +266,13 @@ export default function ReplySyncModal({
             {showGuide && (
               <div className="border-t border-white/5 px-3 py-3 text-[12px] leading-relaxed text-slate-300">
                 <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-300">
-                  A. Create the OAuth client (once)
+                  A. Create the OAuth client (this inbox&apos;s project)
                 </div>
                 <ol className="space-y-3">
                   <Step n={1} title="Open Google Cloud Console">
                     Go to <Ext href="https://console.cloud.google.com/">console.cloud.google.com</Ext>{" "}
-                    and create a project — once. Reuse the same project and OAuth
-                    client for every inbox; only step B is per inbox.
+                    and create a project for this inbox (or reuse an existing one —
+                    both work, since each inbox saves its own client here).
                   </Step>
                   <Step n={2} title="Enable the Gmail API">
                     <Ext href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">
