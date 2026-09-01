@@ -51,8 +51,11 @@ function pickCandidates(body: {
 }
 
 // Enqueue a two-step sequence for every history contact in the range, reusing
-// each contact's stored name/url and ORIGINAL sender. Re-sends are allowed
-// (that's the whole point), so the send-log dedup is bypassed.
+// each contact's stored name/url and ORIGINAL sender. NOTE: the hard
+// never-email-twice rule applies here like everywhere else (the old
+// allowResend bypass is gone), so any candidate already present in send_log
+// comes back in `skipped` as "already emailed" — which for a re-engage range
+// is typically all of them.
 export async function POST(req: Request) {
   markUserActivity();
   let body: {
@@ -131,7 +134,6 @@ export async function POST(req: Request) {
           : undefined,
       },
       settings.startAt,
-      { allowResend: true },
     );
     if ("skipped" in res) skipped.push({ email: c.email, reason: res.reason });
     else added++;

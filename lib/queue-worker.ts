@@ -42,7 +42,6 @@ import {
   chooseSender,
   computeSendPlan,
   effectiveDailyCap,
-  hasDifferentFreeSender,
   localEligible,
   noteNetworkFailure,
   noteNetworkOk,
@@ -57,18 +56,19 @@ import {
   type SendPlanState,
 } from "./send-plan";
 import {
+  cancelAlreadyEmailedOpeners,
   claimDueBump,
   claimNextQueuedOpener,
   claimRepliedFollowup,
+  contactAlreadyEmailed,
   distinctClientsToday,
-  lastSenderForContact,
   listBumpCandidates,
   listPendingOpeners,
   markFollowupFailed,
   markFollowupSent,
+  markOpenerAlreadyEmailed,
   markOpenerFailed,
   markOpenerSent,
-  pendingOpenersLastSentBy,
   recoverInterruptedSequences,
   revertBump,
   revertFollowupToScheduled,
@@ -108,9 +108,8 @@ const state: WorkerState = globalForWorker.__queueWorker ?? {
   running: null,
   tick,
   lastSendMs: 0,
-  rotateIndex: 0,
   bumpIndex: 0,
-  lastSender: "",
+  lastSentBySender: {},
   lastError: "",
   lastSentAt: null,
   netBackoffMs: 0,
@@ -132,6 +131,7 @@ state.tick = tick;
 
 // Backfill fields added after an older module instance created this state.
 state.bumpIndex = Number.isFinite(state.bumpIndex) ? state.bumpIndex : 0;
+state.lastSentBySender = state.lastSentBySender ?? {};
 state.netBackoffMs = Number.isFinite(state.netBackoffMs) ? state.netBackoffMs : 0;
 state.netRetryAt = Number.isFinite(state.netRetryAt) ? state.netRetryAt : 0;
 state.offlineSince = state.offlineSince ?? null;
@@ -144,9 +144,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function ramState(): SendPlanState {
   return {
     lastSendMs: state.lastSendMs,
-    rotateIndex: state.rotateIndex,
     bumpIndex: state.bumpIndex,
-    lastSender: state.lastSender,
+    lastSentBySender: state.lastSentBySender,
     netBackoffMs: state.netBackoffMs,
     offlineSince: state.offlineSince,
     netRetryAt: state.netRetryAt,
@@ -155,9 +154,8 @@ function ramState(): SendPlanState {
 
 function applyRam(next: SendPlanState): void {
   state.lastSendMs = next.lastSendMs;
-  state.rotateIndex = next.rotateIndex;
   state.bumpIndex = next.bumpIndex;
-  state.lastSender = next.lastSender;
+  state.lastSentBySender = next.lastSentBySender;
   state.netBackoffMs = next.netBackoffMs;
   state.offlineSince = next.offlineSince;
   state.netRetryAt = next.netRetryAt;
@@ -193,7 +191,7 @@ function recordAttempt(sender: string): void {
 // Non-pooled Sender choice through the plan's rotation. Returns "" when
 // nothing may send — every caller must treat that as "hold this item".
 function pickSender(itemFrom: string, blocked = blockedSenderSet()): string {
-  const r = chooseSender(
+  return chooseSender(
     ramState(),
     {
       settings: getSettings(),
@@ -202,8 +200,6 @@ function pickSender(itemFrom: string, blocked = blockedSenderSet()): string {
     },
     itemFrom,
   );
-  applyRam(r.nextState);
-  return r.sender;
 }
 
 // Next bump template body (rotating across the whole library), {{name}}
@@ -459,40 +455,43 @@ async function tick(): Promise<void> {
         // hasn't recorded yet and an opener younger than the 3-minute floor
         // both read as "clear".
       } else if (lane === "opener") {
-        // HARD RULE folded into claim eligibility: a re-send must not reuse
-        // the account that already emailed the contact — SKIP (don't claim)
-        // any opener whose only free account is its original Sender.
-        const op = claimNextQueuedOpener((seq) => {
+        const eligibleOpener = (seq: Sequence) => {
           if (!localEligible(seq.timezone, s, Date.now())) return false;
           // No pool → the item's own Sender is used verbatim, so it must be free.
           if (elig !== "ok") return senderAllowed(seq.fromEmail, blocked, anyFree);
-          return hasDifferentFreeSender(
-            s,
-            identities,
-            lastSenderForContact(seq.toEmail),
-            load,
-            blocked,
+          return true;
+        };
+        // HARD RULE (ADR-0003): a contact any Sender has ever emailed is never
+        // emailed again. enqueueSequence enforces this at queue-add and the
+        // arm-time sweep clears legacy rows; this per-claim check is the last
+        // line — it catches a contact mailed through another lane after
+        // queueing. A hit is dropped and the claim retried, so a drop neither
+        // sends nor costs the tick its shot at the remaining lanes.
+        let op = claimNextQueuedOpener(eligibleOpener);
+        while (op && contactAlreadyEmailed(op.toEmail)) {
+          markOpenerAlreadyEmailed(op.id);
+          console.log(
+            `[queue] opener dropped → ${op.toEmail} (contact already emailed)`,
           );
-        });
+          op = claimNextQueuedOpener(eligibleOpener);
+        }
         if (!op) continue; // nothing claimable — the Bump lane may take the tick
-        // Pool active → a FREE account different from the one that already
-        // emailed this contact is guaranteed by the eligibility check above.
-        // If somehow gone (race), put the opener back rather than reuse the
-        // original sender.
+        // Pool active → pick the eligible account idle longest. If the pool
+        // emptied since the plan was computed (race), put the opener back.
         let sender: string;
         if (elig === "ok") {
-          const picked = choosePooledSender(
-            ramState(),
-            { settings: s, identities, blocked, load },
-            lastSenderForContact(op.toEmail),
-          );
-          applyRam(picked.nextState);
-          if (!picked.sender) {
+          const picked = choosePooledSender(ramState(), {
+            settings: s,
+            identities,
+            blocked,
+            load,
+          });
+          if (!picked) {
             revertOpenerToPending(op.id);
             await sleep(TICK_MS);
             return;
           }
-          sender = picked.sender;
+          sender = picked;
         } else {
           sender = pickSender(op.fromEmail, blocked);
           if (!sender) {
@@ -554,6 +553,21 @@ async function loop(myGen: number): Promise<void> {
     console.error("[queue] crash recovery failed, continuing:", err);
   }
 
+  // Never-email-twice sweep, AFTER recovery (which may have just requeued
+  // 'sending' rows this should now judge): cancels every pending opener whose
+  // contact any account already emailed — legacy re-engage rows in bulk here,
+  // per-claim checks catching the stragglers.
+  try {
+    const dropped = cancelAlreadyEmailedOpeners();
+    if (dropped > 0) {
+      console.log(
+        `[queue] dropped ${dropped} queued opener(s) — contact already emailed`,
+      );
+    }
+  } catch (err) {
+    console.error("[queue] already-emailed sweep failed, continuing:", err);
+  }
+
   for (;;) {
     if (state.gen !== myGen) return;
     await state.tick();
@@ -604,23 +618,9 @@ export function queueWorkerStatus() {
   const sentToday = distinctClientsToday();
   const load = sentTodayBySender();
   const totalCap = effectiveDailyCap(s, identities);
-  // Openers held back by the hard "different sender" rule: only possible when
-  // exactly ONE pool account is free — then contacts whose original sender is
-  // that account have no different account and must wait. With 3+ accounts this
-  // is almost always 0.
   const configured = new Set(identities.map((e) => e.toLowerCase()));
-  const pool = s.senderPool.filter((e) => configured.has(e));
   const blockedSenders: SenderBlock[] = listActiveBlocks();
   const blockedSet = new Set(blockedSenders.map((b) => b.sender));
-  // "Free" must mean actually usable, or this under-reports next to the new
-  // blocked counter in the same stat strip.
-  const freeAccounts = pool.filter(
-    (e) => (load[e] ?? 0) < capFor(s, e) && !blockedSet.has(e),
-  );
-  const waitingForSender =
-    pool.length > 0 && freeAccounts.length === 1
-      ? pendingOpenersLastSentBy(freeAccounts[0])
-      : 0;
   // Every eligible account blocked → the drip can't send at all. Lets the UI
   // say so instead of showing a silent idle with a ticking countdown.
   const activeEmails = activeSenderEmails(s, identities);
@@ -653,7 +653,6 @@ export function queueWorkerStatus() {
     lastSentAt: state.lastSentAt,
     senderCaps: s.senderCaps,
     senderPool: s.senderPool,
-    waitingForSender,
     // Distinct contacts each account has sent today (for the UI meters and
     // the Send modal's cap warning). Covers pool + all configured identities.
     sentBySender: [...new Set([...s.senderPool, ...configured])].reduce<

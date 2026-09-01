@@ -229,12 +229,12 @@ export function recordSentSequence(
 }
 
 /** QUEUE lane: opener pending; the worker will drip it starting at startAt.
- *  allowResend bypasses the "already emailed" guard (used by the re-engage
- *  from-history campaign, which deliberately targets past contacts). */
+ *  HARD RULE (ADR-0003): a contact any Sender has ever emailed is never
+ *  emailed again — there is deliberately no bypass (the old allowResend
+ *  escape hatch is gone). */
 export function enqueueSequence(
   input: SequenceInput,
   startAt: string | null,
-  opts: { allowResend?: boolean } = {},
 ): Sequence | { skipped: true; reason: string } {
   const to = input.toEmail.trim().toLowerCase();
   const dup = db
@@ -243,12 +243,9 @@ export function enqueueSequence(
     )
     .get(to);
   if (dup) return { skipped: true, reason: "already queued" };
-  if (!opts.allowResend) {
-    const alreadySent = db
-      .prepare(`SELECT 1 FROM send_log WHERE lower(contact) = ? LIMIT 1`)
-      .get(to);
-    if (alreadySent) return { skipped: true, reason: "already emailed" };
-  }
+  // Same match the send-time checks use, so queue-add can never wave through
+  // a contact the worker would only cancel later.
+  if (contactAlreadyEmailed(to)) return { skipped: true, reason: "already emailed" };
 
   const now = new Date().toISOString();
   const hasFollow = !!input.followUp;
@@ -542,41 +539,52 @@ export function listBumpCandidates(): {
   }));
 }
 
-/** The account that most recently emailed this contact (lowercased), or "".
- *  Used to send a re-engaged contact's new opener from a DIFFERENT account. */
-export function lastSenderForContact(email: string): string {
+/** Has ANY Sender ever emailed this contact? The send-time face of the
+ *  never-email-twice rule (ADR-0003); enqueueSequence is the queue-add face.
+ *  LIKE '%..%' matches how every other send_log lookup in this file joins —
+ *  the contact column can hold more than the bare address. */
+export function contactAlreadyEmailed(email: string): boolean {
   const e = email.trim().toLowerCase();
-  if (!e) return "";
-  const r = db
+  if (!e) return false;
+  return !!db
     .prepare(
-      `SELECT lower(sender) AS s FROM send_log
-       WHERE lower(contact) LIKE '%' || ? || '%' AND sender <> ''
-       ORDER BY date DESC LIMIT 1`,
+      `SELECT 1 FROM send_log WHERE lower(contact) LIKE '%' || ? || '%' LIMIT 1`,
     )
-    .get(e) as { s: string } | undefined;
-  return r?.s ?? "";
+    .get(e);
 }
 
-/** How many due queue openers were most recently emailed by `sender` — i.e.
- *  would be BLOCKED by the hard rule when `sender` is the only free account
- *  (their only different account is capped). For the "waiting" status line. */
-export function pendingOpenersLastSentBy(sender: string): number {
-  const s = sender.trim().toLowerCase();
-  if (!s) return 0;
-  const nowIso = new Date().toISOString();
-  const r = db
+// The rule's one terminal shape — cancelSequence's, with the rule's own
+// reason, so retrySequence can still deliberately un-cancel such a row.
+const ALREADY_EMAILED_SET = `op_status = 'failed', fu_status = 'skipped', last_error = 'already emailed'`;
+
+/** Close out a claimed opener whose contact turned out to be already emailed.
+ *  The row is 'sending' at this point (just claimed), which cancelSequence's
+ *  pending-only guard won't touch. */
+export function markOpenerAlreadyEmailed(id: number): void {
+  db.prepare(
+    `UPDATE sequences SET ${ALREADY_EMAILED_SET}
+     WHERE id = ? AND lane = 'queue' AND op_status = 'sending'`,
+  ).run(id);
+}
+
+/** Bulk sweep of the same rule for rows queued before it existed (the old
+ *  re-engage flow enqueued with allowResend against existing send_log rows):
+ *  cancel every pending queue opener whose contact appears in send_log.
+ *  to_email needs no lower() — insertStmt is its only writer and always
+ *  stores it trimmed+lowercased. Run once per worker arm — the correlated
+ *  LIKE scan is too heavy for every tick, where the per-claim
+ *  contactAlreadyEmailed check covers stragglers. */
+export function cancelAlreadyEmailedOpeners(): number {
+  return db
     .prepare(
-      `SELECT COUNT(*) AS c FROM sequences seq
-       WHERE seq.lane = 'queue' AND seq.op_status = 'pending'
-         AND (seq.op_send_after IS NULL OR seq.op_send_after <= ?)
-         AND ? = (
-           SELECT lower(l.sender) FROM send_log l
-           WHERE lower(l.contact) LIKE '%' || lower(seq.to_email) || '%'
-             AND l.sender <> '' ORDER BY l.date DESC LIMIT 1
+      `UPDATE sequences SET ${ALREADY_EMAILED_SET}
+       WHERE lane = 'queue' AND op_status = 'pending'
+         AND EXISTS (
+           SELECT 1 FROM send_log l
+           WHERE lower(l.contact) LIKE '%' || to_email || '%'
          )`,
     )
-    .get(nowIso, s) as { c: number };
-  return r.c;
+    .run().changes;
 }
 
 export function markOpenerSent(
@@ -700,10 +708,11 @@ export function backfillSequenceLocations(): number {
  *
  *  So each stuck step is checked against send_log for a delivery stamped at or
  *  after its claim: found -> the message went out, close the step out as sent;
- *  not found -> it never left, put it back. claimed_at is what makes this safe.
- *  A bare "has this contact ever been emailed" test would wrongly close out
- *  re-engage campaigns, which deliberately enqueue with allowResend against an
- *  existing send_log row.
+ *  not found -> it never left, put it back. claimed_at is what makes this safe:
+ *  a bare "has this contact ever been emailed" test would mark a step SENT on
+ *  the strength of some past email, when the right outcome for such a row is
+ *  the never-email-twice cancel (the arm-time sweep that runs right after
+ *  this recovery — cancelAlreadyEmailedOpeners).
  *
  *  A recovered opener has no op_message_id, so its follow-up replies as a fresh
  *  email instead of threading into the original — the accepted cost of never

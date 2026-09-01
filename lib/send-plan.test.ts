@@ -20,7 +20,6 @@ import {
   noteSent,
   localEligible,
   senderAllowed,
-  hasDifferentFreeSender,
   pooledEligibility,
   effectiveDailyCap,
   planPayload,
@@ -59,9 +58,8 @@ const settings = (over: Partial<QueueSettings> = {}): QueueSettings => ({
 
 const state = (over: Partial<SendPlanState> = {}): SendPlanState => ({
   lastSendMs: 0,
-  rotateIndex: 0,
   bumpIndex: 0,
-  lastSender: "",
+  lastSentBySender: {},
   netBackoffMs: 0,
   offlineSince: null,
   netRetryAt: 0,
@@ -506,7 +504,7 @@ describe("offline backoff", () => {
   });
 });
 
-// --- Sender rotation skipping blocked Senders --------------------------------
+// --- Sender rotation: least-recently-used, skipping blocked Senders ----------
 
 describe("sender choice", () => {
   const ids = ["A@x.com", "b@x.com", "c@x.com"];
@@ -516,81 +514,113 @@ describe("sender choice", () => {
     blocked: new Set(blocked),
   });
 
-  it("a pinned Sender is used verbatim, without advancing the rotation", () => {
-    const r = chooseSender(state({ rotateIndex: 1 }), args(), "A@x.com");
-    expect(r.sender).toBe("A@x.com");
-    expect(r.nextState.rotateIndex).toBe(1);
+  // The pickers are pure reads of lastSentBySender — only noteSent's wire
+  // stamp advances the rotation, so a held/offline pick can't burn a turn.
+
+  it("a pinned Sender is used verbatim", () => {
+    expect(chooseSender(state(), args(), "A@x.com")).toBe("A@x.com");
   });
 
   it("a pinned but blocked Sender means hold — never a silent substitute", () => {
-    const r = chooseSender(state(), args(["a@x.com"]), "A@x.com");
-    expect(r.sender).toBe("");
+    expect(chooseSender(state(), args(["a@x.com"]), "A@x.com")).toBe("");
   });
 
-  it("rotation walks the free Senders and skips blocked ones", () => {
+  it("rotation picks the free Sender idle longest, skipping blocked ones", () => {
+    // Simulate the worker: every pick is followed by noteSent's wire stamp.
     let s = state();
+    let now = at(10, 0);
     const picks: string[] = [];
     for (let i = 0; i < 4; i++) {
-      const r = chooseSender(s, args(["b@x.com"]), "");
-      picks.push(r.sender);
-      s = r.nextState;
+      const sender = chooseSender(s, args(["b@x.com"]), "");
+      picks.push(sender);
+      s = noteSent(s, (now += 60_000), sender);
     }
     expect(picks).toEqual(["A@x.com", "c@x.com", "A@x.com", "c@x.com"]);
   });
 
   it("with rotation off, the first free Sender always sends", () => {
-    const r = chooseSender(state(), args(["a@x.com"], { rotateSenders: false }), "");
-    expect(r.sender).toBe("b@x.com");
-    expect(r.nextState.rotateIndex).toBe(0);
+    expect(
+      chooseSender(state(), args(["a@x.com"], { rotateSenders: false }), ""),
+    ).toBe("b@x.com");
   });
 
   it("all Senders blocked → nobody may send", () => {
-    const r = chooseSender(state(), args(["a@x.com", "b@x.com", "c@x.com"]), "");
-    expect(r.sender).toBe("");
+    expect(
+      chooseSender(state(), args(["a@x.com", "b@x.com", "c@x.com"]), ""),
+    ).toBe("");
   });
 
-  it("the pool pick never reuses the account that already emailed the contact", () => {
-    const s = settings({ senderPool: ["a@x.com", "b@x.com"] });
-    const r = choosePooledSender(
-      state(),
-      { settings: s, identities: ids, blocked: new Set(), load: {} },
-      "a@x.com",
-    );
-    expect(r.sender).toBe("b@x.com");
-  });
-
-  it("holds (null) when the only free account is the one to avoid", () => {
-    const s = settings({
-      senderPool: ["a@x.com", "b@x.com"],
-      senderCaps: { "b@x.com": 2 },
-    });
-    const r = choosePooledSender(
-      state(),
-      { settings: s, identities: ids, blocked: new Set(), load: { "b@x.com": 2 } },
-      "a@x.com",
-    );
-    expect(r.sender).toBeNull();
-  });
-
-  it("alternates away from the last account used when it can", () => {
+  it("the pool pick is the under-cap free account idle longest", () => {
     const s = settings({ senderPool: ["a@x.com", "b@x.com", "c@x.com"] });
     const r = choosePooledSender(
-      state({ lastSender: "a@x.com", rotateIndex: 0 }),
+      state({
+        lastSentBySender: {
+          "a@x.com": at(9, 30),
+          "b@x.com": at(9, 0), // idle longest
+          "c@x.com": at(9, 45),
+        },
+      }),
       { settings: s, identities: ids, blocked: new Set(), load: {} },
-      "",
     );
-    expect(["b@x.com", "c@x.com"]).toContain(r.sender);
-    expect(r.sender).not.toBe("a@x.com");
+    expect(r).toBe("b@x.com");
   });
 
-  it("a blocked pool account is skipped by the pool pick", () => {
+  it("never-sent pool accounts go first, in pool order", () => {
     const s = settings({ senderPool: ["a@x.com", "b@x.com"] });
     const r = choosePooledSender(
-      state(),
-      { settings: s, identities: ids, blocked: new Set(["a@x.com"]), load: {} },
-      "",
+      state({ lastSentBySender: { "a@x.com": at(9, 0) } }),
+      { settings: s, identities: ids, blocked: new Set(), load: {} },
     );
-    expect(r.sender).toBe("b@x.com");
+    expect(r).toBe("b@x.com");
+  });
+
+  it("repeated pool sends cycle every account — each account's own interval is maximal", () => {
+    const s = settings({ senderPool: ["a@x.com", "b@x.com", "c@x.com"] });
+    let st = state();
+    let now = at(10, 0);
+    const picks: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const sender = choosePooledSender(st, {
+        settings: s,
+        identities: ids,
+        blocked: new Set(),
+        load: {},
+      })!;
+      picks.push(sender);
+      st = noteSent(st, (now += 60_000), sender);
+    }
+    expect(picks).toEqual([
+      "a@x.com",
+      "b@x.com",
+      "c@x.com",
+      "a@x.com",
+      "b@x.com",
+      "c@x.com",
+    ]);
+  });
+
+  it("holds (null) when every pool account is capped or blocked", () => {
+    const s = settings({
+      senderPool: ["a@x.com", "b@x.com"],
+      senderCaps: { "a@x.com": 2 },
+    });
+    const r = choosePooledSender(state(), {
+      settings: s,
+      identities: ids,
+      blocked: new Set(["b@x.com"]),
+      load: { "a@x.com": 2 },
+    });
+    expect(r).toBeNull();
+  });
+
+  it("a blocked pool account is skipped even when idle longest", () => {
+    const s = settings({ senderPool: ["a@x.com", "b@x.com"] });
+    const r = choosePooledSender(
+      // a@x.com never sent → nominally idle longest, but it's blocked.
+      state({ lastSentBySender: { "b@x.com": at(9, 0) } }),
+      { settings: s, identities: ids, blocked: new Set(["a@x.com"]), load: {} },
+    );
+    expect(r).toBe("b@x.com");
   });
 
   it("blocked-Sender items hold as 'sender-blocked' in the plan", () => {
@@ -633,20 +663,6 @@ describe("claim eligibility helpers", () => {
     expect(localEligible("UTC-07:00", s, nowUtc)).toBe(false);
   });
 
-  it("hasDifferentFreeSender: true only when a DIFFERENT under-cap free account exists", () => {
-    const s = settings({
-      senderPool: ["a@x.com", "b@x.com"],
-      senderCaps: { "b@x.com": 5 },
-    });
-    const ids = ["a@x.com", "b@x.com"];
-    expect(hasDifferentFreeSender(s, ids, "a@x.com", {}, new Set())).toBe(true);
-    expect(
-      hasDifferentFreeSender(s, ids, "a@x.com", { "b@x.com": 5 }, new Set()),
-    ).toBe(false);
-    expect(
-      hasDifferentFreeSender(s, ids, "a@x.com", {}, new Set(["b@x.com"])),
-    ).toBe(false);
-  });
 });
 
 // --- Plan projection: ordering and ETAs --------------------------------------
@@ -748,11 +764,17 @@ describe("plan projection", () => {
 // --- Post-send bookkeeping ---------------------------------------------------
 
 describe("noteSent", () => {
-  it("stamps the send time and the account it left from (lowercased)", () => {
+  it("stamps the send time and the account's own LRU slot (lowercased)", () => {
     const now = at(11, 0);
     const next = noteSent(state(), now, "A@x.com");
     expect(next.lastSendMs).toBe(now);
-    expect(next.lastSender).toBe("a@x.com");
+    expect(next.lastSentBySender).toEqual({ "a@x.com": now });
+  });
+
+  it("an empty sender restamps the drip only, not any account's slot", () => {
+    const prior = state({ lastSentBySender: { "a@x.com": at(10, 0) } });
+    const next = noteSent(prior, at(11, 0), "");
+    expect(next.lastSentBySender).toEqual({ "a@x.com": at(10, 0) });
   });
 });
 

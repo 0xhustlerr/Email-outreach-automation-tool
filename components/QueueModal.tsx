@@ -103,7 +103,6 @@ type QueueStatus = {
   sentBySender?: Record<string, number>;
   // Resolved daily cap per pooled account (0 = unlimited).
   capBySender?: Record<string, number>;
-  waitingForSender?: number;
   // Accounts paused for today by a Gmail block; they resume on their own.
   blockedSenders?: SenderBlock[];
   // Every eligible account is blocked — nothing can send until tomorrow.
@@ -254,6 +253,22 @@ function CloseIcon({ className }: { className?: string }) {
   );
 }
 
+// "Blocked · resumes …" pill for a policy-blocked account row (both branches
+// of the Sending-accounts section render it).
+function BlockedBadge({ block }: { block: SenderBlock }) {
+  return (
+    <span
+      title={`Gmail bounced this account with a policy block${
+        block.detail ? `: ${block.detail}` : ""
+      }. The queue skips it until ${resumeAt(block.until)}.`}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+    >
+      <PauseIcon className="h-2.5 w-2.5" />
+      Blocked · resumes {resumeAt(block.until)}
+    </span>
+  );
+}
+
 function PauseIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
@@ -377,6 +392,15 @@ export default function QueueModal({
   // In-progress per-account cap edits, kept as raw strings so a half-typed or
   // cleared box isn't coerced to a number mid-keystroke.
   const [capDrafts, setCapDrafts] = useState<Record<string, string>>({});
+  // The Sending-accounts section renders as an explicit "only checked" vs
+  // "all accounts" choice, but stored settings have no such field — an empty
+  // senderPool means "all". This override keeps the "pick" branch open while
+  // zero boxes are checked, and lastPoolRef stashes the selection so flipping
+  // to "all" and back doesn't lose it.
+  const [poolModeOverride, setPoolModeOverride] = useState<
+    "pick" | "all" | null
+  >(null);
+  const lastPoolRef = useRef<string[]>([]);
   // Opener rotation: rewrite the queued items' openers in place, round-robin
   // across the selected templates (no items removed).
   const { openers, templatesLoaded } = useTemplates();
@@ -539,6 +563,30 @@ export default function QueueModal({
   const editDraft = (patch: Partial<QueueSettings>) =>
     setDraft((d) => (d ? { ...d, ...patch } : d));
 
+  const senderEmails = useMemo(
+    () => senders.map((s) => s.email.toLowerCase()),
+    [senders],
+  );
+  // Checked accounts, restricted to ones that still exist.
+  const draftPool = useMemo(
+    () => (draft?.senderPool ?? []).filter((e) => senderEmails.includes(e)),
+    [draft?.senderPool, senderEmails],
+  );
+  const poolMode: "pick" | "all" =
+    poolModeOverride ?? (draftPool.length > 0 ? "pick" : "all");
+  const switchPoolMode = (mode: "pick" | "all") => {
+    if (!draft || mode === poolMode) return;
+    setPoolModeOverride(mode);
+    if (mode === "all") {
+      lastPoolRef.current = draft.senderPool ?? [];
+      editDraft({ senderPool: [] });
+    } else {
+      editDraft({
+        senderPool: lastPoolRef.current.filter((e) => senderEmails.includes(e)),
+      });
+    }
+  };
+
   // Fold any cap box the user is still typing in into a senderCaps map, so OK
   // applies it even if the input never blurred. Blank/0/invalid = uncapped.
   const mergeCapDrafts = useCallback(
@@ -553,6 +601,19 @@ export default function QueueModal({
     },
     [capDrafts],
   );
+
+  // Pick-mode footer: the checked accounts' combined daily ceiling when every
+  // one of them carries a cap; null = at least one is uncapped, so the queue's
+  // global dailyCap governs instead. Deliberately a DRAFT-only preview of the
+  // unsaved edits (which the worker can't know yet) — once applied, the
+  // authoritative ceiling is the worker's own status.dailyCap (ADR-0001).
+  const poolCapSum = useMemo(() => {
+    if (!draft || draftPool.length === 0) return null;
+    const caps = mergeCapDrafts(draft.senderCaps ?? {});
+    return draftPool.every((e) => (caps[e] ?? 0) > 0)
+      ? draftPool.reduce((a, e) => a + (caps[e] ?? 0), 0)
+      : null;
+  }, [draft, draftPool, mergeCapDrafts]);
 
   // Only the fields the user actually changed — a patch merges over the stored
   // row, so sending the whole draft would also re-write untouched fields (and
@@ -584,6 +645,7 @@ export default function QueueModal({
     setDraft(null);
     setBaseline(null);
     setCapDrafts({});
+    setPoolModeOverride(null);
     setRotatedQueued(false);
   };
 
@@ -592,6 +654,8 @@ export default function QueueModal({
     setDraft(settings);
     setBaseline(settings);
     setCapDrafts({});
+    setPoolModeOverride(null);
+    lastPoolRef.current = settings.senderPool ?? [];
     setRotatedQueued(false);
     setSettingsOpen(true);
   };
@@ -661,6 +725,7 @@ export default function QueueModal({
       setDraft(null);
       setBaseline(null);
       setCapDrafts({});
+      setPoolModeOverride(null);
       setRotatedQueued(false);
     };
     window.addEventListener("keydown", onKey);
@@ -942,14 +1007,6 @@ export default function QueueModal({
             {num("failed") > 0 && (
               <span>
                 Failed <b className="text-rose-300">{num("failed")}</b>
-              </span>
-            )}
-            {(status.waitingForSender ?? 0) > 0 && (
-              <span
-                title="Openers whose original sender is the only account still free today. They wait (hard rule) until a different account has budget — add more Gmail accounts to clear this."
-              >
-                Waiting for sender{" "}
-                <b className="text-amber-300">{status.waitingForSender}</b>
               </span>
             )}
             {blocks.length > 0 && (
@@ -1328,9 +1385,11 @@ export default function QueueModal({
               <div className="mb-2 flex items-baseline justify-between gap-2">
                 <SectionHead>Sending accounts</SectionHead>
                 <span className="text-[10px] text-slate-600">
-                  {(draft.senderPool?.length ?? 0) === 0
-                    ? "all accounts eligible"
-                    : `${draft.senderPool.length} selected — openers use only these`}
+                  {senders.length === 0
+                    ? ""
+                    : poolMode === "pick"
+                    ? `${draftPool.length} of ${senders.length} checked`
+                    : "all accounts eligible"}
                 </span>
               </div>
               <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
@@ -1339,128 +1398,230 @@ export default function QueueModal({
                     No sender identities configured.
                   </p>
                 ) : (
-                  <div className="space-y-1">
-                    {senders.map((id) => {
-                      const email = id.email.toLowerCase();
-                      const pool = draft.senderPool ?? [];
-                      const inPool = pool.includes(email);
-                      const used = status?.sentBySender?.[email];
-                      // While editing, show the cap being edited rather than
-                      // the one the worker is currently running with.
-                      // 0 = unlimited.
-                      const cap = draft.senderCaps?.[email] ?? 0;
-                      const block = blockByEmail.get(email);
-                      const commitCap = () => {
-                        const raw = capDrafts[email];
-                        if (raw === undefined) return;
-                        setCapDrafts((d) => {
-                          const n = { ...d };
-                          delete n[email];
-                          return n;
-                        });
-                        const v = Math.round(Number(raw));
-                        const next = { ...(draft.senderCaps ?? {}) };
-                        if (raw.trim() !== "" && Number.isFinite(v) && v > 0)
-                          next[email] = v;
-                        else delete next[email];
-                        editDraft({ senderCaps: next });
-                      };
-                      return (
-                        <label
-                          key={email}
-                          className="flex items-center gap-2 rounded px-1 py-0.5 text-[11px] text-slate-300 hover:bg-white/[0.03]"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={inPool}
-                            onChange={() => {
-                              const next = inPool
-                                ? pool.filter((x) => x !== email)
-                                : [...pool, email];
-                              editDraft({ senderPool: next });
-                            }}
-                            className="accent-cyan-500"
-                          />
-                          <span className="flex-1 truncate font-mono">{id.email}</span>
-                          {inPool && used !== undefined && (
-                            <span
-                              className={
-                                "shrink-0 tabular-nums text-[10px] " +
-                                (cap > 0 && used >= cap
-                                  ? "text-rose-300"
-                                  : "text-slate-500")
-                              }
-                            >
-                              {cap > 0 ? `${used}/${cap}` : used} today
-                            </span>
-                          )}
-                          {block && (
-                            // No Resume button here: this row is a <label>, so a
-                            // nested button would toggle the pool checkbox. It
-                            // lives in the banner above instead.
-                            <span
-                              title={`Gmail bounced this account with a policy block${
-                                block.detail ? `: ${block.detail}` : ""
-                              }. The queue skips it until ${resumeAt(block.until)}.`}
-                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
-                            >
-                              <PauseIcon className="h-2.5 w-2.5" />
-                              Blocked · resumes {resumeAt(block.until)}
-                            </span>
-                          )}
-                          <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">
-                            cap
-                            <input
-                              type="number"
-                              min={0}
-                              value={
-                                capDrafts[email] ??
-                                (draft.senderCaps?.[email] || "")
-                              }
-                              placeholder="∞"
-                              onChange={(e) =>
-                                setCapDrafts((d) => ({
-                                  ...d,
-                                  [email]: e.target.value,
-                                }))
-                              }
-                              onBlur={commitCap}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter")
-                                  (e.target as HTMLInputElement).blur();
-                              }}
-                              title="This account's own daily cap (blank = no limit)"
-                              className="w-14 rounded-md border border-white/10 bg-slate-950 px-1.5 py-0.5 text-center text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/40"
-                            />
+                  <div className="space-y-3">
+                    {/* Mode 1: only the checked accounts send openers */}
+                    <div>
+                      <label className="flex items-start gap-2 text-[11px] text-slate-300">
+                        <input
+                          type="radio"
+                          name="senderPoolMode"
+                          checked={poolMode === "pick"}
+                          onChange={() => switchPoolMode("pick")}
+                          className="mt-0.5 accent-cyan-500"
+                        />
+                        <span>
+                          Only the accounts I check
+                          <span className="block text-[10px] text-slate-600">
+                            Each opener goes out from whichever checked account
+                            has rested longest, so every account gets the
+                            widest possible gap between its own sends.
                           </span>
-                        </label>
-                      );
-                    })}
+                        </span>
+                      </label>
+                      {poolMode === "pick" && (
+                        <div className="ml-6 mt-2 space-y-1">
+                          {senders.map((id) => {
+                            const email = id.email.toLowerCase();
+                            const pool = draft.senderPool ?? [];
+                            const inPool = pool.includes(email);
+                            const used = status?.sentBySender?.[email];
+                            // While editing, show the cap being edited rather
+                            // than the one the worker is currently running
+                            // with. 0 = unlimited.
+                            const cap = draft.senderCaps?.[email] ?? 0;
+                            const block = blockByEmail.get(email);
+                            const commitCap = () => {
+                              const raw = capDrafts[email];
+                              if (raw === undefined) return;
+                              setCapDrafts((d) => {
+                                const n = { ...d };
+                                delete n[email];
+                                return n;
+                              });
+                              const v = Math.round(Number(raw));
+                              const next = { ...(draft.senderCaps ?? {}) };
+                              if (
+                                raw.trim() !== "" &&
+                                Number.isFinite(v) &&
+                                v > 0
+                              )
+                                next[email] = v;
+                              else delete next[email];
+                              editDraft({ senderCaps: next });
+                            };
+                            return (
+                              <label
+                                key={email}
+                                className="flex items-center gap-2 rounded px-1 py-0.5 text-[11px] text-slate-300 hover:bg-white/[0.03]"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={inPool}
+                                  onChange={() => {
+                                    const next = inPool
+                                      ? pool.filter((x) => x !== email)
+                                      : [...pool, email];
+                                    // Pin the branch open so unchecking the
+                                    // last account doesn't flip the radio to
+                                    // "All accounts" mid-click.
+                                    setPoolModeOverride("pick");
+                                    editDraft({ senderPool: next });
+                                  }}
+                                  className="accent-cyan-500"
+                                />
+                                <span className="flex-1 truncate font-mono">{id.email}</span>
+                                {inPool && used !== undefined && (
+                                  <span
+                                    className={
+                                      "shrink-0 tabular-nums text-[10px] " +
+                                      (cap > 0 && used >= cap
+                                        ? "text-rose-300"
+                                        : "text-slate-500")
+                                    }
+                                  >
+                                    {cap > 0 ? `${used}/${cap}` : used} today
+                                  </span>
+                                )}
+                                {block && (
+                                  // No Resume button here: this row is a
+                                  // <label>, so a nested button would toggle
+                                  // the pool checkbox. It lives in the banner
+                                  // above instead.
+                                  <BlockedBadge block={block} />
+                                )}
+                                <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">
+                                  cap
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={
+                                      capDrafts[email] ??
+                                      (draft.senderCaps?.[email] || "")
+                                    }
+                                    placeholder="∞"
+                                    onChange={(e) =>
+                                      setCapDrafts((d) => ({
+                                        ...d,
+                                        [email]: e.target.value,
+                                      }))
+                                    }
+                                    onBlur={commitCap}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter")
+                                        (e.target as HTMLInputElement).blur();
+                                    }}
+                                    title="This account's own daily cap (blank = no limit)"
+                                    className="w-14 rounded-md border border-white/10 bg-slate-950 px-1.5 py-0.5 text-center text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/40"
+                                  />
+                                </span>
+                              </label>
+                            );
+                          })}
+                          {draftPool.length === 0 && (
+                            <p className="text-[10px] text-amber-300/90">
+                              Nothing checked yet — until an account is checked,
+                              openers may use all of them.
+                            </p>
+                          )}
+                          <p className="pt-1 text-[10px] text-slate-600">
+                            <span className="text-slate-400">cap</span> = that
+                            account&apos;s own daily send limit, to match its
+                            warm-up. Blank = no limit.
+                          </p>
+                          {poolCapSum !== null ? (
+                            <p className="text-[10px] text-slate-600">
+                              Together: up to{" "}
+                              <span className="text-slate-400">
+                                {poolCapSum}/day
+                              </span>{" "}
+                              (the caps, added up).
+                            </p>
+                          ) : (
+                            draftPool.length > 0 && (
+                              <p className="text-[10px] text-slate-600">
+                                Some checked accounts have no cap, so the
+                                queue&apos;s overall daily cap (
+                                {draft.dailyCap}/day) applies instead.
+                              </p>
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {/* Mode 2: every connected account is eligible */}
+                    <div>
+                      <label className="flex items-start gap-2 text-[11px] text-slate-300">
+                        <input
+                          type="radio"
+                          name="senderPoolMode"
+                          checked={poolMode === "all"}
+                          onChange={() => switchPoolMode("all")}
+                          className="mt-0.5 accent-cyan-500"
+                        />
+                        <span>
+                          All accounts
+                          <span className="block text-[10px] text-slate-600">
+                            Every connected account may send openers.
+                            Per-account caps are not enforced in this mode.
+                          </span>
+                        </span>
+                      </label>
+                      {poolMode === "all" && (
+                        <div className="ml-6 mt-2 space-y-1">
+                          <label className="flex items-start gap-2 text-[11px] text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={draft.rotateSenders}
+                              onChange={(e) =>
+                                editDraft({ rotateSenders: e.target.checked })
+                              }
+                              className="mt-0.5 accent-cyan-500"
+                            />
+                            <span>
+                              Rotate between accounts
+                              <span className="block text-[10px] text-slate-600">
+                                {draft.rotateSenders
+                                  ? "Each opener goes out from the account that has rested longest."
+                                  : `Off — every opener sends from ${
+                                      senders[0]?.email ?? "the first account"
+                                    }.`}
+                              </span>
+                            </span>
+                          </label>
+                          <div className="space-y-0.5 pt-1">
+                            {senders.map((id) => {
+                              const email = id.email.toLowerCase();
+                              const used = status?.sentBySender?.[email];
+                              const block = blockByEmail.get(email);
+                              return (
+                                <div
+                                  key={email}
+                                  className="flex items-center gap-2 px-1 py-0.5 text-[11px] text-slate-400"
+                                >
+                                  <span className="flex-1 truncate font-mono">
+                                    {id.email}
+                                  </span>
+                                  {used !== undefined && (
+                                    <span className="shrink-0 tabular-nums text-[10px] text-slate-500">
+                                      {used} today
+                                    </span>
+                                  )}
+                                  {block && <BlockedBadge block={block} />}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <p className="border-t border-white/5 pt-2 text-[10px] text-slate-600">
+                      The Pitch and the Bump are unaffected: they always reply
+                      from the account that first emailed the contact. A contact
+                      that any account has ever emailed is never queued or
+                      emailed again.
+                    </p>
                   </div>
                 )}
-                <div className="mt-3 border-t border-white/5 pt-3">
-                  <p className="mb-2 text-[10px] text-slate-600">
-                    The <span className="text-slate-400">cap</span> box sets an
-                    account&apos;s own daily limit, to match its warm-up status.
-                    Blank = no limit for that account.
-                  </p>
-                  <label className="flex flex-col justify-start text-[11px] text-slate-400">
-                    <span className="flex items-center gap-2 text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={draft.rotateSenders}
-                        onChange={(e) =>
-                          editDraft({ rotateSenders: e.target.checked })
-                        }
-                        className="accent-cyan-500"
-                      />
-                      Rotate identities
-                    </span>
-                    <span className="ml-6 mt-0.5 text-[10px] text-slate-600">
-                      Only used when no accounts are selected above.
-                    </span>
-                  </label>
-                </div>
               </div>
             </div>
 

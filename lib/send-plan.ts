@@ -113,12 +113,13 @@ export type SendPlan = {
 export type SendPlanState = {
   /** Epoch ms of the last email that actually went down the wire. */
   lastSendMs: number;
-  /** Sender rotation cursor (shared by the plain and pooled pickers). */
-  rotateIndex: number;
   /** Bump-template rotation cursor. */
   bumpIndex: number;
-  /** Last account any email actually went out from (lowercased). */
-  lastSender: string;
+  /** Epoch ms of each account's own last wire attempt (lowercased keys).
+   *  Both sender pickers rotate least-recently-used off this map, so every
+   *  account gets the widest possible gap between its own sends. RAM-only —
+   *  a restart forgets it and the LRU restarts in identity order. */
+  lastSentBySender: Record<string, number>;
   /** Current offline backoff, 0 when the link is healthy. */
   netBackoffMs: number;
   /** When the current outage started, null when healthy. */
@@ -264,35 +265,17 @@ export function pooledEligibility(
     : "capped";
 }
 
-// Under-cap, non-blocked pool accounts, optionally excluding one address.
-// THE choke point for blocked Senders on the Opener path: choosePooledSender
-// and hasDifferentFreeSender both route through here.
+// Under-cap, non-blocked pool accounts — THE choke point for blocked Senders
+// on the pooled Opener path.
 function eligiblePoolSenders(
   s: QueueSettings,
   identities: string[],
-  avoidEmail: string,
   load: Record<string, number>,
   blocked: Set<string>,
 ): string[] {
   const configured = new Set(identities.map((i) => i.toLowerCase()));
   const pool = s.senderPool.filter((e) => configured.has(e));
-  const avoid = avoidEmail.trim().toLowerCase();
-  return pool.filter(
-    (e) => (load[e] ?? 0) < capFor(s, e) && e !== avoid && !blocked.has(e),
-  );
-}
-
-/** Is there a free account DIFFERENT from `avoidEmail`? Claim eligibility for
- *  the hard "never reuse the account that already emailed this contact" rule —
- *  an Opener whose only free account is its original Sender is never claimed. */
-export function hasDifferentFreeSender(
-  s: QueueSettings,
-  identities: string[],
-  avoidEmail: string,
-  load: Record<string, number>,
-  blocked: Set<string>,
-): boolean {
-  return eligiblePoolSenders(s, identities, avoidEmail, load, blocked).length > 0;
+  return pool.filter((e) => (load[e] ?? 0) < capFor(s, e) && !blocked.has(e));
 }
 
 // Can this item's step go out right now, given the blocked accounts?
@@ -308,13 +291,36 @@ export function senderAllowed(
   return from ? !blocked.has(from) : anyFree;
 }
 
-// --- sender choice (rotation state in, rotation state out) -------------------
+// --- sender choice -----------------------------------------------------------
+// Both pickers rotate LEAST-RECENTLY-USED off lastSentBySender: the Sender
+// idle longest sends next, which spreads each Sender's own sends as far apart
+// as the eligible set allows. Pure READS of the state — the stamp is written
+// by noteSent at wire time, not at pick time, so a held or offline pick can't
+// burn a Sender's turn.
 
 type SenderChoiceArgs = {
   settings: QueueSettings;
   identities: string[];
   blocked: Set<string>;
 };
+
+/** The candidate idle longest. Never-sent accounts (no stamp) go first, in
+ *  the candidates' own order — ties broken by that order too. */
+function leastRecentlyUsed(
+  candidates: string[],
+  lastSentBySender: Record<string, number>,
+): string {
+  let best = candidates[0];
+  let bestMs = lastSentBySender[best.toLowerCase()] ?? 0;
+  for (const c of candidates.slice(1)) {
+    const ms = lastSentBySender[c.toLowerCase()] ?? 0;
+    if (ms < bestMs) {
+      best = c;
+      bestMs = ms;
+    }
+  }
+  return best;
+}
 
 /** Non-pooled Sender choice, also used by the Pitch and Bump lanes (which
  *  reuse the Opener's account verbatim). Returns sender "" when nothing may
@@ -324,53 +330,30 @@ export function chooseSender(
   state: SendPlanState,
   { settings, identities, blocked }: SenderChoiceArgs,
   pinnedFrom: string,
-): { sender: string; nextState: SendPlanState } {
+): string {
   const pinned = pinnedFrom.trim();
-  if (pinned) {
-    return {
-      sender: blocked.has(pinned.toLowerCase()) ? "" : pinned,
-      nextState: state,
-    };
-  }
+  if (pinned) return blocked.has(pinned.toLowerCase()) ? "" : pinned;
   const ids = identities.filter((i) => !blocked.has(i.toLowerCase()));
-  if (ids.length === 0) return { sender: "", nextState: state };
-  if (!settings.rotateSenders) return { sender: ids[0], nextState: state };
-  const sender = ids[state.rotateIndex % ids.length];
-  return {
-    sender,
-    nextState: { ...state, rotateIndex: (state.rotateIndex + 1) % ids.length },
-  };
+  if (ids.length === 0) return "";
+  if (!settings.rotateSenders) return ids[0];
+  return leastRecentlyUsed(ids, state.lastSentBySender);
 }
 
-/** Which account an Opener goes out from when a pool is active. HARD RULE:
- *  never reuse `avoidEmail` (the account that already emailed this contact) —
- *  returns null if the only free account is that one, so the caller holds the
- *  send until a different account has budget. Among the different free
- *  accounts, ALTERNATE away from the last account used (no back-to-back). */
+/** Which account an Opener goes out from when a pool is active: the under-cap,
+ *  non-blocked pool account idle longest. Null when every pool account is
+ *  capped or blocked — the caller holds the send. */
 export function choosePooledSender(
   state: SendPlanState,
   args: SenderChoiceArgs & { load: Record<string, number> },
-  avoidEmail: string,
-): { sender: string | null; nextState: SendPlanState } {
+): string | null {
   const candidates = eligiblePoolSenders(
     args.settings,
     args.identities,
-    avoidEmail,
     args.load,
     args.blocked,
   );
-  if (candidates.length === 0) return { sender: null, nextState: state };
-  if (candidates.length === 1) return { sender: candidates[0], nextState: state };
-  const others = candidates.filter((e) => e !== state.lastSender);
-  const pickFrom = others.length > 0 ? others : candidates;
-  const chosen = pickFrom[state.rotateIndex % pickFrom.length];
-  return {
-    sender: chosen,
-    nextState: {
-      ...state,
-      rotateIndex: (state.rotateIndex + 1) % Math.max(1, pickFrom.length),
-    },
-  };
+  if (candidates.length === 0) return null;
+  return leastRecentlyUsed(candidates, state.lastSentBySender);
 }
 
 /** Next Bump template body, rotating across the whole library. Null when the
@@ -429,16 +412,19 @@ export function noteNetworkOk(state: SendPlanState): {
 }
 
 /** Stamp a completed wire attempt: the drip spacing restarts from here, and
- *  the next Opener alternates away from this account. */
+ *  the account moves to the back of the LRU rotation. */
 export function noteSent(
   state: SendPlanState,
   nowMs: number,
   sender: string,
 ): SendPlanState {
+  const from = sender.trim().toLowerCase();
   return {
     ...state,
     lastSendMs: nowMs,
-    lastSender: sender ? sender.toLowerCase() : state.lastSender,
+    lastSentBySender: from
+      ? { ...state.lastSentBySender, [from]: nowMs }
+      : state.lastSentBySender,
   };
 }
 
