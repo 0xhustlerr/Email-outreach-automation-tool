@@ -187,6 +187,100 @@ function TimeSelect({
   );
 }
 
+// One of the two mutually-exclusive sending-window modes. A card rather than a
+// bare radio so the trade-off is readable before you pick.
+function WindowModeCard({
+  selected,
+  onSelect,
+  title,
+  detail,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={`flex items-start gap-2 rounded-md border px-2.5 py-2 text-left transition ${
+        selected
+          ? "border-cyan-400/50 bg-cyan-400/10"
+          : "border-white/10 bg-slate-950 hover:border-white/20"
+      }`}
+    >
+      <span
+        aria-hidden
+        className={`mt-0.5 h-3 w-3 shrink-0 rounded-full border ${
+          selected ? "border-cyan-300 bg-cyan-400" : "border-slate-600"
+        }`}
+      />
+      <span className="min-w-0">
+        <span
+          className={`block text-[11px] font-medium ${
+            selected ? "text-cyan-100" : "text-slate-300"
+          }`}
+        >
+          {title}
+        </span>
+        <span className="mt-0.5 block text-[10px] leading-snug text-slate-500">
+          {detail}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+// Plain-English restatement of the window the draft actually produces. This is
+// the section's whole point: the settings above are two numbers and a mode, and
+// this is the sentence the worker will obey. Kept faithful to send-plan.ts —
+// including the two behaviours that surprise people: an equal start and end
+// means "any hour", and in recipient-local mode a contact with no resolved
+// timezone is gated by nothing at all.
+function WindowExplainer({ draft }: { draft: QueueSettings }) {
+  const local = draft.localTimeSend;
+  const start = local ? draft.localStart : draft.windowStart;
+  const end = local ? draft.localEnd : draft.windowEnd;
+  const allDay = start === end;
+
+  const sentence = allDay
+    ? "Sending runs at any hour of the day."
+    : local
+      ? `Each contact is emailed between ${label12h(start)} and ${label12h(
+          end,
+        )} where they are.`
+      : `Sending runs between ${label12h(start)} and ${label12h(
+          end,
+        )} on this computer's clock.`;
+
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-2">
+      <p className="text-[11px] leading-snug text-slate-300">{sentence}</p>
+      {allDay && (
+        <p className="mt-1 text-[10px] leading-snug text-slate-500">
+          Start and end are the same time, which means no window at all. Set
+          them apart to limit sending hours.
+        </p>
+      )}
+      {local && !allDay && (
+        <p className="mt-1 text-[10px] leading-snug text-amber-300/80">
+          Contacts with no resolved timezone are sent at any hour — this window
+          cannot be applied to them.
+        </p>
+      )}
+      {!local && !allDay && (
+        <p className="mt-1 text-[10px] leading-snug text-slate-500">
+          Recipients&apos; own timezones are ignored, so someone far away may
+          receive it overnight.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Small caps header that groups a block of settings.
 function SectionHead({ children }: { children: ReactNode }) {
   return (
@@ -537,12 +631,19 @@ export default function QueueModal({
     const cap = hasCaps
       ? `per-account caps${status ? ` · ${status.dailyCap}/day` : ""}`
       : `${settings.dailyCap}/day`;
-    return [
-      `${label12h(settings.windowStart)}–${label12h(settings.windowEnd)}`,
-      `${settings.intervalSec}s`,
-      cap,
-      settings.localTimeSend ? "local time" : null,
-    ]
+    // The two windows are exclusive, so the digest names the one in force —
+    // showing windowStart/End while local-time mode ignores them was a lie.
+    const wStart = settings.localTimeSend
+      ? settings.localStart
+      : settings.windowStart;
+    const wEnd = settings.localTimeSend ? settings.localEnd : settings.windowEnd;
+    const window =
+      wStart === wEnd
+        ? "any hour"
+        : `${label12h(wStart)}–${label12h(wEnd)}${
+            settings.localTimeSend ? " their time" : ""
+          }`;
+    return [window, `${settings.intervalSec}s`, cap]
       .filter(Boolean)
       .join("  ·  ");
   }, [settings, senders, status]);
@@ -1222,8 +1323,8 @@ export default function QueueModal({
                 {/* Schedule & window */}
             <div>
               <SectionHead>Schedule &amp; window</SectionHead>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4">
-                <label className="col-span-2 text-[11px] text-slate-400">
+              <div className="space-y-3">
+                <label className="block text-[11px] text-slate-400">
                   Start sending at
                   <input
                     type="datetime-local"
@@ -1237,54 +1338,66 @@ export default function QueueModal({
                     Blank = start as soon as the queue is running.
                   </span>
                 </label>
-                <label className="text-[11px] text-slate-400">
-                  Window start
-                  <TimeSelect
-                    value={draft.windowStart}
-                    onChange={(v) => editDraft({ windowStart: v })}
-                  />
-                </label>
-                <label className="text-[11px] text-slate-400">
-                  Window end
-                  <TimeSelect
-                    value={draft.windowEnd}
-                    onChange={(v) => editDraft({ windowEnd: v })}
-                  />
-                </label>
-                <label className="col-span-2 flex flex-col text-[11px] text-slate-300 sm:col-span-4">
-                  <span className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={draft.localTimeSend}
-                      onChange={(e) =>
-                        editDraft({ localTimeSend: e.target.checked })
-                      }
-                      className="accent-cyan-500"
+
+                {/* The two windows are mutually exclusive — turning on
+                    recipient-local time disables the sender-clock window
+                    entirely (send-plan.ts: `globalWindowOk` / `windowed`).
+                    Showing both at once read as "both apply", so the mode is a
+                    radio and only the live window's times are on screen. */}
+                <div>
+                  <div className="text-[11px] text-slate-400">
+                    Send only during
+                  </div>
+                  <div
+                    role="radiogroup"
+                    aria-label="Which clock the sending window follows"
+                    className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2"
+                  >
+                    <WindowModeCard
+                      selected={!draft.localTimeSend}
+                      onSelect={() => editDraft({ localTimeSend: false })}
+                      title="My time zone"
+                      detail="One window on this computer's clock."
                     />
-                    Send by each recipient&apos;s local time
-                  </span>
-                  <span className="ml-6 mt-0.5 text-[10px] text-slate-600">
-                    Uses their resolved timezone; unknown ones use the window above.
-                  </span>
-                </label>
-                {draft.localTimeSend && (
-                  <>
-                    <label className="col-span-2 text-[11px] text-slate-400">
-                      Recipient local start
-                      <TimeSelect
-                        value={draft.localStart}
-                        onChange={(v) => editDraft({ localStart: v })}
-                      />
-                    </label>
-                    <label className="col-span-2 text-[11px] text-slate-400">
-                      Recipient local end
-                      <TimeSelect
-                        value={draft.localEnd}
-                        onChange={(v) => editDraft({ localEnd: v })}
-                      />
-                    </label>
-                  </>
-                )}
+                    <WindowModeCard
+                      selected={draft.localTimeSend}
+                      onSelect={() => editDraft({ localTimeSend: true })}
+                      title="Each recipient's local time"
+                      detail="The window applies in their own timezone."
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-3">
+                  <label className="text-[11px] text-slate-400">
+                    {draft.localTimeSend ? "Their day starts" : "Window start"}
+                    <TimeSelect
+                      value={
+                        draft.localTimeSend ? draft.localStart : draft.windowStart
+                      }
+                      onChange={(v) =>
+                        editDraft(
+                          draft.localTimeSend
+                            ? { localStart: v }
+                            : { windowStart: v },
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="text-[11px] text-slate-400">
+                    {draft.localTimeSend ? "Their day ends" : "Window end"}
+                    <TimeSelect
+                      value={draft.localTimeSend ? draft.localEnd : draft.windowEnd}
+                      onChange={(v) =>
+                        editDraft(
+                          draft.localTimeSend ? { localEnd: v } : { windowEnd: v },
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+
+                <WindowExplainer draft={draft} />
               </div>
             </div>
 
