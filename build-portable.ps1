@@ -128,9 +128,19 @@ if ($ReuseLauncher) {
 }
 $builtExe = Join-Path $publishTmp 'Email Finder.exe'
 if (-not (Test-Path $builtExe)) { throw "Launcher exe not found at $builtExe" }
-$loaderDll = Join-Path $publishTmp 'WebView2Loader.dll'
-if (-not (Test-Path $loaderDll)) { $loaderDll = Join-Path $projectRoot 'WebView2Loader.dll' }
-if (-not (Test-Path $loaderDll)) { throw 'WebView2Loader.dll not found (publish output or project root).' }
+# WebView2Loader.dll: PublishSingleFile + IncludeNativeLibrariesForSelfExtract
+# swallows the native loader INTO the exe, so it is absent from the publish
+# output even though the WebView2 package does emit it. The plain build output
+# beside it is where a copy reliably lands; ship that one next to the exe so
+# WebView2 resolves it without relying on self-extraction.
+$buildOut = Join-Path $projectRoot "launcher\bin\Release\net8.0-windows\win-x64"
+$loaderCandidates = @(
+    (Join-Path $publishTmp "WebView2Loader.dll"),
+    (Join-Path $buildOut "WebView2Loader.dll"),
+    (Join-Path $projectRoot "WebView2Loader.dll")
+)
+$loaderDll = $loaderCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $loaderDll) { throw "WebView2Loader.dll not found. Looked in: $($loaderCandidates -join ', ')" }
 
 # --- 3. Assemble the bundle folder ------------------------------------------
 Step "Assembling bundle at: $bundleDir"
