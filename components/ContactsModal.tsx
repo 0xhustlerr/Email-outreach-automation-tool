@@ -351,6 +351,7 @@ export default function ContactsModal({
       {form && (
         <ContactFormModal
           initial={form === "new" ? undefined : form}
+          contacts={contacts}
           onClose={() => setForm(null)}
           onSaved={() => {
             setForm(null);

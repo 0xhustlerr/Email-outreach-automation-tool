@@ -3,6 +3,7 @@ import { markUserActivity } from "@/lib/avatar-prefetch";
 import {
   deleteContact,
   listContacts,
+  moveContact,
   upsertContact,
 } from "@/lib/contacts-store";
 
@@ -29,6 +30,7 @@ export async function POST(req: Request) {
     attachedUrl?: string;
     linkedinUrl?: string;
     replace?: boolean;
+    fromKey?: string;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -53,7 +55,7 @@ export async function POST(req: Request) {
       ? v.filter((x): x is string => typeof x === "string" && !!x.trim())
       : undefined;
 
-  const contact = upsertContact({
+  const input = {
     key,
     login: body.login,
     profileUrl: body.profileUrl,
@@ -66,7 +68,10 @@ export async function POST(req: Request) {
     attachedUrl: body.attachedUrl,
     linkedinUrl: body.linkedinUrl,
     replace: body.replace === true,
-  });
+  };
+  // An edit names the card's current key; a different `key` moves it there.
+  const fromKey = body.fromKey?.trim();
+  const contact = fromKey ? moveContact(fromKey, input) : upsertContact(input);
   return NextResponse.json({ ok: true, contact });
 }
 

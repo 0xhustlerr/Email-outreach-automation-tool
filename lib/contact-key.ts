@@ -38,6 +38,16 @@ export function githubLogin(raw: string): string | null {
 }
 
 /**
+ * Key after an edit. A GitHub login re-keys the card to it - where scans save
+ * that person - so a hand-made card and the scan's become one; anything else
+ * keeps the key (Upwork/LinkedIn links carry no scan identity to meet).
+ */
+export function keyAfterEdit(currentKey: string, githubUrl: string): string {
+  const login = githubUrl.trim() ? githubLogin(githubUrl) : null;
+  return login ? login.toLowerCase() : currentKey;
+}
+
+/**
  * Key for a contact added by hand. GitHub login first, then the Upwork link,
  * then LinkedIn; with no link at all the contact gets a fresh `manual:` key
  * (a name alone identifies nobody, so two "John"s stay two cards).

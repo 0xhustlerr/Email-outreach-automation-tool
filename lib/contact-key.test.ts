@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { githubLogin, keyForManualContact, keyFromUrl, withScheme } from "./contact-key";
+import {
+  githubLogin,
+  keyAfterEdit,
+  keyForManualContact,
+  keyFromUrl,
+  withScheme,
+} from "./contact-key";
 
 describe("keyFromUrl", () => {
   it("keys a GitHub profile by its lowercased login, with or without scheme", () => {
@@ -75,5 +81,19 @@ describe("withScheme", () => {
     expect(withScheme(" linkedin.com/in/x ")).toBe("https://linkedin.com/in/x");
     expect(withScheme("http://example.com")).toBe("http://example.com");
     expect(withScheme("   ")).toBe("");
+  });
+});
+
+describe("keyAfterEdit", () => {
+  it("moves a card onto the GitHub login's key, where scans save that person", () => {
+    expect(keyAfterEdit("manual:abc", "github.com/MannYoe")).toBe("mannyoe");
+    expect(keyAfterEdit("upwork.com/freelancers/~01", "https://github.com/x")).toBe("x");
+    expect(keyAfterEdit("alice", "github.com/bob")).toBe("bob");
+  });
+
+  it("keeps the key when GitHub is blank, invalid, or the same login", () => {
+    expect(keyAfterEdit("manual:abc", "")).toBe("manual:abc");
+    expect(keyAfterEdit("manual:abc", "github.com")).toBe("manual:abc");
+    expect(keyAfterEdit("alice", "github.com/Alice")).toBe("alice");
   });
 });

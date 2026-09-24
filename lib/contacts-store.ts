@@ -208,6 +208,43 @@ export function upsertContact(input: {
   );
 }
 
+/**
+ * An edit that moves a contact to a new key - in practice, giving a card a
+ * GitHub login it isn't keyed under, so it lands on the key scans save under.
+ * With no card at the new key, the card is renamed and the edit applied as a
+ * replace. With one already there (typically the scan's), the edit MERGES
+ * into it - nothing the scan found is lost, blanks don't clear - and the old
+ * card is dropped. `direct` survives either way. One transaction, so the
+ * person is never on two cards or none.
+ */
+export function moveContact(
+  fromKey: string,
+  edit: Parameters<typeof upsertContact>[0],
+): SavedContact {
+  const from = fromKey.trim().toLowerCase();
+  const to = edit.key.trim().toLowerCase();
+  if (from === to) return upsertContact(edit);
+
+  const run = db.transaction((): SavedContact => {
+    const old = db
+      .prepare(`SELECT direct FROM contacts WHERE key = ?`)
+      .get(from) as { direct: number } | undefined;
+    const target = db.prepare(`SELECT 1 FROM contacts WHERE key = ?`).get(to);
+    if (!target) {
+      db.prepare(`UPDATE contacts SET key = ? WHERE key = ?`).run(to, from);
+    }
+    const moved = upsertContact({
+      ...edit,
+      key: to,
+      replace: !target,
+      direct: edit.direct === true || old?.direct === 1,
+    });
+    if (target) db.prepare(`DELETE FROM contacts WHERE key = ?`).run(from);
+    return moved;
+  });
+  return run();
+}
+
 export function deleteContact(key: string): boolean {
   return (
     db.prepare(`DELETE FROM contacts WHERE key = ?`).run(key.trim().toLowerCase())

@@ -2,11 +2,18 @@
 
 import { useEffect, useState } from "react";
 import type { SavedContact } from "@/lib/contacts-store";
-import { githubLogin, keyForManualContact, withScheme } from "@/lib/contact-key";
+import {
+  githubLogin,
+  keyAfterEdit,
+  keyForManualContact,
+  withScheme,
+} from "@/lib/contact-key";
 
 // Add / Edit a contact by hand. Adding merges into an existing card with the
 // same key (e.g. a GitHub person a scan already saved); editing REPLACES the
-// card's fields, so a phone can be deleted or a country cleared.
+// card's fields, so a phone can be deleted or a country cleared. An edit that
+// adds a GitHub login moves the card onto that login's key - merging, after
+// a confirm, into the scan's card when one is already there.
 
 type Fields = {
   name: string;
@@ -64,11 +71,14 @@ const FIELDS: { id: keyof Fields; label: string; placeholder: string; wide?: boo
 
 export default function ContactFormModal({
   initial,
+  contacts,
   onClose,
   onSaved,
 }: {
   /** Set = edit this contact; unset = add a new one. */
   initial?: SavedContact;
+  /** Every saved contact - to warn before an edit merges into another card. */
+  contacts: SavedContact[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -109,6 +119,22 @@ export default function ContactFormModal({
         ? {}
         : { login: login ?? "", profileUrl: login ? `https://github.com/${login}` : "" };
 
+    const key = initial
+      ? keyAfterEdit(initial.key, githubUrl)
+      : keyForManualContact({ githubUrl, upworkUrl, linkedinUrl });
+    const mergeInto =
+      initial && key !== initial.key ? contacts.find((c) => c.key === key) : undefined;
+    if (
+      mergeInto &&
+      !window.confirm(
+        `"${mergeInto.name || mergeInto.login}" is already saved under ${githubUrl}. ` +
+          `Merge this contact into that card? Its phones, emails and handles are kept; ` +
+          `fields you filled in here win.`,
+      )
+    ) {
+      return;
+    }
+
     setSaving(true);
     setError(null);
     try {
@@ -116,7 +142,7 @@ export default function ContactFormModal({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          key: initial?.key ?? keyForManualContact({ githubUrl, upworkUrl, linkedinUrl }),
+          key,
           ...github,
           name: fields.name,
           country: fields.country,
@@ -125,7 +151,7 @@ export default function ContactFormModal({
           telegrams: splitList(fields.telegrams).map((t) => t.replace(/^@/, "")),
           attachedUrl: upworkUrl,
           linkedinUrl,
-          ...(editing ? { replace: true } : { direct: true }),
+          ...(initial ? { replace: true, fromKey: initial.key } : { direct: true }),
         }),
       });
       const data = (await res.json()) as { ok?: boolean; error?: string };
