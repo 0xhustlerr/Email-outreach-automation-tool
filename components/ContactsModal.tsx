@@ -1,29 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ContactFormModal from "@/components/ContactFormModal";
 import GmailAvatar from "@/components/GmailAvatar";
+import { withScheme } from "@/lib/contact-key";
+import type { SavedContact } from "@/lib/contacts-store";
 
 // Saved-contacts browser: every profile a scan has discovered, with its
 // GitHub URL, email addresses, phone numbers and telegram handles - all
-// served from the local database. Contacts can also be added manually by
-// pasting a URL.
+// served from the local database. Contacts can also be added or edited by
+// hand through ContactFormModal.
 
-export type SavedContact = {
-  key: string;
-  login: string;
-  profileUrl: string;
-  name: string;
-  country: string;
-  emails: string[];
-  phones: string[];
-  telegrams: string[];
-  updatedAt: string;
-  direct: boolean;
-  attachedUrl: string;
-  sentEmails: string[];
-  lastSentAt: string | null;
-  special: boolean;
-};
+export type { SavedContact };
 
 export type ContactsFilter = "special" | "emailed" | "phone" | "all";
 
@@ -33,25 +21,6 @@ const FILTERS: { id: ContactsFilter; label: string }[] = [
   { id: "phone", label: "Has phone" },
   { id: "all", label: "All" },
 ];
-
-function keyFromUrl(raw: string): { key: string; login: string; url: string } | null {
-  let input = raw.trim();
-  if (!input) return null;
-  if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
-  let u: URL;
-  try {
-    u = new URL(input);
-  } catch {
-    return null;
-  }
-  const host = u.hostname.replace(/^www\./i, "").toLowerCase();
-  const firstSeg = u.pathname.split("/").filter(Boolean)[0] ?? "";
-  if (host === "github.com" && firstSeg) {
-    return { key: firstSeg.toLowerCase(), login: firstSeg, url: `https://github.com/${firstSeg}` };
-  }
-  const key = `${host}${u.pathname}`.replace(/\/+$/, "").toLowerCase();
-  return { key, login: firstSeg || host, url: u.toString() };
-}
 
 export default function ContactsModal({
   onClose,
@@ -66,8 +35,8 @@ export default function ContactsModal({
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [category, setCategory] = useState<ContactsFilter>(initialFilter);
-  const [addUrl, setAddUrl] = useState("");
-  const [adding, setAdding] = useState(false);
+  // null = form closed; "new" = add; a contact = edit that one.
+  const [form, setForm] = useState<SavedContact | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -94,35 +63,6 @@ export default function ContactsModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const onAdd = async () => {
-    const parsed = keyFromUrl(addUrl);
-    if (!parsed) {
-      setError("Enter a valid URL (e.g. github.com/username).");
-      return;
-    }
-    setAdding(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/contacts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          key: parsed.key,
-          login: parsed.login,
-          profileUrl: parsed.url,
-        }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !data.ok) throw new Error(data.error ?? "Failed to add.");
-      setAddUrl("");
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add contact.");
-    } finally {
-      setAdding(false);
-    }
-  };
-
   const onDelete = async (c: SavedContact) => {
     if (!window.confirm(`Remove contact "${c.name || c.login || c.key}"?`)) return;
     await fetch(`/api/contacts?key=${encodeURIComponent(c.key)}`, {
@@ -140,7 +80,7 @@ export default function ContactsModal({
     const q = filter.trim().toLowerCase();
     if (!q) return list;
     return list.filter((c) =>
-      [c.login, c.name, c.country, c.profileUrl, c.attachedUrl, ...c.emails, ...c.phones, ...c.telegrams]
+      [c.login, c.name, c.country, c.profileUrl, c.attachedUrl, c.linkedinUrl, ...c.emails, ...c.phones, ...c.telegrams]
         .join(" ")
         .toLowerCase()
         .includes(q),
@@ -179,36 +119,23 @@ export default function ContactsModal({
           </button>
         </div>
 
-        {/* Add by URL + search */}
-        <div className="flex flex-col gap-2 border-b border-white/10 px-5 py-3 md:flex-row">
-          <div className="flex flex-1 gap-2">
-            <input
-              type="text"
-              value={addUrl}
-              onChange={(e) => setAddUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void onAdd();
-              }}
-              placeholder="Add by URL - github.com/username or any profile link"
-              className="w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
-            />
-            <button
-              type="button"
-              onClick={() => void onAdd()}
-              disabled={adding || !addUrl.trim()}
-              data-ripple
-              className="btn-press shrink-0 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-400/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {adding ? "Adding…" : "+ Add"}
-            </button>
-          </div>
+        {/* Search + add */}
+        <div className="flex gap-2 border-b border-white/10 px-5 py-3">
           <input
             type="text"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search…"
-            className="w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30 md:w-48"
+            className="w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
           />
+          <button
+            type="button"
+            onClick={() => setForm("new")}
+            data-ripple
+            className="btn-press shrink-0 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-400/25 hover:text-white"
+          >
+            + Add contact
+          </button>
         </div>
 
         {/* Category chips */}
@@ -241,7 +168,7 @@ export default function ContactsModal({
           ) : shown.length === 0 ? (
             <p className="text-sm text-slate-400">
               {contacts.length === 0
-                ? "No saved contacts yet - send an email from a scan, use ☆ on a found phone/telegram, or add one by URL above."
+                ? "No saved contacts yet - send an email from a scan, use ☆ on a found phone/telegram, or use + Add contact above."
                 : "No contacts match this filter."}
             </p>
           ) : (
@@ -308,7 +235,7 @@ export default function ContactsModal({
                         )}
                         {c.attachedUrl && (
                           <a
-                            href={/^https?:\/\//i.test(c.attachedUrl) ? c.attachedUrl : `https://${c.attachedUrl}`}
+                            href={withScheme(c.attachedUrl)}
                             target="_blank"
                             rel="noreferrer"
                             className="block truncate text-xs text-slate-400 hover:text-slate-200 hover:underline"
@@ -317,16 +244,37 @@ export default function ContactsModal({
                             🔗 {c.attachedUrl.replace(/^https?:\/\//, "")}
                           </a>
                         )}
+                        {c.linkedinUrl && (
+                          <a
+                            href={withScheme(c.linkedinUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block truncate text-xs text-slate-400 hover:text-slate-200 hover:underline"
+                            title="LinkedIn"
+                          >
+                            in {c.linkedinUrl.replace(/^https?:\/\/(www\.)?/, "")}
+                          </a>
+                        )}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void onDelete(c)}
-                      className="shrink-0 rounded-full px-2 py-1 text-xs text-slate-500 transition hover:text-rose-300"
-                      title="Remove contact"
-                    >
-                      Remove
-                    </button>
+                    <div className="flex shrink-0 items-center">
+                      <button
+                        type="button"
+                        onClick={() => setForm(c)}
+                        className="rounded-full px-2 py-1 text-xs text-slate-500 transition hover:text-cyan-300"
+                        title="Edit contact"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onDelete(c)}
+                        className="rounded-full px-2 py-1 text-xs text-slate-500 transition hover:text-rose-300"
+                        title="Remove contact"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
 
                   {(c.emails.length > 0 || c.phones.length > 0 || c.telegrams.length > 0) && (
@@ -399,6 +347,17 @@ export default function ContactsModal({
           )}
         </div>
       </div>
+
+      {form && (
+        <ContactFormModal
+          initial={form === "new" ? undefined : form}
+          onClose={() => setForm(null)}
+          onSaved={() => {
+            setForm(null);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

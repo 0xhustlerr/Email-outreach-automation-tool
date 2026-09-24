@@ -421,6 +421,12 @@ function ensureSchema(db: Database.Database): void {
       `ALTER TABLE contacts ADD COLUMN attached_url TEXT NOT NULL DEFAULT ''`,
     );
   }
+  // LinkedIn profile link - set from the manual Add/Edit contact modal.
+  if (!contactCols.includes("linkedin_url")) {
+    db.exec(
+      `ALTER TABLE contacts ADD COLUMN linkedin_url TEXT NOT NULL DEFAULT ''`,
+    );
+  }
 
   // Per-account reply-sync refresh token, added after mail_identities first
   // shipped (guarded because SQLite has no "ADD COLUMN IF NOT EXISTS").

@@ -27,6 +27,8 @@ export async function POST(req: Request) {
     telegrams?: string[];
     direct?: boolean;
     attachedUrl?: string;
+    linkedinUrl?: string;
+    replace?: boolean;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -45,10 +47,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const clean = (v: unknown): string[] =>
+  // Omitted list stays undefined: an edit (replace) keeps the saved one.
+  const clean = (v: unknown): string[] | undefined =>
     Array.isArray(v)
       ? v.filter((x): x is string => typeof x === "string" && !!x.trim())
-      : [];
+      : undefined;
 
   const contact = upsertContact({
     key,
@@ -61,6 +64,8 @@ export async function POST(req: Request) {
     telegrams: clean(body.telegrams),
     direct: body.direct === true,
     attachedUrl: body.attachedUrl,
+    linkedinUrl: body.linkedinUrl,
+    replace: body.replace === true,
   });
   return NextResponse.json({ ok: true, contact });
 }
