@@ -1,6 +1,7 @@
 import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
 import type { MailIdentity } from "./types";
 import { listStoredIdentities } from "./identities-store";
+import { textToEmailHtml } from "./mail-html";
 
 export type { MailIdentity };
 
@@ -370,23 +371,6 @@ async function transportFor(id: MailIdentityFull): Promise<Transporter> {
   return t;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-// Minimal HTML twin of the plain-text body (kept simple for inbox placement),
-// with a 1x1 open-tracking pixel appended.
-function bodyToTrackedHtml(text: string, pixelUrl: string): string {
-  const safe = escapeHtml(text);
-  return (
-    `<div style="white-space:pre-wrap;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#111">${safe}</div>` +
-    `<img src="${pixelUrl}" width="1" height="1" alt="" style="border:0;height:1px;width:1px;overflow:hidden" />`
-  );
-}
-
 export async function sendMail(args: {
   from: MailIdentity;
   to: string;
@@ -398,7 +382,7 @@ export async function sendMail(args: {
   inReplyTo?: string;
   /** RFC References chain for threading. */
   references?: string;
-  /** When set, send multipart text+HTML with this open-tracking pixel URL. */
+  /** When set, adds this open-tracking pixel to the HTML part. */
   trackPixelUrl?: string;
 }): Promise<{ messageId: string }> {
   const identity = findIdentity(args.from.email);
@@ -436,8 +420,10 @@ export async function sendMail(args: {
     to: args.to,
     ...(cc ? { cc } : {}),
     subject: finalSubject,
+    // Always multipart text+HTML: plain-text-only mail is not safe either —
+    // Outlook's default "remove extra line breaks" joins its lines together.
     text: finalBody,
-    ...(pixel ? { html: bodyToTrackedHtml(finalBody, pixel) } : {}),
+    html: textToEmailHtml(finalBody, pixel || undefined),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   };
 
