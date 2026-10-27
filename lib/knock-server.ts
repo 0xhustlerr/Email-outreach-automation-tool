@@ -30,7 +30,7 @@ export type ReplyKnockPayload = {
 };
 
 export async function notifyNewReply(
-  row: SheetHistoryRow,
+  row: Pick<SheetHistoryRow, "contact" | "name" | "sender" | "site">,
   rowId: number,
   preview?: string,
 ): Promise<void> {

@@ -1,9 +1,9 @@
 import {
+  AllInboxesFailedError,
   getRecentInboundByContact,
   isGmailReplySyncConfigured,
   type InboundReply,
 } from "@/lib/gmail";
-import { notifyNewReply } from "@/lib/knock-server";
 import type {
   InboxScanError,
   ReplyNotification,
@@ -111,7 +111,7 @@ export async function syncRepliesToSheet(
       replies: [],
       messageIds: {},
       receivedInboxes: {},
-      inboxErrors: [],
+      inboxErrors: err instanceof AllInboxesFailedError ? err.inboxErrors : [],
       error: err instanceof Error ? err.message : "Failed to scan inboxes.",
     };
   }
@@ -128,12 +128,6 @@ export async function syncRepliesToSheet(
   const receivedInboxes: Record<string, string> = {};
 
   let checked = 0;
-
-  // The source row for each alert, carried by object identity. A row-number
-  // lookup would miss every alert raised from a row that has no sheet row yet
-  // (_row 0), which is every row on an install without Google Sheets - exactly
-  // the rows the push notification below would then silently skip.
-  const rowByAlert = new Map<ReplyNotification, SheetHistoryRow>();
 
   // Only alert once per contact even when several sent rows share it.
   const alerted = new Set<string>();
@@ -231,7 +225,7 @@ export async function syncRepliesToSheet(
     // Suppress the popup only for rows already marked active before we ever
     // tracked a message id (avoids re-alerting old, handled replies).
     if (isNewMessage && !(prevId === "" && rowIsActive)) {
-      const alert: ReplyNotification = {
+      notifications.push({
         _row: rowNum,
         messageId: latestId,
         contact,
@@ -243,9 +237,7 @@ export async function syncRepliesToSheet(
         snippet,
         subject,
         firstSheetUpdate: !rowIsActive,
-      };
-      notifications.push(alert);
-      rowByAlert.set(alert, row);
+      });
     }
   }
 
@@ -265,13 +257,6 @@ export async function syncRepliesToSheet(
         inboxErrors,
         error: err instanceof Error ? err.message : "Sheet update failed.",
       };
-    }
-  }
-
-  for (const alert of notifications) {
-    const row = rowByAlert.get(alert);
-    if (row) {
-      await notifyNewReply(row, alert._row, alert.snippet || alert.subject);
     }
   }
 

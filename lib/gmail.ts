@@ -1,6 +1,7 @@
 // Gmail API (read-only) for detecting replies in sender inboxes.
 // Requires OAuth refresh tokens per monitored account - see .env.example.
 
+import { AUTO_REPLY_HEADERS, isAutomatedReply } from "@/lib/auto-reply";
 import { htmlToPlainForQuote, stripQuotedReplyBody } from "@/lib/email-quote";
 import { getGmailClient, listStoredIdentities } from "@/lib/identities-store";
 import type { InboxScanError } from "@/lib/reply-alerts";
@@ -13,7 +14,18 @@ type GmailAccountOAuth = {
   refreshToken: string;
 };
 
-const tokenCache = new Map<string, TokenCache>();
+// On globalThis because a production build instantiates this module twice (the
+// instrumentation bundle that runs the reply-sync loop, and the route bundle).
+// A module-local map meant clearGmailTokenCache from a route - Recheck all, a
+// replaced token - cleared the route's copy while the loop kept scanning on its
+// own stale access token for up to an hour.
+const globalForTokens = globalThis as unknown as {
+  __gmailTokenCache?: Map<string, TokenCache>;
+};
+const tokenCache = (globalForTokens.__gmailTokenCache ??= new Map<
+  string,
+  TokenCache
+>());
 
 /** Drop cached access tokens after OAuth credentials change. A cached access
  *  token can outlive a replaced client or refresh token by up to an hour, which
@@ -659,19 +671,26 @@ async function fetchInboundMeta(
   access: string,
   id: string,
   inbox: string,
-): Promise<{ fromEmail: string; reply: InboundReply } | null> {
+): Promise<{
+  fromEmail: string;
+  reply: InboundReply;
+  automated: boolean;
+} | null> {
+  const wanted = ["From", "Date", "Subject", ...AUTO_REPLY_HEADERS];
   const url =
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}` +
-    `?format=metadata&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=Subject`;
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata` +
+    wanted.map((h) => `&metadataHeaders=${h}`).join("");
   const res = await gmailFetch(url, { headers: { Authorization: `Bearer ${access}` } });
   if (!res.ok) return null;
   const data = (await res.json()) as GmailMessageResource;
-  const from = headerValue(data.payload?.headers, "From");
+  const headers = data.payload?.headers;
+  const from = headerValue(headers, "From");
   const fromEmail = parseEmailFromHeader(from);
   if (!fromEmail.includes("@")) return null;
 
-  const dateHeader = headerValue(data.payload?.headers, "Date");
+  const dateHeader = headerValue(headers, "Date");
   const receivedAt = parseReceivedAt(dateHeader, data.internalDate);
+  const subject = headerValue(headers, "Subject");
   return {
     fromEmail,
     reply: {
@@ -679,10 +698,25 @@ async function fetchInboundMeta(
       receivedAt,
       receivedMs: receivedAt ? new Date(receivedAt).getTime() : 0,
       snippet: data.snippet ?? "",
-      subject: headerValue(data.payload?.headers, "Subject"),
+      subject,
       inbox,
     },
+    automated: isAutomatedReply((name) => headerValue(headers, name), subject),
   };
+}
+
+/** Every connected inbox failed to authenticate. Carries the per-inbox errors
+ *  so the caller can still say WHICH accounts need reconnecting - this is the
+ *  most common breakage (a replaced shared OAuth client kills them all), and
+ *  a bare message left the Accounts page and the bell with nothing to show. */
+export class AllInboxesFailedError extends Error {
+  constructor(
+    message: string,
+    readonly inboxErrors: InboxScanError[],
+  ) {
+    super(message);
+    this.name = "AllInboxesFailedError";
+  }
 }
 
 /**
@@ -767,7 +801,9 @@ export async function getRecentInboundByContact(
     }
 
     for (const meta of metas) {
-      if (!meta) continue;
+      // Skipped before the newest-per-contact pick, so a vacation responder
+      // arriving after a real reply cannot shadow it.
+      if (!meta || meta.automated) continue;
       const key = meta.fromEmail;
       if (key === inbox.toLowerCase()) continue;
       const existing = byContact.get(key);
@@ -782,10 +818,11 @@ export async function getRecentInboundByContact(
   // not fatal (the inboxes that did answer are still worth matching), so it
   // travels back in inboxErrors instead of throwing.
   if (accounts.length > 0 && authFailures === accounts.length) {
-    throw new Error(
+    throw new AllInboxesFailedError(
       `Gmail authorization failed for all inbox(es)` +
         (lastAuthError ? ` (${lastAuthError})` : "") +
         `. Reconnect the account(s) on the Accounts page.`,
+      inboxErrors,
     );
   }
 

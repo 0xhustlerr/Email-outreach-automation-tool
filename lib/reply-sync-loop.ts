@@ -18,6 +18,7 @@ import {
   isGmailReplySyncConfigured,
   verifyReplySyncAuth,
 } from "./gmail";
+import { notifyNewReply } from "./knock-server";
 import type {
   InboxScanError,
   ReplyNotification,
@@ -194,6 +195,14 @@ export async function runReplySyncNow(): Promise<ReplySyncSnapshot> {
       const pendingKeys = new Set(pending.map(alertKey));
       for (const r of fresh) {
         if (!pendingKeys.has(alertKey(r))) pending.push(r);
+      }
+
+      // Push from here rather than inside syncRepliesToSheet: there "new" was
+      // the persisted-id diff, which on a Sheets-less install (no row to key
+      // an id by) suppresses every later message from a contact who already
+      // replied once. The seen-set has no such gap.
+      for (const r of fresh) {
+        await notifyNewReply(r, r._row, r.snippet || r.subject);
       }
 
       state.snapshot = {

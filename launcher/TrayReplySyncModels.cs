@@ -80,6 +80,14 @@ internal sealed class TraySyncRepliesResponse
     [JsonPropertyName("replies")]
     public List<TrayReplyNotification> Replies { get; set; } = [];
 
+    /// <summary>
+    /// When the server's loop last completed a scan; null until the first one
+    /// after a server start. Tells an empty reply list that means "nobody
+    /// replied" apart from one that means "not looked yet".
+    /// </summary>
+    [JsonPropertyName("lastSyncAt")]
+    public string? LastSyncAt { get; set; }
+
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 }

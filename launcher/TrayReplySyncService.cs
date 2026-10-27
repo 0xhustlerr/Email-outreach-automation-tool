@@ -194,7 +194,7 @@ internal sealed class TrayReplySyncService : IDisposable
             // Prefer the full reply set (dedup client-side). Fall back to the
             // newly-changed notifications for older server builds.
             var items = data.Replies.Count > 0 ? data.Replies : data.Notifications;
-            HandleNotifications(items);
+            HandleNotifications(items, !string.IsNullOrEmpty(data.LastSyncAt) || items.Count > 0);
         }
         catch (Exception ex)
         {
@@ -329,16 +329,21 @@ internal sealed class TrayReplySyncService : IDisposable
         return n.Row > 0 ? n.Row.ToString() : "";
     }
 
-    private void HandleNotifications(IReadOnlyList<TrayReplyNotification> notifications)
+    private void HandleNotifications(IReadOnlyList<TrayReplyNotification> notifications, bool serverScanned)
     {
-        if (notifications.Count == 0)
-        {
-            return;
-        }
-
         var state = LoadUiState();
         if (!state.Seeded || state.Version != StateVersion)
         {
+            // Seed against the first completed server scan, EVEN AN EMPTY ONE.
+            // Waiting for a non-empty list (as this used to) meant the first
+            // reply a fresh install ever got was swallowed as "pre-existing".
+            // Before the server's first scan the list is empty because nothing
+            // was looked at yet; seeding on that would toast every old reply.
+            if (!serverScanned)
+            {
+                return;
+            }
+
             state.Seeded = true;
             state.Version = StateVersion;
             state.ToastedMessageIds.Clear();
@@ -358,6 +363,11 @@ internal sealed class TrayReplySyncService : IDisposable
                     $"Tray reply sync seeded ({notifications.Count} existing thread(s); no popups).");
             }
 
+            return;
+        }
+
+        if (notifications.Count == 0)
+        {
             return;
         }
 

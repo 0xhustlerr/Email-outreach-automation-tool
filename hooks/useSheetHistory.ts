@@ -78,8 +78,10 @@ export function useSheetHistory(enabled: boolean) {
         receivedInboxes?: Record<string, string>;
         inboxErrors?: InboxScanError[];
       };
+      // Also on a failed cycle: when EVERY inbox fails auth the route answers
+      // 502, and that is exactly when the per-inbox reasons matter most.
+      if (data.inboxErrors) setInboxErrors(data.inboxErrors);
       if (res.ok && data.ok) {
-        setInboxErrors(data.inboxErrors ?? []);
         if (data.messageIds) setMessageIds(data.messageIds);
         if (data.receivedInboxes) {
           receivedInboxRef.current = {
@@ -111,9 +113,11 @@ export function useSheetHistory(enabled: boolean) {
     async (silent = false, options?: { forceSync?: boolean }) => {
       if (!enabled) return;
 
-      if (inflightRef.current) {
+      while (inflightRef.current) {
         await inflightRef.current;
-        return;
+        // A background poll only read the cache. Collapsing a Refresh onto it
+        // dropped the forced scan - the button silently did nothing.
+        if (!options?.forceSync) return;
       }
 
       const showSpinner = !silent || !readyRef.current;
