@@ -51,11 +51,15 @@ function UploadIcon({ className }: { className?: string }) {
 export default function ImportCsvModal({
   onClose,
   onQueued,
+  onRunningChange,
 }: {
   onClose: () => void;
   asPage?: boolean;
   /** Fired after the run finishes so the page can refresh the queue badge. */
   onQueued?: () => void;
+  /** Reports whether an import is in flight, so the app can keep this page
+   *  mounted (and the import going) while the user visits other pages. */
+  onRunningChange?: (running: boolean) => void;
 }) {
   const { openers, followups, templatesLoaded } = useTemplates();
 
@@ -117,7 +121,12 @@ export default function ImportCsvModal({
     void refreshSettings();
   }, [refreshSettings]);
 
-  // Stop an in-flight import if the modal goes away.
+  useEffect(() => {
+    onRunningChange?.(running);
+  }, [running, onRunningChange]);
+
+  // Stop an in-flight import if this page is torn down for good (the app
+  // closing). Switching pages does not unmount it while a run is in flight.
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const loadFile = async (file: File) => {

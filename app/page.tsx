@@ -31,7 +31,7 @@ import QueueModal from "@/components/QueueModal";
 import ImportCsvModal from "@/components/ImportCsvModal";
 import SendersModal from "@/components/SendersModal";
 import { useDashboardView, type DashboardView } from "@/hooks/useDashboardView";
-import { PageHeader, StatCard } from "@/components/ui/dashboard";
+import { Card, EmptyState, PageBody, PageHeader, StatCard } from "@/components/ui/dashboard";
 import AppSidebar, {
   MenuIcon,
   useSidebarCollapsed,
@@ -182,18 +182,23 @@ export default function Page() {
   >("idle");
   const [senders, setSenders] = useState<MailIdentity[]>([]);
   const [smtpConfigured, setSmtpConfigured] = useState<boolean>(true);
-  const [sheetsConfigured, setSheetsConfigured] = useState<boolean>(false);
+  // null until /api/senders answers, so a refresh on ?view=history does not
+  // flash "not configured" before the config has loaded.
+  const [sheetsConfigured, setSheetsConfigured] = useState<boolean | null>(null);
   // The page in the main area (?view=… in the URL). Every sidebar item is a
   // page; only Compose and the reply bell still open as overlays.
   const [view, navigate] = useDashboardView();
   const [sidebarCollapsed, toggleSidebar] = useSidebarCollapsed();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // An import in flight keeps the Import page mounted (hidden) when the user
+  // navigates away, so leaving the page never silently aborts the run.
+  const [importRunning, setImportRunning] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
   const { templates: pageTemplates } = useTemplates();
   const [directSaveOpen, setDirectSaveOpen] = useState(false);
   const [directSaveUrl, setDirectSaveUrl] = useState("");
   const [directSaveDone, setDirectSaveDone] = useState(false);
-  const sheetHistory = useSheetHistory(sheetsConfigured);
+  const sheetHistory = useSheetHistory(sheetsConfigured === true);
   const replyCustomTabs = useReplyCustomTabs();
   const newReplies = useNewReplies(
     sheetHistory.rows,
@@ -951,86 +956,132 @@ export default function Page() {
   }, [view]);
 
   const sheetsHint = "Set SHEETS_WEBHOOK_URL in .env.local to enable";
-  // Breadcrumb labels; each page renders its own title and description.
-  const VIEW_TITLE: Record<DashboardView, string> = {
-    scanner: "Lead scanner",
-    insights: "Insights",
-    history: "History",
-    contacts: "Contacts",
-    queue: "Send queue",
-    import: "Import CSV",
-    templates: "Templates",
-    accounts: "Accounts",
-    integrations: "Integrations",
-  };
-  const VIEW_GROUP: Record<DashboardView, string> = {
-    scanner: "Workspace",
-    insights: "Workspace",
-    history: "Workspace",
-    contacts: "Pipeline",
-    queue: "Pipeline",
-    import: "Pipeline",
-    templates: "Setup",
-    accounts: "Setup",
-    integrations: "Setup",
-  };
-  const item = (
-    key: DashboardView,
-    label: string,
-    icon: ReactElement,
-    extra: Partial<SidebarGroup["items"][number]> = {},
-  ): SidebarGroup["items"][number] => ({
-    key,
-    label,
-    icon,
-    active: view === key,
-    onClick: () => navigate(key),
-    ...extra,
-  });
-  const sidebarGroups: SidebarGroup[] = [
+  // Pages that read the Google Sheet log. Unavailable until Sheets is set up.
+  const needsSheets = (v: DashboardView) => v === "insights" || v === "history";
+  const historyBusy = sheetHistory.loading && !sheetHistory.ready;
+
+  // The one list of pages: sidebar order, group, label (also the breadcrumb),
+  // icon and per-page sidebar extras. Each page renders its own title.
+  const PAGES: {
+    key: DashboardView;
+    group: string;
+    label: string;
+    icon: ReactElement;
+    extra?: Partial<SidebarGroup["items"][number]>;
+  }[] = [
     {
-      label: "Workspace",
-      items: [
-        item("scanner", "Lead scanner", <SearchIcon className="h-4 w-4" />, {
-          title: "Scan a developer profile for contacts",
-        }),
-        item("insights", "Insights", <InsightsIcon className="h-4 w-4" />, {
-          title: sheetsConfigured ? "Outreach insights" : `${sheetsHint} insights`,
-          disabled: !sheetsConfigured,
-        }),
-        item("history", "History", <HistoryIcon className="h-4 w-4" />, {
-          title: sheetsConfigured
-            ? sheetHistory.loading && !sheetHistory.ready
-              ? "Loading history in background…"
-              : "Sent email history from Google Sheet"
-            : `${sheetsHint} history`,
-          disabled: !sheetsConfigured,
-          busy: sheetHistory.loading && !sheetHistory.ready,
-        }),
-      ],
+      key: "scanner",
+      group: "Workspace",
+      label: "Lead scanner",
+      icon: <SearchIcon className="h-4 w-4" />,
+      extra: { title: "Scan a developer profile for contacts" },
     },
     {
-      label: "Pipeline",
-      items: [
-        item("contacts", "Contacts", <ContactsStarIcon className="h-4 w-4" />),
-        item("queue", "Queue", <QueueIcon className="h-4 w-4" />, { badge: queuedCount }),
-        item("import", "Import CSV", <ImportIcon className="h-4 w-4" />),
-      ],
+      key: "insights",
+      group: "Workspace",
+      label: "Insights",
+      icon: <InsightsIcon className="h-4 w-4" />,
+      extra: { title: sheetsConfigured ? "Outreach insights" : `${sheetsHint} insights` },
     },
     {
-      label: "Setup",
-      items: [
-        item("templates", "Templates", <TemplateIcon className="h-4 w-4" />),
-        item("accounts", "Accounts", <AccountsIcon className="h-4 w-4" />, {
-          badge: senders.length,
-        }),
-        item("integrations", "Integrations", <KeyIcon className="h-4 w-4" />),
-      ],
+      key: "history",
+      group: "Workspace",
+      label: "History",
+      icon: <HistoryIcon className="h-4 w-4" />,
+      extra: {
+        title: !sheetsConfigured
+          ? `${sheetsHint} history`
+          : historyBusy
+            ? "Loading history in background…"
+            : "Sent email history from Google Sheet",
+        busy: historyBusy,
+      },
+    },
+    {
+      key: "contacts",
+      group: "Pipeline",
+      label: "Contacts",
+      icon: <ContactsStarIcon className="h-4 w-4" />,
+    },
+    {
+      key: "queue",
+      group: "Pipeline",
+      label: "Send queue",
+      icon: <QueueIcon className="h-4 w-4" />,
+      extra: { badge: queuedCount },
+    },
+    {
+      key: "import",
+      group: "Pipeline",
+      label: "Import CSV",
+      icon: <ImportIcon className="h-4 w-4" />,
+      extra: importRunning
+        ? { busy: true, title: "Import running — it keeps going while you use other pages" }
+        : undefined,
+    },
+    {
+      key: "templates",
+      group: "Setup",
+      label: "Templates",
+      icon: <TemplateIcon className="h-4 w-4" />,
+    },
+    {
+      key: "accounts",
+      group: "Setup",
+      label: "Accounts",
+      icon: <AccountsIcon className="h-4 w-4" />,
+      extra: { badge: senders.length },
+    },
+    {
+      key: "integrations",
+      group: "Setup",
+      label: "Integrations",
+      icon: <KeyIcon className="h-4 w-4" />,
     },
   ];
+  const currentPage = PAGES.find((p) => p.key === view) ?? PAGES[0];
+  const sidebarGroups: SidebarGroup[] = [];
+  for (const p of PAGES) {
+    let group = sidebarGroups.find((g) => g.label === p.group);
+    if (!group) sidebarGroups.push((group = { label: p.group, items: [] }));
+    group.items.push({
+      key: p.key,
+      label: p.label,
+      icon: p.icon,
+      active: view === p.key,
+      disabled: needsSheets(p.key) && !sheetsConfigured,
+      onClick: () => navigate(p.key),
+      ...p.extra,
+    });
+  }
 
   // Pages other than the scanner. Each reuses its former modal in page mode.
   const renderPage = () => {
+    // Reached by URL or back/forward even though the sidebar greys them out.
+    if (needsSheets(view) && sheetsConfigured !== true) {
+      if (sheetsConfigured === null) return null; // config still loading
+      return (
+        <PageBody>
+          <PageHeader
+            title={currentPage.label}
+            icon={currentPage.icon}
+            description="This page reads your Google Sheet log."
+          />
+          <Card>
+            <EmptyState
+              icon={<HistoryIcon className="h-5 w-5" />}
+              title="Google Sheets logging isn't set up"
+              description="Set SHEETS_WEBHOOK_URL in .env.local and restart the app to see sent history and insights."
+              action={
+                <button type="button" className="btn btn-secondary" onClick={() => navigate("scanner")}>
+                  Back to Lead scanner
+                </button>
+              }
+            />
+          </Card>
+        </PageBody>
+      );
+    }
     switch (view) {
       case "insights":
         return (
@@ -1095,14 +1146,6 @@ export default function Page() {
       case "queue":
         return (
           <QueueModal asPage senders={senders} onClose={() => navigate("scanner")} />
-        );
-      case "import":
-        return (
-          <ImportCsvModal
-            asPage
-            onQueued={() => void refreshQueueCount()}
-            onClose={() => navigate("queue")}
-          />
         );
       case "templates":
         return <TemplatesModal asPage onClose={() => navigate("scanner")} />;
@@ -1187,9 +1230,9 @@ export default function Page() {
             </button>
             {/* Every page carries its own large header; the bar says where you are. */}
             <nav aria-label="Breadcrumb" className="flex min-w-0 shrink-0 items-center gap-2 text-sm">
-              <span className="hidden text-slate-500 sm:inline">{VIEW_GROUP[view]}</span>
+              <span className="hidden text-slate-500 sm:inline">{currentPage.group}</span>
               <span className="hidden text-slate-600 sm:inline" aria-hidden>/</span>
-              <h1 className="truncate font-medium text-slate-100">{VIEW_TITLE[view]}</h1>
+              <h1 className="truncate font-medium text-slate-100">{currentPage.label}</h1>
             </nav>
 
             {sheetsConfigured && sheetInsights.sent > 0 && (
@@ -1267,7 +1310,26 @@ export default function Page() {
             </div>
           </header>
 
-          {view !== "scanner" ? (
+          {/* Import CSV lives in its own fixed slot (always this child
+              position) so it stays mounted while a run is in flight and the
+              user is on another page — unmounting it aborts the import. */}
+          {(view === "import" || importRunning) && (
+            <main
+              className={view === "import" ? "min-h-0 flex-1 overflow-y-auto" : "hidden"}
+              aria-hidden={view !== "import"}
+            >
+              <div className="mx-auto w-full max-w-[1400px] px-4 py-6 md:px-8 md:py-8">
+                <ImportCsvModal
+                  asPage
+                  onQueued={() => void refreshQueueCount()}
+                  onRunningChange={setImportRunning}
+                  onClose={() => navigate("queue")}
+                />
+              </div>
+            </main>
+          )}
+
+          {view === "import" ? null : view !== "scanner" ? (
             <main key={view} className="min-h-0 flex-1 overflow-y-auto">
               <div className="mx-auto w-full max-w-[1400px] px-4 py-6 md:px-8 md:py-8">
                 {renderPage()}
