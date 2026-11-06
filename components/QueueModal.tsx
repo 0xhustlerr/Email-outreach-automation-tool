@@ -4,6 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { toast } from "sonner";
 import { CountryFlag } from "@/components/CountryFlag";
 import {
+  Card,
+  EmptyState,
+  PageBody,
+  PageHeader,
+  StatCard,
+  StatGrid,
+  Toolbar,
+} from "@/components/ui/dashboard";
+import {
   bumpRowEta,
   fmtClock,
   fmtCountdown,
@@ -176,7 +185,7 @@ function TimeSelect({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
+      className="input"
     >
       {slots.map((s) => (
         <option key={s} value={s}>
@@ -206,27 +215,29 @@ function WindowModeCard({
       role="radio"
       aria-checked={selected}
       onClick={onSelect}
-      className={`flex items-start gap-2 rounded-md border px-2.5 py-2 text-left transition ${
+      className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition ${
         selected
-          ? "border-cyan-400/50 bg-cyan-400/10"
-          : "border-white/10 bg-slate-950 hover:border-white/20"
+          ? "border-cyan-400/50 bg-cyan-400/10 ring-1 ring-cyan-400/20"
+          : "border-white/10 bg-slate-950/60 hover:border-white/20"
       }`}
     >
       <span
         aria-hidden
-        className={`mt-0.5 h-3 w-3 shrink-0 rounded-full border ${
-          selected ? "border-cyan-300 bg-cyan-400" : "border-slate-600"
+        className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border ${
+          selected ? "border-cyan-300" : "border-slate-600"
         }`}
-      />
+      >
+        {selected && <span className="h-1.5 w-1.5 rounded-full bg-cyan-300" />}
+      </span>
       <span className="min-w-0">
         <span
-          className={`block text-[11px] font-medium ${
-            selected ? "text-cyan-100" : "text-slate-300"
+          className={`block text-xs font-medium ${
+            selected ? "text-cyan-100" : "text-slate-200"
           }`}
         >
           {title}
         </span>
-        <span className="mt-0.5 block text-[10px] leading-snug text-slate-500">
+        <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">
           {detail}
         </span>
       </span>
@@ -257,8 +268,8 @@ function WindowExplainer({ draft }: { draft: QueueSettings }) {
         )} on this computer's clock.`;
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-2">
-      <p className="text-[11px] leading-snug text-slate-300">{sentence}</p>
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+      <p className="text-xs leading-snug text-slate-200">{sentence}</p>
       {allDay && (
         <p className="mt-1 text-[10px] leading-snug text-slate-500">
           Start and end are the same time, which means no window at all. Set
@@ -281,13 +292,9 @@ function WindowExplainer({ draft }: { draft: QueueSettings }) {
   );
 }
 
-// Small caps header that groups a block of settings.
+// Heading that groups a block of settings.
 function SectionHead({ children }: { children: ReactNode }) {
-  return (
-    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-      {children}
-    </div>
-  );
+  return <h4 className="text-sm font-semibold text-slate-100">{children}</h4>;
 }
 
 function GearIcon({ className }: { className?: string }) {
@@ -355,7 +362,7 @@ function BlockedBadge({ block }: { block: SenderBlock }) {
       title={`Gmail bounced this account with a policy block${
         block.detail ? `: ${block.detail}` : ""
       }. The queue skips it until ${resumeAt(block.until)}.`}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+      className="badge badge-warning shrink-0"
     >
       <PauseIcon className="h-2.5 w-2.5" />
       Blocked · resumes {resumeAt(block.until)}
@@ -381,6 +388,17 @@ function RetryIcon({ className }: { className?: string }) {
   );
 }
 
+function RefreshIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
 function MailIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -401,60 +419,55 @@ function canRetry(item: QueueItem): boolean {
 // One compact pill summarising an item's overall state (replaces the two
 // uppercase "1 pending / 2 pending" chips). Mirrors the History status pill.
 function QueueStatusPill({ item }: { item: QueueItem }) {
-  const pill = (text: string, cls: string, title: string) => (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`}
-      title={title}
-    >
+  const pill = (text: string, variant: string, title: string) => (
+    <span className={`badge shrink-0 ${variant}`} title={title}>
       {text}
     </span>
   );
   const { opStatus, fuStatus, hasFollow } = item;
   if (opStatus === "failed" || (hasFollow && fuStatus === "failed")) {
-    return pill(
-      "⚠ Failed",
-      "border-rose-400/30 bg-rose-500/15 text-rose-300",
-      item.lastError || "A send step failed",
-    );
+    return pill("Failed", "badge-danger", item.lastError || "A send step failed");
   }
   if (opStatus === "sending") {
-    return pill("Sending", "border-amber-400/30 bg-amber-500/15 text-amber-300", "Opener sending now");
+    return pill("Sending", "badge-warning", "Opener sending now");
   }
   if (opStatus === "pending") {
-    return pill("Queued", "border-cyan-400/30 bg-cyan-500/15 text-cyan-200", "Opener queued");
+    return pill("Queued", "badge-info", "Opener queued");
   }
   if (opStatus === "skipped") {
-    return pill("Skipped", "border-white/10 bg-white/5 text-slate-500", "Skipped");
+    return pill("Skipped", "badge-neutral", "Skipped");
   }
   // Opener sent from here on.
   if (hasFollow) {
     if (fuStatus === "sent") {
-      return pill("✓✓ 2-step", "border-cyan-400/30 bg-cyan-500/15 text-cyan-200", "Opener + follow-up sent");
+      return pill("2-step sent", "badge-success", "Opener + follow-up sent");
     }
     if (fuStatus === "sending") {
-      return pill("Sending 2", "border-amber-400/30 bg-amber-500/15 text-amber-300", "Follow-up sending");
+      return pill("Sending follow-up", "badge-warning", "Follow-up sending");
     }
     if (fuStatus === "scheduled") {
       return pill(
-        "⏳ Follow-up",
-        "border-indigo-400/30 bg-indigo-500/15 text-indigo-200",
+        "Follow-up",
+        "badge-violet",
         "Opener sent · the pitch waits for a reply. A link-free bump follows once the queue's openers are done.",
       );
     }
     return pill(
       "Awaiting reply",
-      "border-white/10 bg-white/5 text-slate-400",
+      "badge-neutral",
       "Opener sent · follow-up sends after a reply",
     );
   }
-  return pill("✓ Sent", "border-emerald-400/30 bg-emerald-500/15 text-emerald-300", "Opener sent");
+  return pill("Sent", "badge-success", "Opener sent");
 }
 
+// Only ever rendered as a dashboard page now: asPage/onClose stay in the props
+// type so app/page.tsx compiles, but there is no overlay or close button.
 export default function QueueModal({
-  onClose,
   senders = [],
 }: {
   onClose: () => void;
+  asPage?: boolean;
   senders?: MailIdentity[];
 }) {
   const [items, setItems] = useState<QueueItem[]>([]);
@@ -810,11 +823,8 @@ export default function QueueModal({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Esc closes the settings modal first if it's open, else the queue.
-      if (!settingsOpen) {
-        onClose();
-        return;
-      }
+      // Esc only closes the settings modal; the queue itself is a page.
+      if (!settingsOpen) return;
       // Mid-apply Esc is a no-op: the PATCH lands either way.
       if (savingSettings) return;
       if (
@@ -831,7 +841,7 @@ export default function QueueModal({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, settingsOpen, settingsDirty, savingSettings]);
+  }, [settingsOpen, settingsDirty, savingSettings]);
 
   const itemAction = async (id: number, action: "cancel" | "retry") => {
     try {
@@ -1040,301 +1050,545 @@ export default function QueueModal({
     }
   };
 
+  // The live send-plan line. Connection states come first: while the link is
+  // down every gate below is moot, and a countdown here would be a promise the
+  // worker can't keep. Below them, times come from the Send plan's next-send
+  // anchor — never a client-side re-derivation.
+  const planStatusText = !status
+    ? null
+    : serverDown
+      ? "Not connected to the app server"
+      : status.offline
+        ? `Connection lost — retrying${
+            status.retryInSec ? ` in ${fmtCountdown(status.retryInSec)}` : ""
+          } · nothing lost`
+        : !status.enabled
+          ? "Paused"
+          : status.allSendersBlocked
+            ? `Paused — Gmail block · resumes ${resumeAt(blocks[0]?.until ?? "")}`
+            : !plan
+              ? "Waiting for the worker's first Send plan…"
+              : status.capReached
+                ? `Daily cap reached — ${
+                    plan.nextSendAtMs !== null
+                      ? `next send ${fmtClock(plan.nextSendAtMs, now)}`
+                      : "resumes at midnight"
+                  }`
+                : status.startAt && new Date(status.startAt) > new Date()
+                  ? `Starts ${new Date(status.startAt).toLocaleString()}`
+                  : !settings?.localTimeSend && !status.withinWindow
+                    ? `Outside sending window${
+                        plan.nextSendAtMs !== null
+                          ? ` — next send ${fmtClock(plan.nextSendAtMs, now)}`
+                          : " — waiting"
+                      }`
+                    : nextSendSec !== null && nextSendSec > 0
+                      ? nextSendSec > 3600
+                        ? `Next send ${fmtClock(plan.nextSendAtMs!, now)}`
+                        : `Next send in ${fmtCountdown(nextSendSec)}`
+                      : num("queued") > 0
+                        ? "Sending…"
+                        : dueBumpCount > 0
+                          ? // The plan can't see replies (claim-time
+                            // knowledge): a due Bump whose contact has since
+                            // replied is counted here but fires as a Pitch
+                            // instead. Brief over-report, not a false lane.
+                            "Sending bumps — openers done"
+                          : "Idle — queue empty";
+  const planStaleText = planStale
+    ? ` · plan last updated ${
+        (planAgeSec ?? 0) >= 120
+          ? `${Math.round((planAgeSec ?? 0) / 60)}m`
+          : `${planAgeSec}s`
+      } ago`
+    : "";
+  // Dot colour for the plan line — display only.
+  const planDot = !status
+    ? "bg-slate-600"
+    : serverDown
+      ? "bg-rose-400"
+      : status.offline || status.allSendersBlocked || status.capReached
+        ? "bg-amber-400"
+        : !status.enabled
+          ? "bg-slate-500"
+          : "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]";
+  const todayPct =
+    status && status.dailyCap > 0
+      ? Math.min(100, (status.sentToday / status.dailyCap) * 100)
+      : 0;
+
   return (
-    <div
-      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="glass slide-in relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-        {/* Header + live status */}
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <div className="flex items-center gap-3">
-            <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
-              <MailIcon className="h-4 w-4 text-cyan-300" />
-              Send queue
-            </h2>
-            {settings && (
-              <button
-                type="button"
-                onClick={() => void patchSettings({ enabled: !settings.enabled })}
-                title={settings.enabled ? "Click to pause sending" : "Click to resume sending"}
-                className={
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition " +
-                  (settings.enabled
-                    ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25"
-                    : "border-white/15 bg-slate-950/50 text-slate-300 hover:border-white/30")
-                }
-              >
-                {settings.enabled ? (
-                  <>
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
-                    Running
-                  </>
-                ) : (
-                  <>
-                    <PauseIcon className="h-3 w-3" />
-                    Paused
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"
-            title="Close"
-            aria-label="Close"
-          >
-            <CloseIcon className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Stat strip */}
-        {status && (
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-white/10 px-5 py-2.5 text-xs text-slate-400">
-            <span>
-              Queued <b className="text-cyan-300">{num("queued")}</b>
-            </span>
-            <span>
-              Openers sent <b className="text-emerald-300">{num("openersSent")}</b>
-            </span>
-            <span title="A reply sends the Pitch ahead of every queued Opener and Bump — Pitch is the plan's top lane.">
-              Follow-ups due{" "}
-              <b className="text-indigo-300">{num("followupsPending")}</b>
-            </span>
-            {num("failed") > 0 && (
-              <span>
-                Failed <b className="text-rose-300">{num("failed")}</b>
-              </span>
-            )}
-            {blocks.length > 0 && (
-              <span
-                title={
-                  "Gmail bounced these accounts with a policy/reputation block, so the queue skips them for the rest of today:\n" +
-                  blocks
-                    .map((b) => `• ${b.sender} — ${b.detail || b.reason}`)
-                    .join("\n") +
-                  `\n\nThey resume automatically at ${resumeAt(blocks[0].until)}.`
-                }
-              >
-                Blocked accounts <b className="text-amber-300">{blocks.length}</b>
-              </span>
-            )}
-            <span className="ml-auto tabular-nums">
-              {/* Connection states come first: while the link is down every
-                  gate below is moot, and a countdown here would be a promise
-                  the worker can't keep. Below them, times come from the Send
-                  plan's next-send anchor — never a client-side re-derivation. */}
-              {serverDown
-                ? "Not connected to the app server"
-                : status.offline
-                ? `Connection lost — retrying${
-                    status.retryInSec ? ` in ${fmtCountdown(status.retryInSec)}` : ""
-                  } · nothing lost`
-                : !status.enabled
-                ? "Paused"
-                : status.allSendersBlocked
-                  ? `Paused — Gmail block · resumes ${resumeAt(blocks[0]?.until ?? "")}`
-                  : !plan
-                  ? "Waiting for the worker's first Send plan…"
-                  : status.capReached
-                  ? `Daily cap reached — ${
-                      plan.nextSendAtMs !== null
-                        ? `next send ${fmtClock(plan.nextSendAtMs, now)}`
-                        : "resumes at midnight"
-                    }`
-                  : status.startAt && new Date(status.startAt) > new Date()
-                    ? `Starts ${new Date(status.startAt).toLocaleString()}`
-                    : !settings?.localTimeSend && !status.withinWindow
-                      ? `Outside sending window${
-                          plan.nextSendAtMs !== null
-                            ? ` — next send ${fmtClock(plan.nextSendAtMs, now)}`
-                            : " — waiting"
-                        }`
-                      : nextSendSec !== null && nextSendSec > 0
-                        ? nextSendSec > 3600
-                          ? `Next send ${fmtClock(plan.nextSendAtMs!, now)}`
-                          : `Next send in ${fmtCountdown(nextSendSec)}`
-                        : num("queued") > 0
-                          ? "Sending…"
-                          : dueBumpCount > 0
-                            ? // The plan can't see replies (claim-time
-                              // knowledge): a due Bump whose contact has since
-                              // replied is counted here but fires as a Pitch
-                              // instead. Brief over-report, not a false lane.
-                              "Sending bumps — openers done"
-                            : "Idle — queue empty"}
-              {planStale
-                ? ` · plan last updated ${
-                    (planAgeSec ?? 0) >= 120
-                      ? `${Math.round((planAgeSec ?? 0) / 60)}m`
-                      : `${planAgeSec}s`
-                  } ago`
-                : ""}
-            </span>
-          </div>
-        )}
-
-        {/* Today-cap meter + whole-queue finish estimate */}
-        {status && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-b border-white/10 bg-white/[0.02] px-5 py-2.5 text-xs text-slate-400">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
-                Today
-              </span>
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-800/70">
-                <div
-                  className={
-                    "h-full rounded-full transition-[width] duration-500 " +
-                    (status.capReached ? "bg-amber-400" : "bg-cyan-400")
-                  }
-                  style={{
-                    width: `${
-                      status.dailyCap > 0
-                        ? Math.min(100, (status.sentToday / status.dailyCap) * 100)
-                        : 0
-                    }%`,
-                  }}
-                />
-              </div>
-              <span className="font-mono tabular-nums text-[11px] text-slate-300">
-                {status.sentToday}/{status.dailyCap}
-              </span>
-              <span className="text-slate-500">clients</span>
-            </div>
-            {remainingSends > 0 && (
-              <>
-                <span className="text-slate-700">·</span>
-                <span title="The Send plan's entries: pending Openers + link-free Bumps still owed. The Pitch isn't counted — it only sends if the contact replies (and then outranks everything queued).">
-                  <b className="text-slate-200">{remainingSends}</b> left to send
-                </span>
-                {finishLabel && (
-                  <span title="The worker's own estimate — the plan's last expected send, window, interval, daily cap and Bump due dates included.">
-                    · all sent <b className="text-cyan-300">{finishLabel}</b>
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* While the link is down the last error is just the dropped
-            connection, and a red "Last error" banner reads like something
-            broke. Say what actually happened, and that the queue is intact. */}
-        {status?.offline ? (
-          <p className="border-b border-white/10 bg-amber-500/10 px-5 py-2 text-xs text-amber-200">
-            No connection to Gmail
-            {status.offlineSince
-              ? ` since ${new Date(status.offlineSince).toLocaleTimeString()}`
-              : ""}
-            . The queue is holding — nothing has been failed and no send has been
-            lost. It resumes on its own once the connection is back.
-            {status.lastError ? (
-              <span className="text-amber-200/60"> ({status.lastError})</span>
-            ) : null}
-          </p>
-        ) : (
-          status?.lastError && (
-            <p className="border-b border-white/10 bg-rose-500/10 px-5 py-2 text-xs text-rose-300">
-              Last error: {status.lastError}
-            </p>
+    <PageBody>
+      <PageHeader
+        title="Send queue"
+        description="Openers drip out on your schedule; follow-ups wait for replies."
+        icon={<MailIcon className="h-5 w-5" />}
+        meta={
+          settings && (
+            <button
+              type="button"
+              onClick={() => void patchSettings({ enabled: settings.enabled })}
+              title={settings.enabled ? "Click to pause sending" : "Click to resume sending"}
+              className={
+                "badge cursor-pointer transition " +
+                (settings.enabled
+                  ? "badge-success hover:bg-emerald-500/20"
+                  : "badge-neutral hover:bg-white/10")
+              }
+            >
+              {settings.enabled ? (
+                <>
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
+                  Running
+                </>
+              ) : (
+                <>
+                  <PauseIcon className="h-3 w-3" />
+                  Paused
+                </>
+              )}
+            </button>
           )
-        )}
+        }
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="btn btn-ghost btn-icon"
+              title="Refresh"
+              aria-label="Refresh"
+            >
+              <RefreshIcon className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={openSettings}
+              disabled={!settings}
+              className="btn btn-secondary"
+            >
+              <GearIcon className="h-4 w-4" />
+              Settings
+            </button>
+          </>
+        }
+      />
 
-        {/* Gmail blocks. Lives here rather than only on the per-account rows
-            because the settings panel is collapsed by default. */}
-        {blocks.length > 0 && (
-          <div className="border-b border-white/10 bg-amber-500/10 px-5 py-2 text-xs text-amber-200">
-            <p className="mb-1">
-              Gmail blocked{" "}
-              {blocks.length === 1 ? "an account" : `${blocks.length} accounts`} —
-              the queue skips {blocks.length === 1 ? "it" : "them"} until tomorrow.
-            </p>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              {blocks.map((b) => (
-                <span key={b.sender} className="inline-flex items-center gap-1.5">
-                  <span
-                    className="font-mono text-[11px] text-amber-100"
-                    title={b.detail || b.reason}
-                  >
-                    {b.sender}
-                  </span>
-                  <span className="text-amber-300/60">
-                    · resumes {resumeAt(b.until)}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void resumeSender(b.sender)}
-                    title={`Let the queue use ${b.sender} again right away. The resume holds for the rest of today — a further bounce won't silently re-pause it.`}
-                    className="rounded-lg border border-amber-400/40 px-2 py-0.5 text-[10px] font-medium text-amber-200 transition hover:bg-amber-400/15"
-                  >
-                    Resume now
-                  </button>
+      <StatGrid cols={4}>
+        <StatCard
+          label="Queued"
+          value={status ? num("queued") : "—"}
+          tone="info"
+          hint={
+            remainingSends > 0 ? (
+              <span title="The Send plan's entries: pending Openers + link-free Bumps still owed. The Pitch isn't counted — it only sends if the contact replies (and then outranks everything queued).">
+                {remainingSends} left to send
+              </span>
+            ) : (
+              "Nothing left to send"
+            )
+          }
+        />
+        <StatCard
+          label="Openers sent"
+          value={status ? num("openersSent") : "—"}
+          tone="success"
+          hint={
+            num("failed") > 0 ? (
+              <span className="text-rose-300">{num("failed")} failed</span>
+            ) : undefined
+          }
+        />
+        <StatCard
+          label={
+            <span title="A reply sends the Pitch ahead of every queued Opener and Bump — Pitch is the plan's top lane.">
+              Follow-ups due
+            </span>
+          }
+          value={status ? num("followupsPending") : "—"}
+          tone="violet"
+          hint="Pitch sends on reply"
+        />
+        <StatCard
+          label="Today"
+          value={
+            status ? (
+              <span>
+                {status.sentToday}
+                <span className="text-base font-medium text-slate-500">
+                  /{status.dailyCap}
                 </span>
-              ))}
-            </div>
-          </div>
-        )}
+              </span>
+            ) : (
+              "—"
+            )
+          }
+          tone={status?.capReached ? "warning" : "default"}
+          hint={
+            status ? (
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800/80">
+                  <span
+                    className={
+                      "block h-full rounded-full transition-[width] duration-500 " +
+                      (status.capReached ? "bg-amber-400" : "bg-cyan-400")
+                    }
+                    style={{ width: `${todayPct}%` }}
+                  />
+                </span>
+                <span className="shrink-0">clients</span>
+              </span>
+            ) : undefined
+          }
+        />
+      </StatGrid>
 
-        {/* Settings — opens a modal so the queued contacts stay in view */}
-        {settings && (
-          <button
-            type="button"
-            onClick={openSettings}
-            className="flex w-full items-center gap-2 border-b border-white/10 px-5 py-2 text-left text-xs text-slate-300 transition hover:bg-white/[0.03]"
-          >
-            <GearIcon className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <span className="shrink-0 font-medium">Settings</span>
-            <span className="min-w-0 flex-1 truncate text-[10px] text-slate-500">
-              {settingsSummary}
-            </span>
-            <span className="shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-cyan-300">
-              Edit
-            </span>
-          </button>
-        )}
-        {draft && settingsOpen && (
-          <div
-            className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) discardSettings();
-            }}
-          >
-            <div className="glass slide-in flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-                <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
-                  <GearIcon className="h-4 w-4 text-cyan-300" />
-                  Queue settings
-                </h3>
+      {/* Send plan status + settings digest */}
+      {(status || settings) && (
+        <Card flush>
+          {status && (
+            <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-2.5">
+                <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${planDot}`} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium tabular-nums text-slate-100">
+                    {planStatusText}
+                    {planStaleText && (
+                      <span className="font-normal text-amber-300">{planStaleText}</span>
+                    )}
+                  </p>
+                  {remainingSends > 0 && finishLabel && (
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      <span title="The worker's own estimate — the plan's last expected send, window, interval, daily cap and Bump due dates included.">
+                        All sent{" "}
+                        <span className="tabular-nums text-cyan-300">{finishLabel}</span>
+                      </span>
+                    </p>
+                  )}
+                </div>
+              </div>
+              {(num("failed") > 0 || blocks.length > 0) && (
+                <div className="flex flex-wrap items-center gap-1.5 pl-[18px] sm:pl-0">
+                  {num("failed") > 0 && (
+                    <span className="badge badge-danger tabular-nums">
+                      {num("failed")} failed
+                    </span>
+                  )}
+                  {blocks.length > 0 && (
+                    <span
+                      className="badge badge-warning tabular-nums"
+                      title={
+                        "Gmail bounced these accounts with a policy/reputation block, so the queue skips them for the rest of today:\n" +
+                        blocks
+                          .map((b) => `• ${b.sender} — ${b.detail || b.reason}`)
+                          .join("\n") +
+                        `\n\nThey resume automatically at ${resumeAt(blocks[0].until)}.`
+                      }
+                    >
+                      {blocks.length} blocked account{blocks.length === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {/* Settings — opens a modal so the queued contacts stay in view */}
+          {settings && (
+            <button
+              type="button"
+              onClick={openSettings}
+              className={
+                "flex w-full items-center gap-2.5 px-5 py-3 text-left text-xs transition hover:bg-white/[0.03] " +
+                (status ? "border-t border-white/5" : "")
+              }
+            >
+              <GearIcon className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <span className="shrink-0 font-medium text-slate-300">Settings</span>
+              <span className="min-w-0 flex-1 truncate text-slate-500">
+                {settingsSummary}
+              </span>
+              <span className="shrink-0 font-medium text-cyan-300">Edit</span>
+            </button>
+          )}
+        </Card>
+      )}
+
+      {/* While the link is down the last error is just the dropped
+          connection, and a red "Last error" banner reads like something
+          broke. Say what actually happened, and that the queue is intact. */}
+      {status?.offline ? (
+        <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-amber-200">
+          No connection to Gmail
+          {status.offlineSince
+            ? ` since ${new Date(status.offlineSince).toLocaleTimeString()}`
+            : ""}
+          . The queue is holding — nothing has been failed and no send has been
+          lost. It resumes on its own once the connection is back.
+          {status.lastError ? (
+            <span className="text-amber-200/60"> ({status.lastError})</span>
+          ) : null}
+        </div>
+      ) : (
+        status?.lastError && (
+          <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-xs text-rose-300">
+            <span className="font-medium">Last error:</span> {status.lastError}
+          </div>
+        )
+      )}
+
+      {/* Gmail blocks. Lives here rather than only on the per-account rows
+          because the settings panel is a separate dialog. */}
+      {blocks.length > 0 && (
+        <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+          <p className="mb-2">
+            Gmail blocked{" "}
+            {blocks.length === 1 ? "an account" : `${blocks.length} accounts`} —
+            the queue skips {blocks.length === 1 ? "it" : "them"} until tomorrow.
+          </p>
+          <div className="flex flex-col gap-2">
+            {blocks.map((b) => (
+              <div key={b.sender} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span
+                  className="min-w-0 truncate font-mono text-[11px] text-amber-100"
+                  title={b.detail || b.reason}
+                >
+                  {b.sender}
+                </span>
+                <span className="text-amber-300/60">· resumes {resumeAt(b.until)}</span>
                 <button
                   type="button"
-                  onClick={discardSettings}
-                  className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-white"
-                  title="Discard changes and close"
-                  aria-label="Discard changes and close"
+                  onClick={() => void resumeSender(b.sender)}
+                  title={`Let the queue use ${b.sender} again right away. The resume holds for the rest of today — a further bounce won't silently re-pause it.`}
+                  className="btn btn-sm btn-secondary"
                 >
-                  <CloseIcon className="h-4 w-4" />
+                  Resume now
                 </button>
               </div>
-              <div className="space-y-4 overflow-y-auto px-5 py-4">
-                {/* Schedule & window */}
-            <div>
-              <SectionHead>Schedule &amp; window</SectionHead>
-              <div className="space-y-3">
-                <label className="block text-[11px] text-slate-400">
-                  Start sending at
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Toolbar
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={() => void retryAllFailed()}
+              disabled={num("failed") === 0}
+              className="btn btn-sm btn-secondary"
+              title="Put every failed and canceled item back in the queue"
+            >
+              <RetryIcon className="h-3.5 w-3.5" />
+              Retry failed{num("failed") > 0 ? ` (${num("failed")})` : ""}
+            </button>
+            <button
+              type="button"
+              onClick={() => void cancelAllFollowups()}
+              disabled={num("followupsPending") === 0}
+              className="btn btn-sm btn-secondary"
+              title="Skip every follow-up that hasn't sent yet"
+            >
+              Stop pending follow-ups
+              {num("followupsPending") > 0 ? ` (${num("followupsPending")})` : ""}
+            </button>
+            <button
+              type="button"
+              onClick={() => void cancelAllQueued()}
+              disabled={num("queued") === 0}
+              className="btn btn-sm btn-danger"
+              title="Cancel every not-yet-sent opener in the queue"
+            >
+              Cancel all queued{num("queued") > 0 ? ` (${num("queued")})` : ""}
+            </button>
+            <button
+              type="button"
+              onClick={() => void clearFinished()}
+              className="btn btn-sm btn-ghost"
+            >
+              Clear sent &amp; canceled
+            </button>
+          </>
+        }
+      >
+        <div className="min-w-0">
+          <h3 className="card-title">Queue</h3>
+          <p className="card-description">
+            {items.length > 0
+              ? `${items.length} item${items.length === 1 ? "" : "s"} · in send order`
+              : "In send order"}
+          </p>
+        </div>
+      </Toolbar>
+
+      {/* Items */}
+      <Card flush>
+        {loading ? (
+          <p className="px-5 py-10 text-center text-sm text-slate-400">Loading…</p>
+        ) : items.length === 0 ? (
+          <EmptyState
+            icon={<MailIcon className="h-5 w-5" />}
+            title="Queue is empty"
+            description="Compose in the Send window and click Add to queue."
+          />
+        ) : (
+          <ul className="divide-y divide-white/5">
+            {orderedItems.map((it) => {
+              // The row's place in the Send plan, if it has one: a pending
+              // Opener carries an opener entry, a sent Opener still owed its
+              // link-free Bump carries a bump entry. Times and Hold reasons
+              // render from the entry verbatim.
+              const eta =
+                it.fuStatus === "scheduled"
+                  ? bumpRowEta({
+                      entry: entryById.get(it.id),
+                      bumpSentAt: it.bumpSentAt,
+                      bumpEnabled: settings?.bumpEnabled ?? false,
+                      nowMs: now,
+                    })
+                  : it.opStatus === "pending"
+                    ? openerRowEta(entryById.get(it.id), now)
+                    : null;
+              const clock = localClock(it.timezone);
+              return (
+                <li
+                  key={it.id}
+                  className="group flex items-start gap-3 px-4 py-3 transition hover:bg-white/[0.02] sm:items-center sm:px-5"
+                >
+                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500/25 to-slate-700 text-xs font-semibold text-cyan-100 sm:mt-0">
+                    {(it.name.trim()[0] || it.toEmail.trim()[0] || "?").toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="flex min-w-0 items-center gap-1.5 text-sm text-slate-100">
+                      <span className="truncate">{it.toEmail}</span>
+                      {it.ccEmail && (
+                        <span
+                          className="badge badge-neutral shrink-0"
+                          title={`Also CC'd: ${it.ccEmail}`}
+                        >
+                          CC
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
+                      {(it.countryStd || it.timezone) && (
+                        <span className="text-slate-400">
+                          <CountryFlag
+                            country={it.countryStd}
+                            size={10}
+                            className="mr-1 align-[-1px]"
+                          />
+                          {it.countryStd || it.timezone}
+                          {clock ? ` · ${clock} local` : ""}
+                          {" · "}
+                        </span>
+                      )}
+                      {it.opSubject && (
+                        <span className="text-slate-400">“{it.opSubject}”</span>
+                      )}
+                      {it.lastError && it.lastError !== "canceled" ? (
+                        <span className="text-rose-300"> · {it.lastError}</span>
+                      ) : null}
+                    </p>
+                    {/* On narrow screens the plan lane drops under the subject. */}
+                    {eta && (
+                      <p
+                        className="mt-1 text-xs tabular-nums text-cyan-300/80 sm:hidden"
+                        title={eta.title}
+                      >
+                        {eta.text}
+                      </p>
+                    )}
+                  </div>
+                  {eta && (
+                    <span
+                      className="hidden shrink-0 whitespace-nowrap text-xs tabular-nums text-cyan-300/80 sm:inline"
+                      title={eta.title}
+                    >
+                      {eta.text}
+                    </span>
+                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <QueueStatusPill item={it} />
+                    {it.opStatus === "pending" && (
+                      <button
+                        type="button"
+                        onClick={() => void itemAction(it.id, "cancel")}
+                        title="Cancel this send"
+                        aria-label="Cancel this send"
+                        className="btn btn-sm btn-ghost btn-icon hover:text-rose-300 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      >
+                        <CloseIcon className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {canRetry(it) && (
+                      <button
+                        type="button"
+                        onClick={() => void itemAction(it.id, "retry")}
+                        title={
+                          it.lastError === "canceled"
+                            ? "Put this canceled send back in the queue"
+                            : "Retry this failed send"
+                        }
+                        aria-label="Retry this send"
+                        className="btn btn-sm btn-ghost btn-icon hover:text-cyan-300 focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      >
+                        <RetryIcon className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      {draft && settingsOpen && (
+        <div
+          className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) discardSettings();
+          }}
+        >
+          <div className="card slide-in flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden shadow-2xl shadow-black/50">
+            <div className="card-header items-center">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300 ring-1 ring-inset ring-cyan-400/25">
+                  <GearIcon className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="card-title">Queue settings</h3>
+                  <p className="card-description">
+                    Changes apply when you click OK.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={discardSettings}
+                className="btn btn-sm btn-ghost btn-icon"
+                title="Discard changes and close"
+                aria-label="Discard changes and close"
+              >
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="divide-y divide-white/5 overflow-y-auto">
+              {/* Schedule & window */}
+              <section className="space-y-4 px-5 py-5">
+                <SectionHead>Schedule &amp; window</SectionHead>
+                <label className="block">
+                  <span className="field-label">Start sending at</span>
                   <input
                     type="datetime-local"
                     value={toLocalInput(draft.startAt)}
                     onChange={(e) =>
                       editDraft({ startAt: fromLocalInput(e.target.value) })
                     }
-                    className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
+                    className="input [color-scheme:dark]"
                   />
-                  <span className="mt-0.5 block text-[10px] text-slate-600">
+                  <span className="field-hint block">
                     Blank = start as soon as the queue is running.
                   </span>
                 </label>
@@ -1345,13 +1599,11 @@ export default function QueueModal({
                     Showing both at once read as "both apply", so the mode is a
                     radio and only the live window's times are on screen. */}
                 <div>
-                  <div className="text-[11px] text-slate-400">
-                    Send only during
-                  </div>
+                  <div className="field-label">Send only during</div>
                   <div
                     role="radiogroup"
                     aria-label="Which clock the sending window follows"
-                    className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2"
+                    className="grid grid-cols-1 gap-2 sm:grid-cols-2"
                   >
                     <WindowModeCard
                       selected={!draft.localTimeSend}
@@ -1368,9 +1620,11 @@ export default function QueueModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-x-3">
-                  <label className="text-[11px] text-slate-400">
-                    {draft.localTimeSend ? "Their day starts" : "Window start"}
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="field-label">
+                      {draft.localTimeSend ? "Their day starts" : "Window start"}
+                    </span>
                     <TimeSelect
                       value={
                         draft.localTimeSend ? draft.localStart : draft.windowStart
@@ -1384,8 +1638,10 @@ export default function QueueModal({
                       }
                     />
                   </label>
-                  <label className="text-[11px] text-slate-400">
-                    {draft.localTimeSend ? "Their day ends" : "Window end"}
+                  <label className="block">
+                    <span className="field-label">
+                      {draft.localTimeSend ? "Their day ends" : "Window end"}
+                    </span>
                     <TimeSelect
                       value={draft.localTimeSend ? draft.localEnd : draft.windowEnd}
                       onChange={(v) =>
@@ -1398,614 +1654,464 @@ export default function QueueModal({
                 </div>
 
                 <WindowExplainer draft={draft} />
-              </div>
-            </div>
+              </section>
 
-            {/* Rate & limits */}
-            <div>
-              <SectionHead>Rate &amp; limits</SectionHead>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4">
-                <label className="col-span-2 text-[11px] text-slate-400">
-                  Interval between sends
-                  <div className="mt-1 flex gap-1">
+              {/* Rate & limits */}
+              <section className="space-y-4 px-5 py-5">
+                <SectionHead>Rate &amp; limits</SectionHead>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <label className="block sm:col-span-2">
+                    <span className="field-label">Interval between sends</span>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={intervalUnit === "min" ? 0.5 : 10}
+                        step={intervalUnit === "min" ? 0.5 : 5}
+                        value={
+                          intervalUnit === "min"
+                            ? Math.round((draft.intervalSec / 60) * 100) / 100
+                            : draft.intervalSec
+                        }
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          const sec =
+                            intervalUnit === "min" ? Math.round(n * 60) : Math.round(n);
+                          editDraft({ intervalSec: sec });
+                        }}
+                        className="input min-w-0 flex-1 tabular-nums"
+                      />
+                      <select
+                        value={intervalUnit}
+                        onChange={(e) =>
+                          setIntervalUnit(e.target.value as "sec" | "min")
+                        }
+                        className="input w-20 shrink-0"
+                      >
+                        <option value="sec">sec</option>
+                        <option value="min">min</option>
+                      </select>
+                    </div>
+                    <span className="field-hint block tabular-nums">
+                      = {draft.intervalSec}s between each send
+                    </span>
+                  </label>
+                  <label className="block">
+                    <span className="field-label">Jitter (±sec)</span>
                     <input
                       type="number"
-                      min={intervalUnit === "min" ? 0.5 : 10}
-                      step={intervalUnit === "min" ? 0.5 : 5}
-                      value={
-                        intervalUnit === "min"
-                          ? Math.round((draft.intervalSec / 60) * 100) / 100
-                          : draft.intervalSec
-                      }
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        const sec =
-                          intervalUnit === "min" ? Math.round(n * 60) : Math.round(n);
-                        editDraft({ intervalSec: sec });
-                      }}
-                      className="min-w-0 flex-1 rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
-                    />
-                    <select
-                      value={intervalUnit}
+                      min={0}
+                      value={draft.jitterSec}
                       onChange={(e) =>
-                        setIntervalUnit(e.target.value as "sec" | "min")
+                        editDraft({ jitterSec: Number(e.target.value) })
                       }
-                      className="rounded-md border border-white/10 bg-slate-950 px-1 py-1 text-xs text-slate-300 outline-none focus:border-cyan-400/40"
-                    >
-                      <option value="sec">sec</option>
-                      <option value="min">min</option>
-                    </select>
-                  </div>
-                  <span className="mt-0.5 block text-[10px] text-slate-600">
-                    = {draft.intervalSec}s between each send
-                  </span>
-                </label>
-                <label className="text-[11px] text-slate-400">
-                  Jitter (±sec)
-                  <input
-                    type="number"
-                    min={0}
-                    value={draft.jitterSec}
-                    onChange={(e) =>
-                      editDraft({ jitterSec: Number(e.target.value) })
-                    }
-                    className="mt-1 w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
-                  />
-                </label>
-              </div>
-            </div>
+                      className="input tabular-nums"
+                    />
+                  </label>
+                </div>
+              </section>
 
-            {/* Follow-up strategy */}
-            <div>
-              <SectionHead>Follow-up strategy</SectionHead>
-              <div className="space-y-2 rounded-lg border border-white/10 bg-slate-950/40 p-3">
-                <p className="text-[11px] text-slate-300">
+              {/* Follow-up strategy */}
+              <section className="space-y-3 px-5 py-5">
+                <SectionHead>Follow-up strategy</SectionHead>
+                <p className="text-xs leading-relaxed text-slate-400">
                   The pitch (message 2, with links) sends{" "}
                   <span className="text-cyan-300">only after a reply</span> —
                   automatically, in‑thread, within a few minutes. Non‑repliers
                   never get the link‑heavy pitch.
                 </p>
-                <label className="flex items-center gap-2 text-[11px] text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={draft.bumpEnabled}
-                    onChange={(e) => editDraft({ bumpEnabled: e.target.checked })}
-                    className="accent-cyan-500"
-                  />
-                  Send a link‑free bump to non‑repliers
-                </label>
-                {draft.bumpEnabled && (
-                  <label className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                    after
+                <div className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2.5">
+                  <label className="flex items-center gap-2 text-sm text-slate-200">
                     <input
-                      type="number"
-                      min={1}
-                      value={draft.bumpAfterDays}
-                      onChange={(e) =>
-                        editDraft({ bumpAfterDays: Number(e.target.value) })
-                      }
-                      className="w-16 rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40"
+                      type="checkbox"
+                      checked={draft.bumpEnabled}
+                      onChange={(e) => editDraft({ bumpEnabled: e.target.checked })}
+                      className="accent-cyan-500"
                     />
-                    day{draft.bumpAfterDays === 1 ? "" : "s"} · rotates 30 bump
-                    templates
+                    Send a link‑free bump to non‑repliers
                   </label>
-                )}
-              </div>
-            </div>
-
-            {/* Sending accounts */}
-            <div>
-              <div className="mb-2 flex items-baseline justify-between gap-2">
-                <SectionHead>Sending accounts</SectionHead>
-                <span className="text-[10px] text-slate-600">
-                  {senders.length === 0
-                    ? ""
-                    : poolMode === "pick"
-                    ? `${draftPool.length} of ${senders.length} checked`
-                    : "all accounts eligible"}
-                </span>
-              </div>
-              <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
-                {senders.length === 0 ? (
-                  <p className="text-[10px] text-slate-600">
-                    No sender identities configured.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {/* Mode 1: only the checked accounts send openers */}
-                    <div>
-                      <label className="flex items-start gap-2 text-[11px] text-slate-300">
-                        <input
-                          type="radio"
-                          name="senderPoolMode"
-                          checked={poolMode === "pick"}
-                          onChange={() => switchPoolMode("pick")}
-                          className="mt-0.5 accent-cyan-500"
-                        />
-                        <span>
-                          Only the accounts I check
-                          <span className="block text-[10px] text-slate-600">
-                            Each opener goes out from whichever checked account
-                            has rested longest, so every account gets the
-                            widest possible gap between its own sends.
-                          </span>
-                        </span>
-                      </label>
-                      {poolMode === "pick" && (
-                        <div className="ml-6 mt-2 space-y-1">
-                          {senders.map((id) => {
-                            const email = id.email.toLowerCase();
-                            const pool = draft.senderPool ?? [];
-                            const inPool = pool.includes(email);
-                            const used = status?.sentBySender?.[email];
-                            // While editing, show the cap being edited rather
-                            // than the one the worker is currently running
-                            // with. 0 = unlimited.
-                            const cap = draft.senderCaps?.[email] ?? 0;
-                            const block = blockByEmail.get(email);
-                            const commitCap = () => {
-                              const raw = capDrafts[email];
-                              if (raw === undefined) return;
-                              setCapDrafts((d) => {
-                                const n = { ...d };
-                                delete n[email];
-                                return n;
-                              });
-                              const v = Math.round(Number(raw));
-                              const next = { ...(draft.senderCaps ?? {}) };
-                              if (
-                                raw.trim() !== "" &&
-                                Number.isFinite(v) &&
-                                v > 0
-                              )
-                                next[email] = v;
-                              else delete next[email];
-                              editDraft({ senderCaps: next });
-                            };
-                            return (
-                              <label
-                                key={email}
-                                className="flex items-center gap-2 rounded px-1 py-0.5 text-[11px] text-slate-300 hover:bg-white/[0.03]"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={inPool}
-                                  onChange={() => {
-                                    const next = inPool
-                                      ? pool.filter((x) => x !== email)
-                                      : [...pool, email];
-                                    // Pin the branch open so unchecking the
-                                    // last account doesn't flip the radio to
-                                    // "All accounts" mid-click.
-                                    setPoolModeOverride("pick");
-                                    editDraft({ senderPool: next });
-                                  }}
-                                  className="accent-cyan-500"
-                                />
-                                <span className="flex-1 truncate font-mono">{id.email}</span>
-                                {inPool && used !== undefined && (
-                                  <span
-                                    className={
-                                      "shrink-0 tabular-nums text-[10px] " +
-                                      (cap > 0 && used >= cap
-                                        ? "text-rose-300"
-                                        : "text-slate-500")
-                                    }
-                                  >
-                                    {cap > 0 ? `${used}/${cap}` : used} today
-                                  </span>
-                                )}
-                                {block && (
-                                  // No Resume button here: this row is a
-                                  // <label>, so a nested button would toggle
-                                  // the pool checkbox. It lives in the banner
-                                  // above instead.
-                                  <BlockedBadge block={block} />
-                                )}
-                                <span className="flex shrink-0 items-center gap-1 text-[10px] text-slate-600">
-                                  cap
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={
-                                      capDrafts[email] ??
-                                      (draft.senderCaps?.[email] || "")
-                                    }
-                                    placeholder="∞"
-                                    onChange={(e) =>
-                                      setCapDrafts((d) => ({
-                                        ...d,
-                                        [email]: e.target.value,
-                                      }))
-                                    }
-                                    onBlur={commitCap}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter")
-                                        (e.target as HTMLInputElement).blur();
-                                    }}
-                                    title="This account's own daily cap (blank = no limit)"
-                                    className="w-14 rounded-md border border-white/10 bg-slate-950 px-1.5 py-0.5 text-center text-[11px] text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-400/40"
-                                  />
-                                </span>
-                              </label>
-                            );
-                          })}
-                          {draftPool.length === 0 && (
-                            <p className="text-[10px] text-amber-300/90">
-                              Nothing checked yet — until an account is checked,
-                              openers may use all of them.
-                            </p>
-                          )}
-                          <p className="pt-1 text-[10px] text-slate-600">
-                            <span className="text-slate-400">cap</span> = that
-                            account&apos;s own daily send limit, to match its
-                            warm-up. Blank = no limit.
-                          </p>
-                          {poolCapSum !== null ? (
-                            <p className="text-[10px] text-slate-600">
-                              Together: up to{" "}
-                              <span className="text-slate-400">
-                                {poolCapSum}/day
-                              </span>{" "}
-                              (the caps, added up).
-                            </p>
-                          ) : (
-                            draftPool.length > 0 && (
-                              <p className="text-[10px] text-slate-600">
-                                Some checked accounts have no cap, so the
-                                queue&apos;s overall daily cap (
-                                {draft.dailyCap}/day) applies instead.
-                              </p>
-                            )
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    {/* Mode 2: every connected account is eligible */}
-                    <div>
-                      <label className="flex items-start gap-2 text-[11px] text-slate-300">
-                        <input
-                          type="radio"
-                          name="senderPoolMode"
-                          checked={poolMode === "all"}
-                          onChange={() => switchPoolMode("all")}
-                          className="mt-0.5 accent-cyan-500"
-                        />
-                        <span>
-                          All accounts
-                          <span className="block text-[10px] text-slate-600">
-                            Every connected account may send openers.
-                            Per-account caps are not enforced in this mode.
-                          </span>
-                        </span>
-                      </label>
-                      {poolMode === "all" && (
-                        <div className="ml-6 mt-2 space-y-1">
-                          <label className="flex items-start gap-2 text-[11px] text-slate-300">
-                            <input
-                              type="checkbox"
-                              checked={draft.rotateSenders}
-                              onChange={(e) =>
-                                editDraft({ rotateSenders: e.target.checked })
-                              }
-                              className="mt-0.5 accent-cyan-500"
-                            />
-                            <span>
-                              Rotate between accounts
-                              <span className="block text-[10px] text-slate-600">
-                                {draft.rotateSenders
-                                  ? "Each opener goes out from the account that has rested longest."
-                                  : `Off — every opener sends from ${
-                                      senders[0]?.email ?? "the first account"
-                                    }.`}
-                              </span>
-                            </span>
-                          </label>
-                          <div className="space-y-0.5 pt-1">
-                            {senders.map((id) => {
-                              const email = id.email.toLowerCase();
-                              const used = status?.sentBySender?.[email];
-                              const block = blockByEmail.get(email);
-                              return (
-                                <div
-                                  key={email}
-                                  className="flex items-center gap-2 px-1 py-0.5 text-[11px] text-slate-400"
-                                >
-                                  <span className="flex-1 truncate font-mono">
-                                    {id.email}
-                                  </span>
-                                  {used !== undefined && (
-                                    <span className="shrink-0 tabular-nums text-[10px] text-slate-500">
-                                      {used} today
-                                    </span>
-                                  )}
-                                  {block && <BlockedBadge block={block} />}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <p className="border-t border-white/5 pt-2 text-[10px] text-slate-600">
-                      The Pitch and the Bump are unaffected: they always reply
-                      from the account that first emailed the contact. A contact
-                      that any account has ever emailed is never queued or
-                      emailed again.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Opener rotation — rewrite the queued items' openers in place */}
-            <div>
-              <div className="mb-2 flex items-baseline justify-between gap-2">
-                <SectionHead>Opener rotation</SectionHead>
-                <span className="text-[10px] text-slate-600">
-                  rewrites the {num("queued")} queued item
-                  {num("queued") === 1 ? "" : "s"} in place · keeps follow-ups ·
-                  applies on click, not on OK
-                </span>
-              </div>
-              <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
-                {openers.length === 0 ? (
-                  <p className="text-[10px] text-slate-600">No opener templates.</p>
-                ) : (
-                  <>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-500">
-                        {selectedRotate.length} of {openers.length} selected
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRotateIds(
-                            allRotateOn ? [] : openers.map((o) => o.id),
-                          )
+                  {draft.bumpEnabled && (
+                    <label className="mt-2 flex flex-wrap items-center gap-2 pl-6 text-xs text-slate-400">
+                      after
+                      <input
+                        type="number"
+                        min={1}
+                        value={draft.bumpAfterDays}
+                        onChange={(e) =>
+                          editDraft({ bumpAfterDays: Number(e.target.value) })
                         }
-                        className="text-[10px] text-slate-400 transition hover:text-cyan-300"
-                      >
-                        {allRotateOn ? "Clear all" : "Select all"}
-                      </button>
-                    </div>
-                    <div className="max-h-40 space-y-0.5 overflow-y-auto">
-                      {openers.map((o) => {
-                        const on = rotateIds.includes(o.id);
-                        return (
-                          <label
-                            key={o.id}
-                            className="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-slate-200 transition hover:bg-white/[0.03]"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={on}
-                              onChange={() => toggleRotate(o.id)}
-                              className="accent-cyan-500"
-                            />
-                            <span className="truncate">{o.label}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/5 pt-3">
-                      <span
-                        className={
-                          "text-[11px] " +
-                          (selectedRotate.length === 0
-                            ? "text-rose-300"
-                            : rotatePerDay > 7
-                              ? "text-amber-300"
-                              : rotatePerDay < 5
-                                ? "text-slate-400"
-                                : "text-emerald-300")
-                        }
-                      >
-                        {selectedRotate.length === 0
-                          ? "select at least one"
-                          : `≈${Math.round(rotatePerDay)} send${
-                              Math.round(rotatePerDay) === 1 ? "" : "s"
-                            }/template/day`}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void applyOpenerRotation()}
-                        disabled={
-                          rotating ||
-                          selectedRotate.length === 0 ||
-                          num("queued") === 0
-                        }
-                        className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-1.5 text-xs font-medium text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-500/20 disabled:opacity-40"
-                      >
-                        {rotating
-                          ? "Rotating…"
-                          : `Rotate ${num("queued")} queued`}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-              </div>
-              {/* OK applies every setting above in one PATCH. The one exception
-                  is "Rotate queued", which rewrites queue items on click. */}
-              <div className="flex items-center justify-end gap-2 border-t border-white/10 px-5 py-3">
-                <span className="mr-auto text-[11px] text-slate-500">
-                  {settingsDirty
-                    ? "Unsaved changes — click OK to apply."
-                    : rotatedQueued
-                      ? "Openers already rotated. No other changes."
-                      : "No changes."}
-                </span>
-                <button
-                  type="button"
-                  onClick={discardSettings}
-                  disabled={savingSettings}
-                  className="rounded-full border border-white/10 px-4 py-1.5 text-xs text-slate-400 transition hover:border-white/25 hover:text-white disabled:opacity-40"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void applySettings()}
-                  disabled={savingSettings}
-                  className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-6 py-1.5 text-xs font-medium text-cyan-100 transition hover:border-cyan-300/70 hover:bg-cyan-500/25 disabled:opacity-40"
-                >
-                  {savingSettings ? "Applying…" : "OK"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Items */}
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          {loading ? (
-            <p className="text-sm text-slate-400">Loading…</p>
-          ) : items.length === 0 ? (
-            <p className="text-sm text-slate-400">
-              Queue is empty. Compose in the Send window and click Add to queue.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {orderedItems.map((it) => {
-                // The row's place in the Send plan, if it has one: a pending
-                // Opener carries an opener entry, a sent Opener still owed its
-                // link-free Bump carries a bump entry. Times and Hold reasons
-                // render from the entry verbatim.
-                const eta =
-                  it.fuStatus === "scheduled"
-                    ? bumpRowEta({
-                        entry: entryById.get(it.id),
-                        bumpSentAt: it.bumpSentAt,
-                        bumpEnabled: settings?.bumpEnabled ?? false,
-                        nowMs: now,
-                      })
-                    : it.opStatus === "pending"
-                      ? openerRowEta(entryById.get(it.id), now)
-                      : null;
-                return (
-                <div
-                  key={it.id}
-                  className="group flex items-center gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 transition hover:border-white/20"
-                >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500/25 to-slate-700 text-[11px] font-semibold text-cyan-100">
-                    {(it.name.trim()[0] || it.toEmail.trim()[0] || "?").toUpperCase()}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="flex min-w-0 items-center gap-1.5 text-sm text-slate-100">
-                      <span className="truncate">{it.toEmail}</span>
-                      {it.ccEmail && (
-                        <span
-                          className="shrink-0 rounded border border-white/10 bg-white/5 px-1 py-px text-[10px] uppercase tracking-wide text-slate-400"
-                          title={`Also CC'd: ${it.ccEmail}`}
-                        >
-                          cc
-                        </span>
-                      )}
-                    </p>
-                    <p className="truncate text-[11px] text-slate-500">
-                      {(it.countryStd || it.timezone) && (
-                        <span className="text-slate-400">
-                          <CountryFlag
-                            country={it.countryStd}
-                            size={10}
-                            className="mr-1 align-[-1px]"
-                          />
-                          {it.countryStd || it.timezone}
-                          {localClock(it.timezone)
-                            ? ` · ${localClock(it.timezone)} local`
-                            : ""}
-                          {" · "}
-                        </span>
-                      )}
-                      {it.opSubject && (
-                        <span className="italic text-slate-400">“{it.opSubject}”</span>
-                      )}
-                      {it.lastError && it.lastError !== "canceled" ? (
-                        <span className="text-rose-300"> · {it.lastError}</span>
-                      ) : null}
-                    </p>
-                  </div>
-                  {eta && (
-                    <span
-                      className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-cyan-300/80"
-                      title={eta.title}
-                    >
-                      {eta.text}
-                    </span>
-                  )}
-                  <QueueStatusPill item={it} />
-                  {it.opStatus === "pending" && (
-                    <button
-                      type="button"
-                      onClick={() => void itemAction(it.id, "cancel")}
-                      title="Cancel this send"
-                      aria-label="Cancel this send"
-                      className="shrink-0 rounded-md p-1 text-slate-600 opacity-0 transition hover:text-rose-300 focus:opacity-100 group-hover:opacity-100"
-                    >
-                      <CloseIcon className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                  {canRetry(it) && (
-                    <button
-                      type="button"
-                      onClick={() => void itemAction(it.id, "retry")}
-                      title={
-                        it.lastError === "canceled"
-                          ? "Put this canceled send back in the queue"
-                          : "Retry this failed send"
-                      }
-                      aria-label="Retry this send"
-                      className="shrink-0 rounded-md p-1 text-slate-600 opacity-0 transition hover:text-cyan-300 focus:opacity-100 group-hover:opacity-100"
-                    >
-                      <RetryIcon className="h-3.5 w-3.5" />
-                    </button>
+                        className="input h-8 w-16 tabular-nums"
+                      />
+                      day{draft.bumpAfterDays === 1 ? "" : "s"} · rotates 30 bump
+                      templates
+                    </label>
                   )}
                 </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+              </section>
 
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/10 px-5 py-3">
-          <button
-            type="button"
-            onClick={() => void retryAllFailed()}
-            disabled={num("failed") === 0}
-            className="mr-auto rounded-full border border-cyan-500/30 bg-cyan-500/10 px-4 py-1.5 text-xs text-cyan-200 transition hover:border-cyan-400/60 hover:bg-cyan-500/20 disabled:opacity-40 disabled:hover:border-cyan-500/30 disabled:hover:bg-cyan-500/10"
-            title="Put every failed and canceled item back in the queue"
-          >
-            Retry failed{num("failed") > 0 ? ` (${num("failed")})` : ""}
-          </button>
-          <button
-            type="button"
-            onClick={() => void cancelAllFollowups()}
-            disabled={num("followupsPending") === 0}
-            className="rounded-full border border-white/10 px-4 py-1.5 text-xs text-slate-400 transition hover:border-amber-400/40 hover:text-amber-200 disabled:opacity-40 disabled:hover:border-white/10 disabled:hover:text-slate-400"
-            title="Skip every follow-up that hasn't sent yet"
-          >
-            Stop pending follow-ups{num("followupsPending") > 0 ? ` (${num("followupsPending")})` : ""}
-          </button>
-          <button
-            type="button"
-            onClick={() => void cancelAllQueued()}
-            disabled={num("queued") === 0}
-            className="rounded-full border border-rose-500/30 bg-rose-500/10 px-4 py-1.5 text-xs text-rose-200 transition hover:border-rose-400/60 hover:bg-rose-500/20 disabled:opacity-40 disabled:hover:border-rose-500/30 disabled:hover:bg-rose-500/10"
-            title="Cancel every not-yet-sent opener in the queue"
-          >
-            Cancel all queued{num("queued") > 0 ? ` (${num("queued")})` : ""}
-          </button>
-          <button
-            type="button"
-            onClick={() => void clearFinished()}
-            className="rounded-full border border-white/10 px-4 py-1.5 text-xs text-slate-400 transition hover:border-white/25 hover:text-white"
-          >
-            Clear sent &amp; canceled
-          </button>
+              {/* Sending accounts */}
+              <section className="space-y-3 px-5 py-5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <SectionHead>Sending accounts</SectionHead>
+                  <span className="text-xs text-slate-500">
+                    {senders.length === 0
+                      ? ""
+                      : poolMode === "pick"
+                      ? `${draftPool.length} of ${senders.length} checked`
+                      : "all accounts eligible"}
+                  </span>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                  {senders.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      No sender identities configured.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Mode 1: only the checked accounts send openers */}
+                      <div>
+                        <label className="flex items-start gap-2 text-sm text-slate-200">
+                          <input
+                            type="radio"
+                            name="senderPoolMode"
+                            checked={poolMode === "pick"}
+                            onChange={() => switchPoolMode("pick")}
+                            className="mt-1 accent-cyan-500"
+                          />
+                          <span>
+                            Only the accounts I check
+                            <span className="block text-[11px] text-slate-500">
+                              Each opener goes out from whichever checked account
+                              has rested longest, so every account gets the
+                              widest possible gap between its own sends.
+                            </span>
+                          </span>
+                        </label>
+                        {poolMode === "pick" && (
+                          <div className="ml-6 mt-2 space-y-1">
+                            {senders.map((id) => {
+                              const email = id.email.toLowerCase();
+                              const pool = draft.senderPool ?? [];
+                              const inPool = pool.includes(email);
+                              const used = status?.sentBySender?.[email];
+                              // While editing, show the cap being edited rather
+                              // than the one the worker is currently running
+                              // with. 0 = unlimited.
+                              const cap = draft.senderCaps?.[email] ?? 0;
+                              const block = blockByEmail.get(email);
+                              const commitCap = () => {
+                                const raw = capDrafts[email];
+                                if (raw === undefined) return;
+                                setCapDrafts((d) => {
+                                  const n = { ...d };
+                                  delete n[email];
+                                  return n;
+                                });
+                                const v = Math.round(Number(raw));
+                                const next = { ...(draft.senderCaps ?? {}) };
+                                if (
+                                  raw.trim() !== "" &&
+                                  Number.isFinite(v) &&
+                                  v > 0
+                                )
+                                  next[email] = v;
+                                else delete next[email];
+                                editDraft({ senderCaps: next });
+                              };
+                              return (
+                                <label
+                                  key={email}
+                                  className="flex flex-wrap items-center gap-2 rounded-md px-1.5 py-1 text-xs text-slate-300 hover:bg-white/[0.03]"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={inPool}
+                                    onChange={() => {
+                                      const next = inPool
+                                        ? pool.filter((x) => x !== email)
+                                        : [...pool, email];
+                                      // Pin the branch open so unchecking the
+                                      // last account doesn't flip the radio to
+                                      // "All accounts" mid-click.
+                                      setPoolModeOverride("pick");
+                                      editDraft({ senderPool: next });
+                                    }}
+                                    className="accent-cyan-500"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate font-mono">{id.email}</span>
+                                  {inPool && used !== undefined && (
+                                    <span
+                                      className={
+                                        "shrink-0 tabular-nums text-[11px] " +
+                                        (cap > 0 && used >= cap
+                                          ? "text-rose-300"
+                                          : "text-slate-500")
+                                      }
+                                    >
+                                      {cap > 0 ? `${used}/${cap}` : used} today
+                                    </span>
+                                  )}
+                                  {block && (
+                                    // No Resume button here: this row is a
+                                    // <label>, so a nested button would toggle
+                                    // the pool checkbox. It lives in the banner
+                                    // on the page instead.
+                                    <BlockedBadge block={block} />
+                                  )}
+                                  <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-slate-500">
+                                    cap
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      value={
+                                        capDrafts[email] ??
+                                        (draft.senderCaps?.[email] || "")
+                                      }
+                                      placeholder="∞"
+                                      onChange={(e) =>
+                                        setCapDrafts((d) => ({
+                                          ...d,
+                                          [email]: e.target.value,
+                                        }))
+                                      }
+                                      onBlur={commitCap}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter")
+                                          (e.target as HTMLInputElement).blur();
+                                      }}
+                                      title="This account's own daily cap (blank = no limit)"
+                                      className="input h-7 w-16 px-2 text-center tabular-nums"
+                                    />
+                                  </span>
+                                </label>
+                              );
+                            })}
+                            {draftPool.length === 0 && (
+                              <p className="text-[11px] text-amber-300/90">
+                                Nothing checked yet — until an account is checked,
+                                openers may use all of them.
+                              </p>
+                            )}
+                            <p className="pt-1 text-[11px] text-slate-500">
+                              <span className="text-slate-400">cap</span> = that
+                              account&apos;s own daily send limit, to match its
+                              warm-up. Blank = no limit.
+                            </p>
+                            {poolCapSum !== null ? (
+                              <p className="text-[11px] text-slate-500">
+                                Together: up to{" "}
+                                <span className="tabular-nums text-slate-300">
+                                  {poolCapSum}/day
+                                </span>{" "}
+                                (the caps, added up).
+                              </p>
+                            ) : (
+                              draftPool.length > 0 && (
+                                <p className="text-[11px] text-slate-500">
+                                  Some checked accounts have no cap, so the
+                                  queue&apos;s overall daily cap (
+                                  {draft.dailyCap}/day) applies instead.
+                                </p>
+                              )
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {/* Mode 2: every connected account is eligible */}
+                      <div>
+                        <label className="flex items-start gap-2 text-sm text-slate-200">
+                          <input
+                            type="radio"
+                            name="senderPoolMode"
+                            checked={poolMode === "all"}
+                            onChange={() => switchPoolMode("all")}
+                            className="mt-1 accent-cyan-500"
+                          />
+                          <span>
+                            All accounts
+                            <span className="block text-[11px] text-slate-500">
+                              Every connected account may send openers.
+                              Per-account caps are not enforced in this mode.
+                            </span>
+                          </span>
+                        </label>
+                        {poolMode === "all" && (
+                          <div className="ml-6 mt-2 space-y-1">
+                            <label className="flex items-start gap-2 text-xs text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={draft.rotateSenders}
+                                onChange={(e) =>
+                                  editDraft({ rotateSenders: e.target.checked })
+                                }
+                                className="mt-0.5 accent-cyan-500"
+                              />
+                              <span>
+                                Rotate between accounts
+                                <span className="block text-[11px] text-slate-500">
+                                  {draft.rotateSenders
+                                    ? "Each opener goes out from the account that has rested longest."
+                                    : `Off — every opener sends from ${
+                                        senders[0]?.email ?? "the first account"
+                                      }.`}
+                                </span>
+                              </span>
+                            </label>
+                            <div className="space-y-0.5 pt-1">
+                              {senders.map((id) => {
+                                const email = id.email.toLowerCase();
+                                const used = status?.sentBySender?.[email];
+                                const block = blockByEmail.get(email);
+                                return (
+                                  <div
+                                    key={email}
+                                    className="flex flex-wrap items-center gap-2 px-1.5 py-1 text-xs text-slate-400"
+                                  >
+                                    <span className="min-w-0 flex-1 truncate font-mono">
+                                      {id.email}
+                                    </span>
+                                    {used !== undefined && (
+                                      <span className="shrink-0 tabular-nums text-[11px] text-slate-500">
+                                        {used} today
+                                      </span>
+                                    )}
+                                    {block && <BlockedBadge block={block} />}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <p className="border-t border-white/5 pt-2 text-[11px] text-slate-500">
+                        The Pitch and the Bump are unaffected: they always reply
+                        from the account that first emailed the contact. A contact
+                        that any account has ever emailed is never queued or
+                        emailed again.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Opener rotation — rewrite the queued items' openers in place */}
+              <section className="space-y-3 px-5 py-5">
+                <div>
+                  <SectionHead>Opener rotation</SectionHead>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Rewrites the {num("queued")} queued item
+                    {num("queued") === 1 ? "" : "s"} in place · keeps follow-ups ·
+                    applies on click, not on OK
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-slate-950/40 p-3">
+                  {openers.length === 0 ? (
+                    <p className="text-xs text-slate-500">No opener templates.</p>
+                  ) : (
+                    <>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-xs text-slate-500">
+                          {selectedRotate.length} of {openers.length} selected
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRotateIds(
+                              allRotateOn ? [] : openers.map((o) => o.id),
+                            )
+                          }
+                          className="btn btn-sm btn-ghost"
+                        >
+                          {allRotateOn ? "Clear all" : "Select all"}
+                        </button>
+                      </div>
+                      <div className="max-h-40 space-y-0.5 overflow-y-auto">
+                        {openers.map((o) => {
+                          const on = rotateIds.includes(o.id);
+                          return (
+                            <label
+                              key={o.id}
+                              className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs text-slate-200 transition hover:bg-white/[0.03]"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={on}
+                                onChange={() => toggleRotate(o.id)}
+                                className="accent-cyan-500"
+                              />
+                              <span className="truncate">{o.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/5 pt-3">
+                        <span
+                          className={
+                            "text-xs tabular-nums " +
+                            (selectedRotate.length === 0
+                              ? "text-rose-300"
+                              : rotatePerDay > 7
+                                ? "text-amber-300"
+                                : rotatePerDay < 5
+                                  ? "text-slate-400"
+                                  : "text-emerald-300")
+                          }
+                        >
+                          {selectedRotate.length === 0
+                            ? "Select at least one"
+                            : `≈${Math.round(rotatePerDay)} send${
+                                Math.round(rotatePerDay) === 1 ? "" : "s"
+                              }/template/day`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void applyOpenerRotation()}
+                          disabled={
+                            rotating ||
+                            selectedRotate.length === 0 ||
+                            num("queued") === 0
+                          }
+                          className="btn btn-sm btn-secondary"
+                        >
+                          {rotating
+                            ? "Rotating…"
+                            : `Rotate ${num("queued")} queued`}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </section>
+            </div>
+            {/* OK applies every setting above in one PATCH. The one exception
+                is "Rotate queued", which rewrites queue items on click. */}
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-white/5 px-5 py-3">
+              <span className="mr-auto text-xs text-slate-500">
+                {settingsDirty
+                  ? "Unsaved changes — click OK to apply."
+                  : rotatedQueued
+                    ? "Openers already rotated. No other changes."
+                    : "No changes."}
+              </span>
+              <button
+                type="button"
+                onClick={discardSettings}
+                disabled={savingSettings}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void applySettings()}
+                disabled={savingSettings}
+                className="btn btn-primary min-w-[5rem]"
+              >
+                {savingSettings ? "Applying…" : "OK"}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </PageBody>
   );
 }

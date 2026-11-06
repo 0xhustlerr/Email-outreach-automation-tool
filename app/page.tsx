@@ -5,7 +5,7 @@ import HistoryModal from "@/components/HistoryModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
 import { resolveLocation } from "@/lib/country";
-import InsightsModal, {
+import {
   InsightsDashboard,
   computeInsights,
 } from "@/components/InsightsModal";
@@ -30,6 +30,13 @@ import ContactsModal from "@/components/ContactsModal";
 import QueueModal from "@/components/QueueModal";
 import ImportCsvModal from "@/components/ImportCsvModal";
 import SendersModal from "@/components/SendersModal";
+import { useDashboardView, type DashboardView } from "@/hooks/useDashboardView";
+import { PageHeader, StatCard } from "@/components/ui/dashboard";
+import AppSidebar, {
+  MenuIcon,
+  useSidebarCollapsed,
+  type SidebarGroup,
+} from "@/components/AppSidebar";
 import {
   loadSelectedTemplateIdRaw,
   saveSelectedTemplateIdRaw,
@@ -176,16 +183,11 @@ export default function Page() {
   const [senders, setSenders] = useState<MailIdentity[]>([]);
   const [smtpConfigured, setSmtpConfigured] = useState<boolean>(true);
   const [sheetsConfigured, setSheetsConfigured] = useState<boolean>(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [insightsOpen, setInsightsOpen] = useState(false);
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [contactsOpen, setContactsOpen] = useState(false);
-  const [queueOpen, setQueueOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
-  const [sendersOpen, setSendersOpen] = useState(false);
-  // When the Setup menu's "GitHub token" item opens Accounts, jump straight to
-  // that section instead of the top of the config hub.
-  const [sendersFocus, setSendersFocus] = useState<"github" | null>(null);
+  // The page in the main area (?view=… in the URL). Every sidebar item is a
+  // page; only Compose and the reply bell still open as overlays.
+  const [view, navigate] = useDashboardView();
+  const [sidebarCollapsed, toggleSidebar] = useSidebarCollapsed();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
   const { templates: pageTemplates } = useTemplates();
   const [directSaveOpen, setDirectSaveOpen] = useState(false);
@@ -939,6 +941,186 @@ export default function Page() {
     phase !== "scanning" &&
     sheetHistory.rows.length > 0;
 
+  // Entering a page refreshes what it shows; leaving Queue/Import re-syncs the
+  // sidebar badge and the on-card "Queued" markers (they used to refresh on
+  // modal close). Runs on back/forward too, since it keys off the view.
+  useEffect(() => {
+    if (view === "insights" || view === "history") sheetHistory.refreshIfStale();
+    void refreshQueueCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshIfStale is stable; run per view change only
+  }, [view]);
+
+  const sheetsHint = "Set SHEETS_WEBHOOK_URL in .env.local to enable";
+  // Breadcrumb labels; each page renders its own title and description.
+  const VIEW_TITLE: Record<DashboardView, string> = {
+    scanner: "Lead scanner",
+    insights: "Insights",
+    history: "History",
+    contacts: "Contacts",
+    queue: "Send queue",
+    import: "Import CSV",
+    templates: "Templates",
+    accounts: "Accounts",
+    integrations: "Integrations",
+  };
+  const VIEW_GROUP: Record<DashboardView, string> = {
+    scanner: "Workspace",
+    insights: "Workspace",
+    history: "Workspace",
+    contacts: "Pipeline",
+    queue: "Pipeline",
+    import: "Pipeline",
+    templates: "Setup",
+    accounts: "Setup",
+    integrations: "Setup",
+  };
+  const item = (
+    key: DashboardView,
+    label: string,
+    icon: ReactElement,
+    extra: Partial<SidebarGroup["items"][number]> = {},
+  ): SidebarGroup["items"][number] => ({
+    key,
+    label,
+    icon,
+    active: view === key,
+    onClick: () => navigate(key),
+    ...extra,
+  });
+  const sidebarGroups: SidebarGroup[] = [
+    {
+      label: "Workspace",
+      items: [
+        item("scanner", "Lead scanner", <SearchIcon className="h-4 w-4" />, {
+          title: "Scan a developer profile for contacts",
+        }),
+        item("insights", "Insights", <InsightsIcon className="h-4 w-4" />, {
+          title: sheetsConfigured ? "Outreach insights" : `${sheetsHint} insights`,
+          disabled: !sheetsConfigured,
+        }),
+        item("history", "History", <HistoryIcon className="h-4 w-4" />, {
+          title: sheetsConfigured
+            ? sheetHistory.loading && !sheetHistory.ready
+              ? "Loading history in background…"
+              : "Sent email history from Google Sheet"
+            : `${sheetsHint} history`,
+          disabled: !sheetsConfigured,
+          busy: sheetHistory.loading && !sheetHistory.ready,
+        }),
+      ],
+    },
+    {
+      label: "Pipeline",
+      items: [
+        item("contacts", "Contacts", <ContactsStarIcon className="h-4 w-4" />),
+        item("queue", "Queue", <QueueIcon className="h-4 w-4" />, { badge: queuedCount }),
+        item("import", "Import CSV", <ImportIcon className="h-4 w-4" />),
+      ],
+    },
+    {
+      label: "Setup",
+      items: [
+        item("templates", "Templates", <TemplateIcon className="h-4 w-4" />),
+        item("accounts", "Accounts", <AccountsIcon className="h-4 w-4" />, {
+          badge: senders.length,
+        }),
+        item("integrations", "Integrations", <KeyIcon className="h-4 w-4" />),
+      ],
+    },
+  ];
+
+  // Pages other than the scanner. Each reuses its former modal in page mode.
+  const renderPage = () => {
+    switch (view) {
+      case "insights":
+        return (
+          <InsightsDashboard
+            asPage
+            className="fade-in"
+            rows={sheetHistory.rows}
+            replies={sheetHistory.replies}
+            loading={sheetHistory.loading}
+            onRefresh={() => void sheetHistory.refresh()}
+          />
+        );
+      case "history":
+        return (
+          <HistoryModal
+            asPage
+            rows={sheetHistory.rows}
+            loading={sheetHistory.loading}
+            error={sheetHistory.error}
+            onRefresh={() => void sheetHistory.refresh()}
+            onSendRow={(row) => {
+              const email = primaryEmail(row.contact);
+              if (!email.includes("@")) return;
+              setSendPrefill({
+                name: row.name?.trim() || undefined,
+                url: row.link?.trim() || undefined,
+                fromEmail: row.sender?.trim() || undefined,
+                country: row.country?.trim() || undefined,
+              });
+              setSendToEditable(false);
+              setSendTarget({
+                kind: "email",
+                value: email,
+                names: row.name?.trim() ? [row.name.trim()] : [],
+                sources: [],
+              });
+            }}
+            onClose={() => navigate("scanner")}
+          />
+        );
+      case "contacts":
+        return (
+          <ContactsModal
+            asPage
+            onClose={() => navigate("scanner")}
+            onSendEmail={(email, contact) => {
+              setSendPrefill({
+                name: contact.name || undefined,
+                url: contact.attachedUrl || contact.profileUrl || undefined,
+                country: contact.country || undefined,
+              });
+              setSendToEditable(false);
+              setSendTarget({
+                kind: "email",
+                value: email,
+                names: contact.name ? [contact.name] : [],
+                sources: [],
+              });
+            }}
+          />
+        );
+      case "queue":
+        return (
+          <QueueModal asPage senders={senders} onClose={() => navigate("scanner")} />
+        );
+      case "import":
+        return (
+          <ImportCsvModal
+            asPage
+            onQueued={() => void refreshQueueCount()}
+            onClose={() => navigate("queue")}
+          />
+        );
+      case "templates":
+        return <TemplatesModal asPage onClose={() => navigate("scanner")} />;
+      case "accounts":
+      case "integrations":
+        return (
+          <SendersModal
+            asPage
+            focusSection={view === "integrations" ? "github" : null}
+            onClose={() => navigate("scanner")}
+            onChanged={() => void refreshSenders()}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <KnockAppShell
       onReplyNotification={() => {
@@ -951,69 +1133,93 @@ export default function Page() {
           contexts for the whole session — all cost, no information. */}
       <div className="app-bg" />
 
-      <div className="relative z-10 flex h-screen w-screen flex-col">
-        {/* TOP NAV ----------------------------------------------------- */}
-        <nav className="fade-in relative z-40 flex items-center justify-center px-4 pt-4 md:px-8 md:pt-6">
-          {/* Flex (not grid) with explicit shrink rules: the brand and the action
-              chips keep their intrinsic width, and only the middle stats block
-              gives way. Previously a grid `auto 1fr auto` let the brand column be
-              compressed until the title wrapped onto four lines. */}
-          <div className="glass flex w-full items-center gap-3 rounded-full px-4 py-2.5 md:gap-4 md:px-7 md:py-3">
-            <div className="flex shrink-0 items-center gap-2">
-              <LogoMark className="h-5 w-5 shrink-0" />
-              {/* Full name only where it actually fits; a short form otherwise;
-                  the logo alone on narrow windows. All non-wrapping. */}
-              <span className="hidden whitespace-nowrap text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 2xl:inline">
-                Cold Outreach Command Center
+      <div className="relative z-10 flex h-screen w-screen">
+        {/* SIDEBAR ---------------------------------------------------- */}
+        <AppSidebar
+          brand="Command Center"
+          logo={<LogoMark className="h-4 w-4" />}
+          groups={sidebarGroups}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={toggleSidebar}
+          mobileOpen={mobileNavOpen}
+          onMobileClose={() => setMobileNavOpen(false)}
+          footer={(rail) => (
+            <button
+              type="button"
+              onClick={() => {
+                navigate("accounts");
+                setMobileNavOpen(false);
+              }}
+              className={"sidebar-item" + (rail ? " justify-center px-0" : "")}
+              title="Manage Gmail sending accounts"
+            >
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+                <span
+                  className={
+                    "h-2 w-2 rounded-full " +
+                    (senders.length > 0
+                      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
+                      : "bg-amber-400")
+                  }
+                />
               </span>
-              <span className="hidden whitespace-nowrap text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300 sm:inline 2xl:hidden">
-                Command Center
-              </span>
-            </div>
-            {sheetsConfigured && sheetInsights.sent > 0 ? (
+              {!rail && (
+                <span className="flex-1 truncate text-left">
+                  {senders.length > 0
+                    ? `${senders.length} sending account${senders.length === 1 ? "" : "s"}`
+                    : "No sending account"}
+                </span>
+              )}
+            </button>
+          )}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* TOP BAR ------------------------------------------------- */}
+          <header className="topbar fade-in relative z-40 flex h-16 shrink-0 items-center gap-3 px-4 md:px-6">
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(true)}
+              className="-ml-1 rounded-lg p-2 text-slate-400 transition hover:bg-white/5 hover:text-white md:hidden"
+              aria-label="Open navigation"
+            >
+              <MenuIcon className="h-5 w-5" />
+            </button>
+            {/* Every page carries its own large header; the bar says where you are. */}
+            <nav aria-label="Breadcrumb" className="flex min-w-0 shrink-0 items-center gap-2 text-sm">
+              <span className="hidden text-slate-500 sm:inline">{VIEW_GROUP[view]}</span>
+              <span className="hidden text-slate-600 sm:inline" aria-hidden>/</span>
+              <h1 className="truncate font-medium text-slate-100">{VIEW_TITLE[view]}</h1>
+            </nav>
+
+            {sheetsConfigured && sheetInsights.sent > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  sheetHistory.refreshIfStale();
-                  setInsightsOpen(true);
-                }}
+                onClick={() => navigate("insights")}
                 title="Open insights — last 7 days"
-                /* The only flexible item: min-w-0 lets it shrink and
-                   overflow-hidden makes it clip rather than overlap the brand
-                   or the chips if it ever runs out of room. */
-                className="hidden min-w-0 flex-1 items-center justify-center gap-2.5 overflow-hidden text-xs text-slate-300 transition hover:text-white xl:flex min-[1800px]:gap-4"
+                className="mx-auto hidden min-w-0 items-center overflow-hidden rounded-xl px-3 py-1.5 transition hover:bg-white/5 lg:flex"
               >
-                <span className="hidden whitespace-nowrap text-[10px] uppercase tracking-[0.2em] text-slate-500 min-[1800px]:inline">
-                  7&#8209;day
-                </span>
-                <NavStat value={sheetInsights.sent} label="sent" color="text-slate-100" />
-                <span className="text-slate-700">·</span>
-                <NavStat
-                  value={sheetInsights.uniqueContacts}
-                  label="contacts"
-                  color="text-sky-300"
-                />
-                <span className="text-slate-700">·</span>
-                <NavStat
-                  value={sheetInsights.replied}
-                  label="replied"
-                  color="text-emerald-300"
-                />
-                <span className="text-slate-700">·</span>
-                <NavStat
+                <TopKpi label="Sent (7d)" value={sheetInsights.sent} color="text-slate-100" />
+                <TopKpi label="Contacts" value={sheetInsights.uniqueContacts} color="text-sky-300" />
+                <TopKpi label="Replied" value={sheetInsights.replied} color="text-emerald-300" />
+                <TopKpi
+                  label="Reply rate"
                   value={`${Math.round(sheetInsights.replyRate * 100)}%`}
-                  label="reply rate"
                   color="text-cyan-300"
                 />
               </button>
-            ) : (
-              <span className="hidden min-w-0 flex-1 truncate text-center text-xs text-slate-500 xl:block">
-                Find every lead. Reach them right.
-              </span>
             )}
-            {/* shrink-0 + ml-auto: the controls always keep their full size and
-                stay pinned right, whatever the middle does. */}
-            <div className="ml-auto flex shrink-0 items-center justify-end gap-1.5 text-xs text-slate-400 md:gap-2">
+
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              {process.env.NEXT_PUBLIC_SEND_DISABLED === "1" && (
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-200"
+                  title="NEXT_PUBLIC_SEND_DISABLED=1 — no email leaves this server and the queue worker is off"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                  <span className="hidden sm:inline">Sending disabled</span>
+                </span>
+              )}
               {sheetsConfigured && (
                 <ReplyNotificationsBell
                   displayRows={newReplies.displayRows}
@@ -1040,372 +1246,253 @@ export default function Page() {
                   smtpConfigured={smtpConfigured}
                 />
               )}
-              {/* Analytics group */}
-              <div className="nav-segment">
-                <button
-                  type="button"
-                  onClick={() => {
-                    sheetHistory.refreshIfStale();
-                    setInsightsOpen(true);
-                  }}
-                  disabled={!sheetsConfigured}
-                  data-ripple
-                  className="nav-chip"
-                  title={
-                    sheetsConfigured
-                      ? "7-day outreach insights"
-                      : "Set SHEETS_WEBHOOK_URL in .env.local to enable insights"
-                  }
-                >
-                  <InsightsIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden lg:inline">Insights</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    sheetHistory.refreshIfStale();
-                    setHistoryOpen(true);
-                  }}
-                  disabled={!sheetsConfigured}
-                  data-ripple
-                  className="nav-chip"
-                  title={
-                    sheetsConfigured
-                      ? sheetHistory.ready
-                        ? "View sent email history from Google Sheet"
-                        : sheetHistory.loading
-                          ? "Loading history in background…"
-                          : "View sent email history from Google Sheet"
-                      : "Set SHEETS_WEBHOOK_URL in .env.local to enable history"
-                  }
-                >
-                  <HistoryIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden lg:inline">History</span>
-                  {sheetHistory.loading && !sheetHistory.ready && (
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
-                  )}
-                </button>
-              </div>
-
-              <span className="hidden h-6 w-px bg-white/10 sm:block" aria-hidden />
-
-              {/* Active-pipeline group */}
-              <div className="nav-segment">
-                <button
-                  type="button"
-                  onClick={() => setContactsOpen(true)}
-                  data-ripple
-                  className="nav-chip"
-                  title="Special contacts — emailed or saved profiles with phone/telegram fallbacks"
-                >
-                  <ContactsStarIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden lg:inline">Contacts</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setQueueOpen(true)}
-                  data-ripple
-                  className="nav-chip"
-                  title="Scheduled send queue — drip emails out automatically"
-                >
-                  <QueueIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden lg:inline">Queue</span>
-                  {queuedCount > 0 && <span className="nav-badge">{queuedCount}</span>}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setImportOpen(true)}
-                  data-ripple
-                  className="nav-chip"
-                  title="Import a CSV of leads — finds each contact's best email and queues a two-step sequence"
-                >
-                  <ImportIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="hidden lg:inline">Import CSV</span>
-                </button>
-              </div>
-
-              <span className="hidden h-6 w-px bg-white/10 sm:block" aria-hidden />
-
-              {/* Setup menu - templates, accounts, token */}
-              <SetupMenu
-                accountsCount={senders.length}
-                onTemplates={() => setTemplatesOpen(true)}
-                onAccounts={() => {
-                  setSendersFocus(null);
-                  setSendersOpen(true);
-                }}
-                onGithubToken={() => {
-                  setSendersFocus("github");
-                  setSendersOpen(true);
-                }}
-              />
-            </div>
-          </div>
-        </nav>
-
-        {/* PRIMARY ACTION STRIP - context on the left, Send promoted right --- */}
-        <div className="fade-in flex justify-center px-4 pt-3 md:px-8">
-          <div className="flex w-full items-center justify-between gap-3 px-5 md:px-7">
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              {user && (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-                  <GitHubIcon className="h-3.5 w-3.5 text-slate-300" />
-                  <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                    target
-                  </span>
-                  <span className="font-mono text-slate-100">{user}</span>
-                </span>
-              )}
               <button
                 type="button"
-                onClick={() => setSendersOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300 transition hover:border-cyan-400/40 hover:text-white"
-                title="Manage Gmail sending accounts"
+                onClick={() => {
+                  setSendToEditable(true);
+                  setSendTarget({
+                    kind: "email",
+                    value: "",
+                    names: [],
+                    sources: [],
+                  });
+                }}
+                data-ripple
+                className="btn-send-primary"
+                title="Compose and send a new email"
               >
-                <span
-                  className={
-                    "h-1.5 w-1.5 rounded-full " +
-                    (senders.length > 0
-                      ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
-                      : "bg-amber-400")
-                  }
-                />
-                {senders.length > 0
-                  ? `${senders.length} sending account${senders.length === 1 ? "" : "s"}`
-                  : "No sending account"}
+                <SendIcon className="h-4 w-4" />
+                <span className="hidden sm:inline">Compose &amp; Send</span>
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setSendToEditable(true);
-                setSendTarget({
-                  kind: "email",
-                  value: "",
-                  names: [],
-                  sources: [],
-                });
-              }}
-              data-ripple
-              className="btn-send-primary"
-              title="Compose and send a new email"
-            >
-              <SendIcon className="h-4 w-4" />
-              Compose &amp; Send
-            </button>
-          </div>
-        </div>
-
-        <main className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:flex-row md:gap-6 md:p-6">
-        {/* LEFT - controls + activity log --------------------------- */}
-        <section className="flex min-h-0 w-full flex-col gap-5 overflow-auto px-2 pb-2 pt-2 md:w-1/2 md:px-4">
-          <header className="fade-in relative z-10 pt-2">
-            <h1 className="hero-title text-[34px] font-bold leading-[1] tracking-tight text-slate-50 md:text-5xl">
-              Cold Outreach Command Center
-            </h1>
-            <p className="mt-3 flex items-center gap-2 text-sm font-medium text-cyan-300/90">
-              <PinIcon className="h-4 w-4" />
-              GitHub · Stack Overflow · Personal sites
-            </p>
           </header>
 
-          <div className="slide-in relative z-10">
-            <label className="mb-2 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-              Profile URL
-            </label>
-            <div className="relative max-w-md">
-              <SearchIcon className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                value={profileUrl}
-                onChange={(e) => setProfileUrl(e.target.value)}
-                placeholder="github.com/user · stackoverflow.com/users/…"
-                className="w-full rounded-full border border-white/10 bg-slate-950/70 py-2 pl-10 pr-4 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-              <span className="uppercase tracking-[0.22em] text-slate-500">
-                Sources
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-200">
-                <GitHubIcon className="h-3.5 w-3.5" />
-                GitHub
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-200">
-                <StackOverflowIcon className="h-3.5 w-3.5 text-[#F48024]" />
-                Stack Overflow
-              </span>
-            </div>
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-              Paste a developer profile and the Command Center sweeps its fields, pinned
-              README, personal site, linked URLs, and recent commit patches to
-              surface every public email, phone, and handle - ready for two-step
-              outreach in seconds.
-            </p>
-            {phase === "loading-repos" && (
-              <p className="fade-in mt-3 flex items-center gap-2 text-xs text-slate-400">
-                <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-cyan-400" />
-                Loading repositories…
-              </p>
-            )}
-
-            {repos && repos.length > 0 && (
-              <div className="slide-in mt-5 flex flex-wrap items-end gap-3">
-                <div className="min-w-[180px] max-w-xs flex-1">
-                  <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                    Repository
-                  </label>
-                  <select
-                    value={selectedRepo}
-                    onChange={(e) => setSelectedRepo(e.target.value)}
-                    className="w-full truncate rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
-                  >
-                    <option value={ALL_REPOS}>
-                      All repositories ({repos.length})
-                    </option>
-                    {repos.map((r) => (
-                      <option key={r.name} value={r.name}>
-                        {r.name}
-                        {r.pushedAt
-                          ? ` - ${new Date(r.pushedAt).toLocaleDateString()}`
-                          : ""}
-                      </option>
-                    ))}
-                  </select>
+          {view !== "scanner" ? (
+            <main key={view} className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto w-full max-w-[1400px] px-4 py-6 md:px-8 md:py-8">
+                {renderPage()}
+              </div>
+            </main>
+          ) : (
+          <main className="flex min-h-0 flex-1 flex-col overflow-y-auto md:overflow-hidden">
+          <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 md:min-h-0 md:flex-1 md:px-8 md:py-8">
+          <PageHeader
+            title="Lead scanner"
+            description="Paste a developer profile to surface every public email, phone and handle."
+            icon={<SearchIcon className="h-5 w-5" />}
+            meta={
+              user ? (
+                <span className="badge badge-info" title="Current scan target">
+                  <GitHubIcon className="h-3 w-3" />
+                  <span className="font-mono">{user}</span>
+                </span>
+              ) : undefined
+            }
+          />
+          <div className="flex flex-col gap-6 md:min-h-0 md:flex-1 md:flex-row">
+          {/* LEFT - scan controls + activity log ---------------------- */}
+          <section className="flex w-full flex-col gap-4 md:min-h-0 md:w-[44%] md:min-w-[360px]">
+            <div className="card slide-in relative z-10 shrink-0">
+              <div className="card-header">
+                <div className="min-w-0">
+                  <h3 className="card-title">Scan a profile</h3>
+                  <p className="card-description">
+                    Sweeps profile fields, README, personal site, linked URLs and recent commits.
+                  </p>
                 </div>
-                <div>
-                  <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                    Commits
-                  </label>
+                <span className="hidden shrink-0 items-center gap-1.5 sm:flex">
+                  <span className="badge badge-neutral" title="GitHub">
+                    <GitHubIcon className="h-3 w-3" />
+                    GitHub
+                  </span>
+                  <span className="badge badge-neutral" title="Stack Overflow">
+                    <StackOverflowIcon className="h-3 w-3 text-[#F48024]" />
+                    Stack Overflow
+                  </span>
+                </span>
+              </div>
+              <div className="card-body">
+                <label htmlFor="profile-url" className="field-label">
+                  Profile URL
+                </label>
+                <div className="relative">
+                  <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                   <input
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={commitsPerRepo}
-                    onChange={(e) =>
-                      setCommitsPerRepo(Number(e.target.value) || 1)
-                    }
-                    className="w-20 rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-center text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
+                    id="profile-url"
+                    type="text"
+                    value={profileUrl}
+                    onChange={(e) => setProfileUrl(e.target.value)}
+                    placeholder="github.com/user · stackoverflow.com/users/…"
+                    className="input h-10 pl-9"
+                    spellCheck={false}
+                    autoComplete="off"
                   />
                 </div>
-                {phase === "scanning" && (
-                  <button
-                    type="button"
-                    onClick={cancel}
-                    data-ripple
-                    title="Stop scanning"
-                    className="btn-press inline-flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-200 transition hover:border-rose-300/70 hover:bg-rose-500/20 hover:text-white"
-                  >
-                    <StopIcon className="h-3.5 w-3.5" />
-                    Stop
-                  </button>
+                <p className="field-hint">
+                  A GitHub username works too. Scanning starts as soon as the profile is recognised.
+                </p>
+                {phase === "loading-repos" && (
+                  <p className="fade-in mt-3 flex items-center gap-2 text-xs text-slate-400">
+                    <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                    Loading repositories…
+                  </p>
+                )}
+
+                {repos && repos.length > 0 && (
+                  <div className="slide-in mt-5 flex flex-wrap items-end gap-3">
+                    <div className="min-w-[180px] flex-1">
+                      <label className="field-label">Repository</label>
+                      <select
+                        value={selectedRepo}
+                        onChange={(e) => setSelectedRepo(e.target.value)}
+                        className="input truncate"
+                      >
+                        <option value={ALL_REPOS}>
+                          All repositories ({repos.length})
+                        </option>
+                        {repos.map((r) => (
+                          <option key={r.name} value={r.name}>
+                            {r.name}
+                            {r.pushedAt
+                              ? ` - ${new Date(r.pushedAt).toLocaleDateString()}`
+                              : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="field-label">Commits</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={commitsPerRepo}
+                        onChange={(e) =>
+                          setCommitsPerRepo(Number(e.target.value) || 1)
+                        }
+                        className="input w-20 text-center tabular-nums"
+                      />
+                    </div>
+                    {phase === "scanning" && (
+                      <button
+                        type="button"
+                        onClick={cancel}
+                        data-ripple
+                        title="Stop scanning"
+                        className="btn btn-danger"
+                      >
+                        <StopIcon className="h-3.5 w-3.5" />
+                        Stop
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {phase === "scanning" && progress && progress.total > 0 && (
+                  <div className="fade-in mt-5">
+                    <div className="mb-1.5 flex items-center justify-between text-[11px] text-slate-400">
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
+                        {progressLabel}
+                      </span>
+                      <span className="font-mono text-cyan-300">
+                        {progress.index}/{progress.total}
+                      </span>
+                    </div>
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-slate-800/60">
+                      {/* scaleX, not width: this bar updates on every commit, and
+                          animating width relayouts the row each time. */}
+                      <div
+                        className="h-full w-full origin-left bg-cyan-400 transition-transform duration-300"
+                        style={{ transform: `scaleX(${progressPct / 100})` }}
+                      />
+                    </div>
+                  </div>
                 )}
               </div>
-            )}
+            </div>
 
-            {phase === "scanning" && progress && progress.total > 0 && (
-              <div className="fade-in mt-5">
-                <div className="mb-1.5 flex items-center justify-between text-[11px] text-slate-400">
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
-                    {progressLabel}
-                  </span>
-                  <span className="font-mono text-cyan-300">
-                    {progress.index}/{progress.total}
-                  </span>
-                </div>
-                <div className="h-1 w-full overflow-hidden rounded-full bg-slate-800/60">
-                  {/* scaleX, not width: this bar updates on every commit, and
-                      animating width relayouts the row each time. */}
-                  <div
-                    className="h-full w-full origin-left bg-cyan-400 transition-transform duration-300"
-                    style={{ transform: `scaleX(${progressPct / 100})` }}
-                  />
-                </div>
+            {error && (
+              <div className="fade-in relative z-10 shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {error}
               </div>
             )}
-          </div>
 
-          {error && (
-            <div className="fade-in relative z-10 rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-              {error}
-            </div>
-          )}
+            {noRepos && (
+              <div className="fade-in relative z-10 shrink-0 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                No non-fork repositories found for{" "}
+                <span className="font-mono">{user}</span>.
+              </div>
+            )}
 
-          {noRepos && (
-            <div className="fade-in relative z-10 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-              No non-fork repositories found for{" "}
-              <span className="font-mono">{user}</span>.
+            <div className="card slide-in relative flex min-h-[240px] flex-1 flex-col overflow-hidden md:min-h-0">
+              {/* The scan's feedback is the streaming log below — the full-screen
+                  radar shader that used to overlay it was decoration on top of
+                  real information, running a per-pixel shader the whole scan. */}
+              <div className="card-header relative z-10 items-center">
+                <h3 className="card-title flex items-center gap-2">
+                  <ActivityIcon className="h-4 w-4 text-cyan-400" />
+                  Activity log
+                </h3>
+                <span className="badge badge-neutral tabular-nums">
+                  {log.length} event{log.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div
+                ref={logScrollRef}
+                className="relative z-10 flex-1 overflow-auto px-4 py-3 font-mono text-xs leading-relaxed"
+              >
+                {log.length === 0 ? (
+                  <p className="pt-6 text-center text-slate-500">
+                    Waiting for a profile URL…
+                  </p>
+                ) : (
+                  log.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={
+                        "fade-in " +
+                        (entry.kind === "match"
+                          ? "text-emerald-300"
+                          : entry.kind === "skip"
+                            ? "text-slate-500"
+                            : entry.kind === "error"
+                              ? "text-rose-300"
+                              : entry.kind === "done"
+                                ? "text-sky-300"
+                                : "text-slate-300")
+                      }
+                    >
+                      {entry.text}
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-          )}
-
-          <div className="slide-in relative flex min-h-0 flex-1 flex-col overflow-hidden">
-            {/* The scan's feedback is the streaming log below — the full-screen
-                radar shader that used to overlay it was decoration on top of
-                real information, running a per-pixel shader the whole scan. */}
-            <div className="relative z-10 flex items-center justify-between border-b border-white/5 px-2 py-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
-              <span className="flex items-center gap-2">
-                <ActivityIcon className="h-3.5 w-3.5 text-cyan-400" />
-                Activity log
-              </span>
-              <span className="font-mono normal-case tracking-normal">
-                {log.length} event{log.length === 1 ? "" : "s"}
-              </span>
-            </div>
-            <div
-              ref={logScrollRef}
-              className="relative z-10 flex-1 overflow-auto px-2 py-2 font-mono text-xs leading-relaxed"
-            >
-              {log.length === 0 ? (
-                <p className="pt-6 text-center text-slate-500">
-                  Waiting for a profile URL…
-                </p>
-              ) : (
-                log.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className={
-                      "fade-in " +
-                      (entry.kind === "match"
-                        ? "text-emerald-300"
-                        : entry.kind === "skip"
-                          ? "text-slate-500"
-                          : entry.kind === "error"
-                            ? "text-rose-300"
-                            : entry.kind === "done"
-                              ? "text-sky-300"
-                              : "text-slate-300")
-                    }
-                  >
-                    {entry.text}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </section>
+          </section>
 
         {/* RIGHT - contacts (after a scan), or the insights dashboard while
             the column is otherwise idle. The same dashboard is still behind
-            the nav button (InsightsModal) for on-demand use during a scan. */}
-        <section className="no-scrollbar flex min-h-0 w-full flex-col overflow-y-auto overflow-x-hidden px-8 py-8 md:w-1/2 md:px-10">
+            the Insights page for on-demand use during a scan. */}
+        <section className="no-scrollbar flex w-full min-w-0 flex-col md:min-h-0 md:flex-1 md:overflow-y-auto md:overflow-x-hidden">
           {contacts.length > 0 && (
-            <div className="slide-in mb-5 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-slate-400">
-              <span className="text-slate-500">Contacts</span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 normal-case tracking-normal text-slate-200">
-                <MailIcon className="h-3.5 w-3.5 text-cyan-300" />
-                {contactCounts.email} email{contactCounts.email === 1 ? "" : "s"}
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 normal-case tracking-normal text-slate-200">
-                <TelegramIcon className="h-3.5 w-3.5 text-cyan-300" />
-                {contactCounts.telegram} telegram
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 normal-case tracking-normal text-slate-200">
-                <PhoneIcon className="h-3.5 w-3.5 text-cyan-300" />
-                {contactCounts.phone} phone
-              </span>
+            <div className="slide-in mb-4 grid grid-cols-3 gap-3">
+              <StatCard
+                label="Emails"
+                value={contactCounts.email}
+                tone="info"
+                icon={<MailIcon className="h-4 w-4" />}
+              />
+              <StatCard
+                label="Telegram"
+                value={contactCounts.telegram}
+                icon={<TelegramIcon className="h-4 w-4" />}
+              />
+              <StatCard
+                label="Phones"
+                value={contactCounts.phone}
+                icon={<PhoneIcon className="h-4 w-4" />}
+              />
             </div>
           )}
           {contacts.length > 0 && (
@@ -1504,10 +1591,10 @@ export default function Page() {
                           }}
                           data-ripple
                           className={
-                            "btn-press shrink-0 inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition " +
+                            "btn btn-sm shrink-0 " +
                             (isSent
-                              ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-300 hover:border-emerald-300/70 hover:bg-emerald-500/25 hover:text-emerald-100"
-                              : "border-cyan-400/30 bg-cyan-500/10 text-cyan-200 hover:border-cyan-300/80 hover:bg-cyan-400/20 hover:text-white")
+                              ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-100"
+                              : "btn-primary")
                           }
                           title={isSent ? "Sent - click to send again" : "Compose and send email"}
                         >
@@ -1530,7 +1617,7 @@ export default function Page() {
                             target="_blank"
                             rel="noreferrer"
                             data-ripple
-                            className="btn-press inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-200 transition hover:border-cyan-300/80 hover:bg-cyan-400/20 hover:text-white"
+                            className="btn btn-sm btn-secondary"
                             title="Open in Telegram"
                           >
                             <TelegramIcon className="h-3.5 w-3.5" />
@@ -1540,7 +1627,7 @@ export default function Page() {
                             type="button"
                             onClick={() => setDirectSaveOpen(true)}
                             data-ripple
-                            className="btn-press inline-flex items-center rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200 transition hover:border-amber-300/80 hover:bg-amber-400/20 hover:text-white"
+                            className="btn btn-sm btn-ghost btn-icon text-amber-300 hover:text-amber-200"
                             title="Save this profile to contacts (no email needed)"
                           >
                             ☆
@@ -1551,7 +1638,7 @@ export default function Page() {
                           <a
                             href={`tel:${c.value}`}
                             data-ripple
-                            className="btn-press inline-flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-200 transition hover:border-cyan-300/80 hover:bg-cyan-400/20 hover:text-white"
+                            className="btn btn-sm btn-secondary"
                             title="Call"
                           >
                             <PhoneIcon className="h-3.5 w-3.5" />
@@ -1561,7 +1648,7 @@ export default function Page() {
                             type="button"
                             onClick={() => setDirectSaveOpen(true)}
                             data-ripple
-                            className="btn-press inline-flex items-center rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-200 transition hover:border-amber-300/80 hover:bg-amber-400/20 hover:text-white"
+                            className="btn btn-sm btn-ghost btn-icon text-amber-300 hover:text-amber-200"
                             title="Save this profile to contacts (no email needed)"
                           >
                             ☆
@@ -1637,8 +1724,11 @@ export default function Page() {
             />
           )}
         </section>
-
-        </main>
+          </div>
+          </div>
+          </main>
+          )}
+        </div>
       </div>
 
       {sendTarget && (
@@ -1684,78 +1774,6 @@ export default function Page() {
             });
             void refreshQueueCount();
           }}
-        />
-      )}
-
-      {historyOpen && (
-        <HistoryModal
-          rows={sheetHistory.rows}
-          loading={sheetHistory.loading}
-          error={sheetHistory.error}
-          onRefresh={() => void sheetHistory.refresh()}
-          onSendRow={(row) => {
-            const email = primaryEmail(row.contact);
-            if (!email.includes("@")) return;
-            setSendPrefill({
-              name: row.name?.trim() || undefined,
-              url: row.link?.trim() || undefined,
-              fromEmail: row.sender?.trim() || undefined,
-              country: row.country?.trim() || undefined,
-            });
-            setSendToEditable(false);
-            setSendTarget({
-              kind: "email",
-              value: email,
-              names: row.name?.trim() ? [row.name.trim()] : [],
-              sources: [],
-            });
-          }}
-          onClose={() => setHistoryOpen(false)}
-        />
-      )}
-
-      {insightsOpen && (
-        <InsightsModal
-          rows={sheetHistory.rows}
-          replies={sheetHistory.replies}
-          loading={sheetHistory.loading}
-          onRefresh={() => void sheetHistory.refresh()}
-          onClose={() => setInsightsOpen(false)}
-        />
-      )}
-
-      {templatesOpen && (
-        <TemplatesModal onClose={() => setTemplatesOpen(false)} />
-      )}
-
-      {queueOpen && (
-        <QueueModal
-          senders={senders}
-          onClose={() => {
-            setQueueOpen(false);
-            void refreshQueueCount();
-          }}
-        />
-      )}
-
-      {importOpen && (
-        <ImportCsvModal
-          onQueued={() => void refreshQueueCount()}
-          onClose={() => {
-            setImportOpen(false);
-            void refreshQueueCount();
-          }}
-        />
-      )}
-
-      {sendersOpen && (
-        <SendersModal
-          focusSection={sendersFocus}
-          onClose={() => {
-            setSendersOpen(false);
-            setSendersFocus(null);
-          }}
-          onChanged={() => void refreshSenders()}
         />
       )}
 
@@ -1822,27 +1840,6 @@ export default function Page() {
             </div>
           </div>
         </div>
-      )}
-
-      {contactsOpen && (
-        <ContactsModal
-          onClose={() => setContactsOpen(false)}
-          onSendEmail={(email, contact) => {
-            setContactsOpen(false);
-            setSendPrefill({
-              name: contact.name || undefined,
-              url: contact.attachedUrl || contact.profileUrl || undefined,
-              country: contact.country || undefined,
-            });
-            setSendToEditable(false);
-            setSendTarget({
-              kind: "email",
-              value: email,
-              names: contact.name ? [contact.name] : [],
-              sources: [],
-            });
-          }}
-        />
       )}
 
     </>
@@ -1930,14 +1927,6 @@ function SparkIcon({ className }: IconProps) {
   );
 }
 
-function PinIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M12 2C8.13 2 5 5.13 5 9c0 4.63 5.5 11.33 6.42 12.43a.74.74 0 0 0 1.16 0C13.5 20.33 19 13.63 19 9c0-3.87-3.13-7-7-7Zm0 9.5A2.5 2.5 0 1 1 12 6a2.5 2.5 0 0 1 0 5Z" />
-    </svg>
-  );
-}
-
 function LogoMark({ className }: IconProps) {
   return (
     <svg viewBox="0 0 32 32" className={className} aria-hidden>
@@ -1994,7 +1983,7 @@ function InsightsIcon({ className }: IconProps) {
   );
 }
 
-function NavStat({
+function TopKpi({
   value,
   label,
   color,
@@ -2003,15 +1992,10 @@ function NavStat({
   label: string;
   color: string;
 }) {
-  // Below 2xl only the number shows (the word label roughly doubles this
-  // stat's width, and four of them together were enough to push the nav into
-  // overlapping itself). The title keeps the meaning available on hover.
   return (
-    <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap" title={label}>
-      <span className={"text-sm font-bold " + color}>{value}</span>
-      <span className="hidden text-[10px] uppercase tracking-wider text-slate-500 min-[1800px]:inline">
-        {label}
-      </span>
+    <span className="kpi whitespace-nowrap text-left">
+      <span className="text-[11px] text-slate-500">{label}</span>
+      <span className={"text-sm font-bold leading-tight " + color}>{value}</span>
     </span>
   );
 }
@@ -2061,23 +2045,6 @@ function EyeIcon({ className }: IconProps) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
       <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function SettingsIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-function ChevronDownIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="m6 9 6 6 6-6" />
     </svg>
   );
 }
@@ -2140,107 +2107,6 @@ function ExternalIcon({ className }: IconProps) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
     </svg>
-  );
-}
-
-// Setup dropdown - groups the low-frequency config actions (templates,
-// sending accounts, GitHub token) behind a single ⚙ trigger so the nav bar
-// stays focused on daily analytics + pipeline actions.
-function SetupMenu({
-  accountsCount,
-  onTemplates,
-  onAccounts,
-  onGithubToken,
-}: {
-  accountsCount: number;
-  onTemplates: () => void;
-  onAccounts: () => void;
-  onGithubToken: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        data-ripple
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={"nav-chip" + (open ? " nav-chip-active" : "")}
-        title="Setup - templates, sending accounts, GitHub token"
-      >
-        <SettingsIcon className="h-3.5 w-3.5 shrink-0" />
-        <span className="hidden lg:inline">Setup</span>
-        <ChevronDownIcon
-          className={"h-3 w-3 transition-transform " + (open ? "rotate-180" : "")}
-        />
-      </button>
-      {open && (
-        <div
-          role="menu"
-          className="fade-in absolute right-0 top-[calc(100%+0.7rem)] z-50 w-60 rounded-2xl border border-white/10 bg-slate-900 p-1.5 shadow-[0_24px_70px_-12px_rgba(0,0,0,0.9)] ring-1 ring-black/40"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onTemplates();
-            }}
-            className="menu-item"
-          >
-            <TemplateIcon className="h-4 w-4 text-cyan-300" />
-            <span>Templates</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onAccounts();
-            }}
-            className="menu-item"
-          >
-            <AccountsIcon className="h-4 w-4 text-cyan-300" />
-            <span>Accounts</span>
-            {accountsCount > 0 && (
-              <span className="nav-badge ml-auto">{accountsCount}</span>
-            )}
-          </button>
-          <div className="my-1 h-px bg-white/10" />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onGithubToken();
-            }}
-            className="menu-item"
-          >
-            <KeyIcon className="h-4 w-4 text-slate-400" />
-            <span>GitHub token</span>
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 

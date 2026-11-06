@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CountryFlag } from "@/components/CountryFlag";
 import EmailScoreBadge from "@/components/EmailScoreBadge";
+import { Card, PageBody, PageHeader } from "@/components/ui/dashboard";
 import { useTemplates } from "@/hooks/useTemplates";
 import { parseLeadCsv, type CsvLead } from "@/lib/csv";
 
@@ -37,22 +38,6 @@ type QueueSettings = {
 const OPENER_KEY = "mail.import.openerIds";
 const FOLLOWUP_KEY = "mail.import.followupId";
 
-function SectionHead({ children }: { children: ReactNode }) {
-  return (
-    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-      {children}
-    </div>
-  );
-}
-
-function CloseIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className}>
-      <path d="M18 6 6 18M6 6l12 12" />
-    </svg>
-  );
-}
-
 function UploadIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -63,14 +48,12 @@ function UploadIcon({ className }: { className?: string }) {
   );
 }
 
-const inputCls =
-  "w-full rounded-md border border-white/10 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-cyan-400/40";
-
 export default function ImportCsvModal({
   onClose,
   onQueued,
 }: {
   onClose: () => void;
+  asPage?: boolean;
   /** Fired after the run finishes so the page can refresh the queue badge. */
   onQueued?: () => void;
 }) {
@@ -133,14 +116,6 @@ export default function ImportCsvModal({
   useEffect(() => {
     void refreshSettings();
   }, [refreshSettings]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !running) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, running]);
 
   // Stop an in-flight import if the modal goes away.
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -263,37 +238,58 @@ export default function ImportCsvModal({
   };
 
   return (
-    <div
-      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !running) onClose();
-      }}
-    >
-      <div className="glass slide-in relative flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
-            <UploadIcon className="h-4 w-4 text-cyan-300" />
-            Import CSV
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={running}
-            className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
-            title={running ? "Import in progress" : "Close"}
-            aria-label="Close"
-          >
-            <CloseIcon className="h-4 w-4" />
-          </button>
-        </div>
+    <PageBody>
+      <PageHeader
+        title="Import CSV"
+        description="Load a lead file, find each contact's best email, and queue a two-step sequence."
+        icon={<UploadIcon className="h-5 w-5" />}
+        meta={running ? <span className="badge badge-info">Importing</span> : undefined}
+        actions={
+          <>
+            {running ? (
+              <button type="button" onClick={stop} className="btn btn-secondary">
+                Stop
+              </button>
+            ) : (
+              <button type="button" onClick={onClose} className="btn btn-secondary">
+                View queue
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void run()}
+              disabled={!canRun}
+              className="btn btn-primary"
+              title={
+                openerIds.length === 0
+                  ? "Select at least one opener template"
+                  : "Discover emails and queue every eligible lead"
+              }
+            >
+              {running ? "Importing…" : `Import & queue${rows.length ? ` (${rows.length})` : ""}`}
+            </button>
+          </>
+        }
+      />
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+      <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+        <div className="flex min-w-0 flex-col gap-6">
           {/* File picker */}
-          <div>
-            <SectionHead>Lead file</SectionHead>
+          <Card
+            title="Lead file"
+            description="A CSV with one lead per row."
+            actions={
+              <span className={"badge tabular-nums " + (rows.length > 0 ? "badge-info" : "badge-neutral")}>
+                {running && progress
+                  ? `Processing ${progress.done}/${progress.total}…`
+                  : rows.length > 0
+                    ? `${rows.length} lead${rows.length === 1 ? "" : "s"} ready`
+                    : "No file loaded"}
+              </span>
+            }
+          >
             <label
-              className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-white/15 bg-slate-950/40 px-4 py-3 transition hover:border-cyan-400/40"
+              className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-white/10 bg-slate-950/40 px-6 py-10 text-center transition hover:border-cyan-400/40 hover:bg-cyan-400/[0.03]"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -312,30 +308,35 @@ export default function ImportCsvModal({
                   e.target.value = "";
                 }}
               />
-              <UploadIcon className="h-5 w-5 shrink-0 text-slate-500" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs text-slate-200">
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/5 text-slate-400 ring-1 ring-inset ring-white/10">
+                <UploadIcon className="h-5 w-5" />
+              </span>
+              <span className="min-w-0 max-w-full">
+                <span className="block truncate text-sm font-medium text-slate-200">
                   {fileName || "Choose a CSV file, or drop one here"}
-                </p>
-                <p className="mt-0.5 text-[10px] text-slate-500">
-                  Columns: Name, Country (optional), Upwork URL (optional), GitHub
-                  URL, LinkedIn URL (optional)
-                </p>
-              </div>
+                </span>
+                <span className="mt-1 block text-xs text-slate-500">
+                  {fileName ? "Click or drop to replace" : "Click to browse"}
+                </span>
+              </span>
               {rows.length > 0 && (
-                <span className="shrink-0 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-200">
+                <span className="badge badge-info tabular-nums">
                   {rows.length} lead{rows.length === 1 ? "" : "s"}
                 </span>
               )}
             </label>
+            <p className="field-hint">
+              Columns: Name, Country (optional), Upwork URL (optional), GitHub
+              URL, LinkedIn URL (optional)
+            </p>
             {unmapped.length > 0 && (
-              <p className="mt-1.5 text-[10px] text-slate-500">
+              <p className="field-hint">
                 Ignored column{unmapped.length === 1 ? "" : "s"}:{" "}
                 {unmapped.join(", ")}
               </p>
             )}
             {parseErrors.length > 0 && (
-              <details className="mt-1.5 text-[10px] text-amber-300/80">
+              <details className="mt-2 text-xs text-amber-300/80">
                 <summary className="cursor-pointer">
                   {parseErrors.length} row
                   {parseErrors.length === 1 ? "" : "s"} skipped while reading the file
@@ -347,148 +348,34 @@ export default function ImportCsvModal({
                 </ul>
               </details>
             )}
-            <p className="mt-2 text-[10px] text-slate-600">
+            <p className="field-hint">
               Only contacts in the US, Canada or Europe are queued. Missing
               countries are resolved from the GitHub profile; leads whose country
               can&apos;t be determined are skipped.
             </p>
-          </div>
-
-          {/* Message + queue settings */}
-          <div className="rounded-lg border border-white/10 bg-slate-950/40">
-            <button
-              type="button"
-              onClick={() => setSettingsOpen((v) => !v)}
-              className="flex w-full items-center justify-between px-4 py-2.5 text-[11px] uppercase tracking-[0.18em] text-slate-400 transition hover:text-slate-200"
-            >
-              <span>Opener &amp; follow-up</span>
-              <span className="text-slate-500">{settingsOpen ? "−" : "+"}</span>
-            </button>
-
-            {settingsOpen && (
-              <div className="space-y-4 border-t border-white/10 px-4 py-3.5">
-                {/* Openers */}
-                <div>
-                  <SectionHead>
-                    Opener (message 1) — rotated across leads
-                  </SectionHead>
-                  <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
-                    {openers.map((o) => (
-                      <label
-                        key={o.id}
-                        className="flex items-start gap-2 rounded-md px-1.5 py-1 text-[11px] text-slate-300 transition hover:bg-white/5"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={openerIds.includes(o.id)}
-                          onChange={() => toggleOpener(o.id)}
-                          className="mt-0.5 accent-cyan-500"
-                        />
-                        <span className="min-w-0">
-                          <span className="block truncate text-slate-200">
-                            {o.label}
-                          </span>
-                          <span className="block truncate text-[10px] text-slate-500">
-                            {o.subject}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                    {openers.length === 0 && (
-                      <p className="text-[11px] text-amber-300/80">
-                        No opener templates yet — add one under Setup → Templates.
-                      </p>
-                    )}
-                  </div>
-                  {openerIds.length > 0 && settings && (
-                    <p className="mt-1 text-[10px] text-slate-600">
-                      {openerIds.length} opener{openerIds.length === 1 ? "" : "s"} ·
-                      ~{Math.round(settings.dailyCap / openerIds.length)} sends per
-                      template per day at the current cap
-                    </p>
-                  )}
-                </div>
-
-                {/* Follow-up */}
-                <div>
-                  <SectionHead>Follow-up (message 2)</SectionHead>
-                  <label className="mb-1.5 flex items-center gap-2 text-[11px] text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={pitchOn}
-                      onChange={(e) => setPitchOn(e.target.checked)}
-                      className="accent-cyan-500"
-                    />
-                    Send a threaded follow-up after the opener
-                  </label>
-                  <select
-                    value={followupId}
-                    disabled={!pitchOn}
-                    onChange={(e) => {
-                      setFollowupId(e.target.value);
-                      localStorage.setItem(FOLLOWUP_KEY, e.target.value);
-                    }}
-                    className={inputCls + " disabled:opacity-40"}
-                  >
-                    {followups.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-[10px] text-slate-600">
-                    Sent as a reply in the opener&apos;s thread. The queue sends it
-                    fast once they reply, or after the follow-up delay set in
-                    Queue settings.
-                  </p>
-                </div>
-
-                {/* Rate, cap and window are the queue's own global settings —
-                    edited in the Queue modal, shown here only as context. */}
-                {settings && (
-                  <p className="border-t border-white/5 pt-3 text-[10px] text-slate-600">
-                    Sending rate, daily cap and window come from{" "}
-                    <span className="text-slate-500">Queue settings</span>.
-                    {settings.enabled
-                      ? " The queue is running — imported leads start dripping right away."
-                      : " The queue is paused — imported leads wait until you resume it."}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
+          </Card>
 
           {/* Run log */}
           {(results.length > 0 || running || runError) && (
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <SectionHead>Import log</SectionHead>
-                <div className="flex items-center gap-3 text-[11px] text-slate-400">
-                  <span>
-                    Queued <b className="text-emerald-300">{queuedCount}</b>
-                  </span>
-                  <span>
-                    Skipped <b className="text-slate-300">{skippedCount}</b>
-                  </span>
+            <Card
+              title="Import log"
+              actions={
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <span className="badge badge-success tabular-nums">Queued {queuedCount}</span>
+                  <span className="badge badge-neutral tabular-nums">Skipped {skippedCount}</span>
                   {failedCount > 0 && (
-                    <span>
-                      Failed <b className="text-rose-300">{failedCount}</b>
-                    </span>
+                    <span className="badge badge-danger tabular-nums">Failed {failedCount}</span>
                   )}
                   {results.length > queuedCount && (
-                    <button
-                      type="button"
-                      onClick={copySkipped}
-                      className="text-cyan-300 hover:text-cyan-200"
-                    >
-                      copy
+                    <button type="button" onClick={copySkipped} className="btn btn-ghost btn-sm">
+                      Copy
                     </button>
                   )}
                 </div>
-              </div>
-
+              }
+            >
               {progress && (
-                <div className="mb-2 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   {/* scaleX, not width — this advances once per imported lead. */}
                   <div
                     className="h-full w-full origin-left rounded-full bg-cyan-400/70 transition-transform"
@@ -500,17 +387,14 @@ export default function ImportCsvModal({
               )}
 
               {runError && (
-                <p className="mb-2 rounded-md border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                <p className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
                   {runError}
                 </p>
               )}
 
-              <div className="max-h-64 space-y-1 overflow-y-auto">
+              <div className="max-h-[32rem] divide-y divide-white/5 overflow-y-auto">
                 {results.map((r) => (
-                  <div
-                    key={`${r.index}-${r.githubUrl}`}
-                    className="rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2"
-                  >
+                  <div key={`${r.index}-${r.githubUrl}`} className="py-2.5 first:pt-0 last:pb-0">
                     <div className="flex items-center gap-2">
                       <span
                         className={
@@ -522,11 +406,11 @@ export default function ImportCsvModal({
                               : "bg-slate-600")
                         }
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs text-slate-100">
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-100">
                         {r.name || r.login || r.githubUrl}
                       </span>
                       {r.country && (
-                        <span className="shrink-0 text-[10px] text-slate-400">
+                        <span className="shrink-0 text-xs text-slate-400">
                           <CountryFlag
                             country={r.country}
                             size={10}
@@ -537,16 +421,13 @@ export default function ImportCsvModal({
                       )}
                       {r.score !== undefined && <EmailScoreBadge score={r.score} />}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-1.5 pl-3.5 text-[11px]">
+                    <div className="mt-0.5 flex items-center gap-1.5 pl-3.5 text-xs">
                       {r.email ? (
                         <>
-                          <span className="truncate text-cyan-200/90">{r.email}</span>
+                          <span className="truncate font-mono text-cyan-200/90">{r.email}</span>
                           {r.cc && (
-                            <span
-                              className="shrink-0 rounded border border-white/10 bg-white/5 px-1 py-px text-[10px] uppercase text-slate-400"
-                              title={`Also CC'd: ${r.cc}`}
-                            >
-                              cc {r.cc}
+                            <span className="badge badge-neutral shrink-0" title={`Also CC'd: ${r.cc}`}>
+                              CC {r.cc}
                             </span>
                           )}
                         </>
@@ -563,17 +444,17 @@ export default function ImportCsvModal({
                           onClick={() =>
                             setExpanded((v) => (v === r.index ? null : r.index))
                           }
-                          className="ml-auto shrink-0 text-[10px] text-slate-500 hover:text-slate-300"
+                          className="btn btn-ghost btn-sm ml-auto h-6 shrink-0 px-2"
                         >
-                          {expanded === r.index ? "hide" : "why?"}
+                          {expanded === r.index ? "Hide" : "Why?"}
                         </button>
                       )}
                     </div>
                     {expanded === r.index && r.candidates && (
-                      <ul className="mt-1.5 space-y-1 border-t border-white/5 pt-1.5 pl-3.5 text-[10px] text-slate-500">
+                      <ul className="mt-1.5 space-y-1 border-t border-white/5 pt-1.5 pl-3.5 text-[11px] text-slate-500">
                         {r.candidates.map((c) => (
                           <li key={c.email}>
-                            <span className="text-slate-300">{c.email}</span>{" "}
+                            <span className="font-mono text-slate-300">{c.email}</span>{" "}
                             <span className="tabular-nums">({c.score})</span>
                             {c.reasons.length > 0 && (
                               <span> — {c.reasons.join(", ")}</span>
@@ -584,54 +465,122 @@ export default function ImportCsvModal({
                     )}
                   </div>
                 ))}
+                {results.length === 0 && !runError && (
+                  <p className="text-xs text-slate-500">Waiting for the first lead…</p>
+                )}
               </div>
-            </div>
+            </Card>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-3 border-t border-white/10 px-5 py-3">
-          <p className="text-[11px] text-slate-500">
-            {running && progress
-              ? `Processing ${progress.done}/${progress.total}…`
-              : rows.length > 0
-                ? `${rows.length} lead${rows.length === 1 ? "" : "s"} ready`
-                : "No file loaded"}
-          </p>
-          <div className="flex items-center gap-2">
-            {running ? (
-              <button
-                type="button"
-                onClick={stop}
-                className="rounded-full border border-white/15 bg-slate-950/50 px-4 py-1.5 text-xs text-slate-200 transition hover:border-white/30"
-              >
-                Stop
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-full border border-white/15 bg-slate-950/50 px-4 py-1.5 text-xs text-slate-300 transition hover:border-white/30"
-              >
-                Close
-              </button>
-            )}
+        {/* Message + queue settings */}
+        <Card
+          title="Sequence"
+          description="Opener and follow-up sent to every queued lead."
+          className="self-start"
+          actions={
             <button
               type="button"
-              onClick={() => void run()}
-              disabled={!canRun}
-              className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-1.5 text-xs font-medium text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-              title={
-                openerIds.length === 0
-                  ? "Select at least one opener template"
-                  : "Discover emails and queue every eligible lead"
-              }
+              onClick={() => setSettingsOpen((v) => !v)}
+              className="btn btn-ghost btn-sm"
+              aria-expanded={settingsOpen}
             >
-              {running ? "Importing…" : `Import & queue${rows.length ? ` (${rows.length})` : ""}`}
+              {settingsOpen ? "Hide" : "Show"}
             </button>
-          </div>
-        </div>
+          }
+          bodyClassName={settingsOpen ? undefined : "hidden"}
+        >
+          {settingsOpen && (
+            <div className="flex flex-col gap-5">
+              {/* Openers */}
+              <div>
+                <p className="field-label">Opener (message 1) — rotated across leads</p>
+                <div className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-white/[0.08] bg-slate-950/40 p-1.5">
+                  {openers.map((o) => (
+                    <label
+                      key={o.id}
+                      className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 text-xs text-slate-300 transition hover:bg-white/5"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={openerIds.includes(o.id)}
+                        onChange={() => toggleOpener(o.id)}
+                        className="mt-0.5 accent-cyan-500"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate text-slate-200">
+                          {o.label}
+                        </span>
+                        <span className="block truncate text-[11px] text-slate-500">
+                          {o.subject}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                  {openers.length === 0 && (
+                    <p className="px-2 py-1.5 text-xs text-amber-300/80">
+                      No opener templates yet — add one under Setup → Templates.
+                    </p>
+                  )}
+                </div>
+                {openerIds.length > 0 && settings && (
+                  <p className="field-hint tabular-nums">
+                    {openerIds.length} opener{openerIds.length === 1 ? "" : "s"} ·
+                    ~{Math.round(settings.dailyCap / openerIds.length)} sends per
+                    template per day at the current cap
+                  </p>
+                )}
+              </div>
+
+              {/* Follow-up */}
+              <div>
+                <p className="field-label">Follow-up (message 2)</p>
+                <label className="mb-2 flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={pitchOn}
+                    onChange={(e) => setPitchOn(e.target.checked)}
+                    className="accent-cyan-500"
+                  />
+                  Send a threaded follow-up after the opener
+                </label>
+                <select
+                  value={followupId}
+                  disabled={!pitchOn}
+                  onChange={(e) => {
+                    setFollowupId(e.target.value);
+                    localStorage.setItem(FOLLOWUP_KEY, e.target.value);
+                  }}
+                  className="input disabled:opacity-40"
+                >
+                  {followups.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="field-hint">
+                  Sent as a reply in the opener&apos;s thread. The queue sends it
+                  fast once they reply, or after the follow-up delay set in
+                  Queue settings.
+                </p>
+              </div>
+
+              {/* Rate, cap and window are the queue's own global settings —
+                  edited on the Queue page, shown here only as context. */}
+              {settings && (
+                <p className="border-t border-white/5 pt-4 text-xs leading-relaxed text-slate-500">
+                  Sending rate, daily cap and window come from{" "}
+                  <span className="text-slate-300">Queue settings</span>.
+                  {settings.enabled
+                    ? " The queue is running — imported leads start dripping right away."
+                    : " The queue is paused — imported leads wait until you resume it."}
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
       </div>
-    </div>
+    </PageBody>
   );
 }

@@ -151,162 +151,166 @@ export default function HistoryCampaignPanel({
       setBusy(false);
     }
   };
-
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/90 p-4"
+      className="fade-in fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-slate-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
-            Send 2-step to history
-          </h3>
+      <div
+        className="card flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden bg-slate-900 shadow-2xl shadow-black/60"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Send 2-step to history"
+      >
+        <div className="card-header">
+          <div className="min-w-0">
+            <h3 className="card-title">Send 2-step to history</h3>
+            <p className="card-description">
+              {bySelection ? (
+                <>
+                  Targets your <span className="text-cyan-300">{emails!.length}</span>{" "}
+                  selected contact{emails!.length === 1 ? "" : "s"}
+                </>
+              ) : (
+                <>
+                  Targets contacts from{" "}
+                  <span className="text-cyan-300">{periodLabel}</span>
+                </>
+              )}
+              , reusing each one&apos;s saved name, URL, and original sender.
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full px-2 py-1 text-slate-400 transition hover:text-white"
+            className="btn btn-ghost btn-sm btn-icon -mr-1 -mt-1"
+            aria-label="Close"
           >
-            ✕
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="h-4 w-4" aria-hidden>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
           </button>
         </div>
 
-        <p className="mb-3 text-xs text-slate-400">
-          {bySelection ? (
-            <>
-              Targets your <span className="text-cyan-300">{emails!.length}</span>{" "}
-              selected contact{emails!.length === 1 ? "" : "s"}
-            </>
-          ) : (
-            <>
-              Targets contacts from{" "}
-              <span className="text-cyan-300">{periodLabel}</span>
-            </>
-          )}
-          , reusing each one&apos;s saved name, URL, and original sender.
-        </p>
+        <div className="card-body flex min-h-0 flex-col gap-5 overflow-y-auto">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-cyan-400/20 bg-cyan-400/[0.05] px-4 py-3">
+            <span className="text-sm text-slate-300">
+              Contact{count === 1 ? "" : "s"} matching
+            </span>
+            <span className="text-2xl font-semibold tabular-nums tracking-tight text-slate-50">
+              {count === null ? "…" : count}
+            </span>
+          </div>
 
-        {!bySelection && (
-          <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              checked={onlyNonReplied}
-              onChange={(e) => setOnlyNonReplied(e.target.checked)}
-              className="accent-cyan-500"
-            />
-            Only contacts who never replied (recommended)
-          </label>
-        )}
-
-        <div className="mb-3 rounded-lg border border-cyan-400/20 bg-cyan-500/[0.04] px-3 py-2 text-center">
-          <span className="text-2xl font-bold tabular-nums text-white">
-            {count === null ? "…" : count}
-          </span>{" "}
-          <span className="text-sm text-slate-300">
-            contact{count === 1 ? "" : "s"} match
-          </span>
-        </div>
-
-        <div className="mb-3">
-          <div className="mb-1.5 flex items-center justify-between">
-            <label className="block text-[11px] uppercase tracking-[0.2em] text-cyan-300/80">
-              Message 1 · Openers to rotate
+          {!bySelection && (
+            <label className="-mt-2 flex items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={onlyNonReplied}
+                onChange={(e) => setOnlyNonReplied(e.target.checked)}
+                className="accent-cyan-500"
+              />
+              Only contacts who never replied (recommended)
             </label>
-            <button
-              type="button"
-              onClick={() =>
-                setOpenerIds(allOpenersOn ? [] : openers.map((o) => o.id))
-              }
-              className="text-[10px] text-slate-400 transition hover:text-cyan-300"
-            >
-              {allOpenersOn ? "Clear all" : "Select all"}
-            </button>
-          </div>
-          <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg border border-white/10 bg-slate-950/40 p-2">
-            {openers.map((t) => {
-              const on = openerIds.includes(t.id);
-              return (
-                <label
-                  key={t.id}
-                  className="flex items-center gap-2 rounded px-1.5 py-1 text-sm text-slate-200 transition hover:bg-white/[0.03]"
-                >
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    onChange={() => toggleOpener(t.id)}
-                    className="accent-cyan-500"
-                  />
-                  <span className="truncate">{t.label}</span>
-                </label>
-              );
-            })}
-          </div>
-          {selectedOpeners.length > 0 ? (
-            <p
-              className={
-                "mt-1.5 text-[11px] " +
-                (perTemplatePerDay > 7
-                  ? "text-amber-300"
-                  : perTemplatePerDay < 5
-                    ? "text-slate-400"
-                    : "text-emerald-300")
-              }
-            >
-              Rotating {selectedOpeners.length} opener
-              {selectedOpeners.length === 1 ? "" : "s"} · ≈
-              {Math.round(perTemplatePerDay)} send
-              {Math.round(perTemplatePerDay) === 1 ? "" : "s"} each per day
-              {perTemplatePerDay > 7
-                ? ` — add ~${Math.max(1, Math.ceil(dailyCap / 7) - selectedOpeners.length)} more to reach 5–7/day`
-                : perTemplatePerDay < 5
-                  ? " (under your 5–7 target)"
-                  : " (in your 5–7 target)"}
-            </p>
-          ) : (
-            <p className="mt-1.5 text-[11px] text-rose-300">
-              Select at least one opener to rotate.
-            </p>
           )}
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="field-label mb-0">Message 1 · Openers to rotate</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setOpenerIds(allOpenersOn ? [] : openers.map((o) => o.id))
+                }
+                className="btn btn-ghost btn-sm h-6 px-2"
+              >
+                {allOpenersOn ? "Clear all" : "Select all"}
+              </button>
+            </div>
+            <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg border border-white/10 bg-slate-950/50 p-1.5">
+              {openers.map((t) => {
+                const on = openerIds.includes(t.id);
+                return (
+                  <label
+                    key={t.id}
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-200 transition hover:bg-white/[0.04]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleOpener(t.id)}
+                      className="accent-cyan-500"
+                    />
+                    <span className="truncate">{t.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            {selectedOpeners.length > 0 ? (
+              <p
+                className={
+                  "field-hint " +
+                  (perTemplatePerDay > 7
+                    ? "text-amber-300"
+                    : perTemplatePerDay < 5
+                      ? "text-slate-400"
+                      : "text-emerald-300")
+                }
+              >
+                Rotating {selectedOpeners.length} opener
+                {selectedOpeners.length === 1 ? "" : "s"} · ≈
+                {Math.round(perTemplatePerDay)} send
+                {Math.round(perTemplatePerDay) === 1 ? "" : "s"} each per day
+                {perTemplatePerDay > 7
+                  ? ` — add ~${Math.max(1, Math.ceil(dailyCap / 7) - selectedOpeners.length)} more to reach 5–7/day`
+                  : perTemplatePerDay < 5
+                    ? " (under your 5–7 target)"
+                    : " (in your 5–7 target)"}
+              </p>
+            ) : (
+              <p className="field-hint text-rose-300">
+                Select at least one opener to rotate.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="field-label flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={pitchOn}
+                onChange={(e) => setPitchOn(e.target.checked)}
+                className="accent-cyan-500"
+              />
+              Message 2 · Pitch
+              <span className="font-normal text-slate-500">
+                sent in-thread only when they reply
+              </span>
+            </label>
+            <select
+              value={followupId}
+              onChange={(e) => setFollowupId(e.target.value)}
+              disabled={!pitchOn}
+              className="input disabled:opacity-40"
+            >
+              {followups.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint">
+              {pitchOn
+                ? "Non-repliers get a short link-free bump automatically (set in Queue settings) — no timed pitch is sent to cold inboxes."
+                : "Opener only — no pitch or bump will be sent."}
+            </p>
+          </div>
         </div>
 
-        <label className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-indigo-300/80">
-          <input
-            type="checkbox"
-            checked={pitchOn}
-            onChange={(e) => setPitchOn(e.target.checked)}
-            className="accent-indigo-500"
-          />
-          Message 2 · Pitch
-          <span className="text-[10px] normal-case tracking-normal text-slate-500">
-            sent in-thread only when they reply
-          </span>
-        </label>
-        <select
-          value={followupId}
-          onChange={(e) => setFollowupId(e.target.value)}
-          disabled={!pitchOn}
-          className="mb-2 w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none focus:border-indigo-400 disabled:opacity-40"
-        >
-          {followups.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-        <p className="mb-4 text-[10px] text-slate-500">
-          {pitchOn
-            ? "Non-repliers get a short link-free bump automatically (set in Queue settings) — no timed pitch is sent to cold inboxes."
-            : "Opener only — no pitch or bump will be sent."}
-        </p>
-
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full px-4 py-2 text-sm text-slate-400 transition hover:text-white"
-          >
+        <div className="flex items-center justify-end gap-2 border-t border-white/5 px-5 py-3.5">
+          <button type="button" onClick={onClose} className="btn btn-ghost">
             Cancel
           </button>
           <button
@@ -314,7 +318,7 @@ export default function HistoryCampaignPanel({
             onClick={() => void submit()}
             disabled={busy || selectedOpeners.length === 0 || count === 0}
             data-ripple
-            className="btn-press rounded-full bg-cyan-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
+            className="btn btn-primary tabular-nums"
           >
             {busy ? "Queuing…" : `Add ${count ?? 0} to queue`}
           </button>
