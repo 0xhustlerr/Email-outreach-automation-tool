@@ -81,6 +81,9 @@ type SendersState = {
 
 type RemovedCounts = { history: number; sequences: number };
 
+/** Longest Signature the server accepts — Gmail's own limit. */
+const SIG_MAX = 10_000;
+
 export default function SendersModal({
   onChanged,
   focusSection = null,
@@ -133,6 +136,9 @@ export default function SendersModal({
   const [sigDraft, setSigDraft] = useState("");
   const [sigScope, setSigScope] = useState<SignatureScope>("all");
   const [pulling, setPulling] = useState(false);
+  // Shown inside the editor: the page-level messages sit above the account
+  // list, usually scrolled out of view from the row being edited.
+  const [sigMsg, setSigMsg] = useState<{ kind: "error" | "warn" | "ok"; text: string } | null>(null);
 
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
@@ -187,6 +193,7 @@ export default function SendersModal({
   );
   const smtpByEmail = data?.smtp ?? {};
   const sigByEmail = data?.signatures ?? {};
+  const sigTooLong = sigDraft.trim().length > SIG_MAX;
   const githubTokenSet = !!data?.github?.tokenSet;
   const trackingUrlSet = !!data?.tracking?.urlSet;
   const trackingEnabled = !!data?.tracking?.enabled;
@@ -443,6 +450,7 @@ export default function SendersModal({
     const cur = sigByEmail[addr.toLowerCase()];
     setSigDraft(cur?.signature ?? "");
     setSigScope(cur?.scope ?? "all");
+    setSigMsg(null);
     setSigFor(addr);
   };
 
@@ -454,6 +462,7 @@ export default function SendersModal({
     signatureScope: SignatureScope = "all",
   ) => {
     clearMsgs();
+    setSigMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -461,12 +470,15 @@ export default function SendersModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: addr, signature, signatureScope }),
       });
-      const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
+      const body = (await res.json().catch(() => ({}))) as Partial<SendersState> & {
+        ok?: boolean;
+        error?: string;
+      };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not save the signature.");
+        setSigMsg({ kind: "error", text: body.error ?? `Could not save the signature (HTTP ${res.status}).` });
         return;
       }
-      setData(body);
+      setData(body as SendersState);
       setSigFor(null);
       flash(
         signature.trim()
@@ -475,7 +487,7 @@ export default function SendersModal({
       );
       onChanged?.();
     } catch {
-      setError("Network error while saving the signature.");
+      setSigMsg({ kind: "error", text: "Network error while saving the signature." });
     } finally {
       setBusy(false);
     }
@@ -484,6 +496,7 @@ export default function SendersModal({
   // Fetch the signature set in Gmail into the draft, for review before Save.
   const pullSignature = async (addr: string) => {
     clearMsgs();
+    setSigMsg(null);
     setPulling(true);
     try {
       const res = await fetch("/api/senders/signature", {
@@ -491,28 +504,30 @@ export default function SendersModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: addr }),
       });
-      const body = (await res.json()) as {
-        ok: boolean;
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
         signature?: string;
         error?: string;
         needsReauth?: boolean;
       };
       if (!res.ok || !body.ok) {
-        setError(
-          (body.error ?? "Could not pull the Gmail signature.") +
+        setSigMsg({
+          kind: "error",
+          text:
+            (body.error ?? `Could not pull the Gmail signature (HTTP ${res.status}).`) +
             (body.needsReauth ? " Reconnect Reply sync for this account." : ""),
-        );
+        });
         return;
       }
       const sig = (body.signature ?? "").trim();
       if (!sig) {
-        setWarnMsg("This Gmail account has no signature set.");
+        setSigMsg({ kind: "warn", text: "This Gmail account has no signature set." });
         return;
       }
       setSigDraft(sig);
-      flash("Pulled the Gmail signature. Check the preview, then Save.");
+      setSigMsg({ kind: "ok", text: "Pulled from Gmail — not saved yet. Check the preview, then Save signature." });
     } catch {
-      setError("Network error while pulling the Gmail signature.");
+      setSigMsg({ kind: "error", text: "Network error while pulling the Gmail signature." });
     } finally {
       setPulling(false);
     }
@@ -1396,15 +1411,19 @@ export default function SendersModal({
                               }
                             }}
                             rows={5}
-                            maxLength={10_000}
                             disabled={busy}
                             spellCheck={false}
                             placeholder={"Jane Doe\nFounder, Acme · https://acme.com"}
                             className="input mt-1.5 min-h-[7rem] font-mono text-xs leading-relaxed placeholder:font-sans"
                           />
-                          <p className="field-hint">
-                            Plain text, or paste HTML. {"{{sender}}"} and {"{{sender_email}}"} work here too.
-                            {!syncOn && " Pull from Gmail needs Reply sync connected for this account."}
+                          <p className="field-hint flex flex-wrap justify-between gap-x-3">
+                            <span>
+                              Plain text, or paste HTML. {"{{sender}}"} and {"{{sender_email}}"} work here too.
+                              {!syncOn && " Pull from Gmail needs Reply sync connected for this account."}
+                            </span>
+                            <span className={"tabular-nums " + (sigTooLong ? "text-amber-300" : "")}>
+                              {sigDraft.trim().length.toLocaleString()} / {SIG_MAX.toLocaleString()}
+                            </span>
                           </p>
                         </div>
 
@@ -1432,6 +1451,23 @@ export default function SendersModal({
                           </div>
                         )}
 
+                        {(sigMsg || sigTooLong) && (
+                          <p
+                            role={sigMsg?.kind === "error" ? "alert" : "status"}
+                            className={
+                              "rounded-lg border px-3.5 py-2.5 text-xs leading-relaxed " +
+                              (sigMsg?.kind === "error"
+                                ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
+                                : sigMsg?.kind === "ok"
+                                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                                  : "border-amber-500/30 bg-amber-500/10 text-amber-200")
+                            }
+                          >
+                            {sigMsg?.text ??
+                              `This signature is ${sigDraft.trim().length.toLocaleString()} characters; the limit is ${SIG_MAX.toLocaleString()} (Gmail's own). Embedded images make pulled signatures long. Host the image instead, or shorten it.`}
+                          </p>
+                        )}
+
                         <div className="flex flex-col gap-3 border-t border-white/5 pt-4 sm:flex-row sm:items-center sm:justify-between">
                           <div>
                             {hasSig && (
@@ -1452,7 +1488,7 @@ export default function SendersModal({
                             <button
                               type="button"
                               onClick={() => saveSignature(id.email, sigDraft, sigScope)}
-                              disabled={busy || pulling || (!sigDraft.trim() && !hasSig)}
+                              disabled={busy || pulling || sigTooLong || (!sigDraft.trim() && !hasSig)}
                               className="btn btn-primary"
                             >
                               {busy ? (

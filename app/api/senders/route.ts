@@ -344,7 +344,14 @@ export async function PUT(req: Request) {
         { status: 400 },
       );
     }
-    setIdentitySignature(email, signature, scope);
+    // Report a failed write instead of answering ok: the page would close the
+    // editor on a "success" that stored nothing.
+    if (!setIdentitySignature(email, signature, scope)) {
+      return NextResponse.json(
+        { ok: false, error: "The signature could not be saved to the database. Restart the app and try again." },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ ok: true, ...snapshot() });
   }
 
