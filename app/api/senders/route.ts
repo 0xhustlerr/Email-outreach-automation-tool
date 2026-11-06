@@ -16,6 +16,7 @@ import {
   listStoredIdentities,
   setGithubToken,
   setGmailClient,
+  setIdentityName,
   setInboxOAuthClient,
   setOAuthRefreshToken,
   upsertStoredIdentity,
@@ -285,12 +286,14 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true, renewed: !!existing, ...snapshot() });
 }
 
-// Reply-sync configuration. Three shapes:
+// Account settings that don't touch SMTP. Shapes:
+//   { email, name }                   -> rename an account's display name
 //   { email, clientId, clientSecret } -> save that inbox's own OAuth client
 //   { clientId, clientSecret }        -> save the global fallback client
 //   { email, refreshToken }           -> set/clear an inbox's refresh token
 export async function PUT(req: Request) {
   let body: {
+    name?: string;
     clientId?: string;
     clientSecret?: string;
     email?: string;
@@ -303,6 +306,27 @@ export async function PUT(req: Request) {
     body = await req.json();
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  // Rename an account. Only the display name changes, so there is nothing to
+  // verify — Reconnect would needlessly re-run the SMTP login.
+  if (body.email !== undefined && body.name !== undefined) {
+    const email = (body.email ?? "").trim().toLowerCase();
+    const name = (body.name ?? "").trim();
+    if (!isStoredIdentity(email)) {
+      return NextResponse.json({ ok: false, error: "That account was not found." }, { status: 404 });
+    }
+    if (!name) {
+      return NextResponse.json({ ok: false, error: "Enter a display name." }, { status: 400 });
+    }
+    if (name.length > 100) {
+      return NextResponse.json(
+        { ok: false, error: "Keep the display name under 100 characters." },
+        { status: 400 },
+      );
+    }
+    setIdentityName(email, name);
+    return NextResponse.json({ ok: true, ...snapshot() });
   }
 
   // Save (or clear) the open-tracking Worker URL.

@@ -69,6 +69,7 @@ import {
   markOpenerAlreadyEmailed,
   markOpenerFailed,
   markOpenerSent,
+  senderNameFor,
   recoverInterruptedSequences,
   revertBump,
   revertFollowupToScheduled,
@@ -252,9 +253,10 @@ function openerLane(op: Sequence): LaneSpec {
     eventKind: "opener",
     adapter: {
       revert: () => revertOpenerToPending(op.id),
-      // Persist the account that actually sent, so the threaded follow-up
-      // replies from the same address.
-      markSent: (messageId, sender) => markOpenerSent(op.id, messageId, sender),
+      // Persist the account (and display name) that actually sent, so the
+      // threaded follow-up replies from the same address under the same name.
+      markSent: (messageId, sender) =>
+        markOpenerSent(op.id, messageId, sender, senderNameFor(op, sender)),
       markFailed: (error) => markOpenerFailed(op.id, error, MAX_ATTEMPTS),
     },
   };
@@ -328,6 +330,8 @@ function threadedReplyContext(
     subject: replySubject(seq.opSubject),
     body,
     fromEmail: sender,
+    // The name frozen at queue time, not whatever the account is called now.
+    fromName: senderNameFor(seq, sender),
     name: seq.name,
     link: seq.link,
     linkLinkedin: seq.linkLinkedin,
@@ -384,6 +388,8 @@ async function sendOpener(op: Sequence, sender: string): Promise<LaneOutcome> {
     subject: op.opSubject,
     body: op.opBody,
     fromEmail: sender,
+    // The name frozen at queue time, not whatever the account is called now.
+    fromName: senderNameFor(op, sender),
     name: op.name,
     link: op.link,
     linkLinkedin: op.linkLinkedin,
