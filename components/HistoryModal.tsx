@@ -323,10 +323,10 @@ function detectContactProvider(email: string): ContactProvider {
 }
 
 const CONTACT_PROVIDER_TEXT: Record<ContactProvider, string> = {
-  gmail: "text-[#f28b82]",
-  hotmail: "text-[#4fc3f7]",
-  outlook: "text-[#60a5fa]",
-  proton: "text-[#b4a0ff]",
+  gmail: "text-red-300",
+  hotmail: "text-sky-300",
+  outlook: "text-blue-400",
+  proton: "text-violet-300",
   other: "text-slate-300",
 };
 

@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 import type { ReactNode } from "react";
 import NotificationToasts from "@/components/knock/NotificationToasts";
 import { useKnockIdentify } from "@/hooks/useKnockIdentify";
+import { useTheme } from "@/hooks/useTheme";
 
 const publicKey = process.env.NEXT_PUBLIC_KNOCK_PUBLIC_API_KEY?.trim() ?? "";
 const feedChannelId =
@@ -31,13 +32,14 @@ export default function KnockAppShell({
 }: Props) {
   const enabled = isKnockClientConfigured();
   const { userId, ready } = useKnockIdentify(enabled);
+  const { theme } = useTheme();
 
   // The Toaster must render even when Knock is off, otherwise toast() calls
   // (queue confirmations, etc.) silently do nothing.
   if (!enabled || !ready || !userId) {
     return (
       <>
-        <Toaster richColors closeButton position="bottom-right" />
+        <Toaster richColors closeButton position="bottom-right" theme={theme} />
         {children}
       </>
     );
@@ -47,7 +49,7 @@ export default function KnockAppShell({
     <KnockProvider apiKey={publicKey} userId={userId}>
       <KnockFeedProvider feedId={feedChannelId}>
         <NotificationToasts onReplyNotification={onReplyNotification} />
-        <Toaster richColors closeButton position="bottom-right" />
+        <Toaster richColors closeButton position="bottom-right" theme={theme} />
         {children}
       </KnockFeedProvider>
     </KnockProvider>

@@ -32,6 +32,7 @@ import ImportCsvModal from "@/components/ImportCsvModal";
 import SendersModal from "@/components/SendersModal";
 import { useDashboardView, type DashboardView } from "@/hooks/useDashboardView";
 import { Card, EmptyState, PageBody, PageHeader, StatCard } from "@/components/ui/dashboard";
+import ThemeToggle from "@/components/ThemeToggle";
 import AppSidebar, {
   MenuIcon,
   useSidebarCollapsed,
@@ -1254,6 +1255,7 @@ export default function Page() {
             )}
 
             <div className="ml-auto flex shrink-0 items-center gap-2">
+              <ThemeToggle />
               {process.env.NEXT_PUBLIC_SEND_DISABLED === "1" && (
                 <span
                   className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-200"

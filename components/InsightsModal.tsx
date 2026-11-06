@@ -26,19 +26,19 @@ const MAX_BARS = 14;
 // Hex palette for SVG/inline-styled charts (tailwind classes can't be used in
 // SVG strokes). Kept in the app's cyan-forward family.
 const SEGMENT_COLORS = [
-  "#22d3ee",
-  "#a78bfa",
-  "#34d399",
-  "#fbbf24",
-  "#fb7185",
-  "#38bdf8",
-  "#f472b6",
-  "#2dd4bf",
+  "rgb(var(--c-cyan-400))",
+  "rgb(var(--c-violet-400))",
+  "rgb(var(--c-emerald-400))",
+  "rgb(var(--c-amber-400))",
+  "rgb(var(--c-rose-400))",
+  "rgb(var(--c-sky-400))",
+  "rgb(var(--c-pink-400))",
+  "rgb(var(--c-teal-400))",
 ];
-const POSITIVE_COLOR = "#34d399";
-const NEUTRAL_COLOR = "#38bdf8";
-const NEGATIVE_COLOR = "#fb7185";
-const NOREPLY_COLOR = "rgba(148,163,184,0.28)";
+const POSITIVE_COLOR = "rgb(var(--c-emerald-400))";
+const NEUTRAL_COLOR = "rgb(var(--c-sky-400))";
+const NEGATIVE_COLOR = "rgb(var(--c-rose-400))";
+const NOREPLY_COLOR = "rgb(var(--c-slate-400) / 0.28)";
 
 function isYes(value: string | undefined): boolean {
   const v = (value ?? "").trim().toLowerCase();
@@ -831,8 +831,8 @@ export function InsightsDashboard({
 // --- Pieces -----------------------------------------------------------
 
 // Timeline line colours (distinct, in the app palette).
-const LINE_CONTACTS = "#38bdf8";
-const LINE_VIEWED = "#a78bfa";
+const LINE_CONTACTS = "rgb(var(--c-sky-400))";
+const LINE_VIEWED = "rgb(var(--c-violet-400))";
 const LINE_REPLIED = POSITIVE_COLOR;
 
 function pctOf(n: number, d: number): number {
@@ -1105,7 +1105,7 @@ function Donut({
             cy={size / 2}
             r={r}
             fill="none"
-            stroke="rgba(255,255,255,0.05)"
+            stroke="rgb(var(--c-white) / 0.05)"
             strokeWidth={thickness}
           />
           {segments.map((s, i) => {
@@ -1193,12 +1193,12 @@ function Funnel({
   const base = Math.max(1, sent, contacts, opened, replied, positive);
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
   const rows = [
-    { label: "Emails sent", value: sent, color: "#94a3b8", rate: "" },
-    { label: "Contacts", value: contacts, color: "#38bdf8", rate: "" },
+    { label: "Emails sent", value: sent, color: "rgb(var(--c-slate-400))", rate: "" },
+    { label: "Contacts", value: contacts, color: "rgb(var(--c-sky-400))", rate: "" },
     {
       label: "Opened",
       value: opened,
-      color: "#a78bfa",
+      color: "rgb(var(--c-violet-400))",
       rate: contacts > 0 ? `${pct(opened, contacts)}% open` : "",
     },
     {
@@ -1210,7 +1210,7 @@ function Funnel({
     {
       label: "Positive",
       value: positive,
-      color: "#22d3ee",
+      color: "rgb(var(--c-cyan-400))",
       rate: replied > 0 ? `${pct(positive, replied)}% of repl.` : "",
     },
   ];
@@ -1325,8 +1325,8 @@ function TrendChart({
         <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
           <defs>
             <linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={series[0]?.color ?? "#22d3ee"} stopOpacity="0.22" />
-              <stop offset="100%" stopColor={series[0]?.color ?? "#22d3ee"} stopOpacity="0" />
+              <stop offset="0%" stopColor={series[0]?.color ?? "rgb(var(--c-cyan-400))"} stopOpacity="0.22" />
+              <stop offset="100%" stopColor={series[0]?.color ?? "rgb(var(--c-cyan-400))"} stopOpacity="0" />
             </linearGradient>
           </defs>
 
@@ -1340,7 +1340,7 @@ function TrendChart({
                   y1={y}
                   x2={W - padR}
                   y2={y}
-                  stroke={i === 0 ? "rgba(148,163,184,0.22)" : "rgba(148,163,184,0.12)"}
+                  stroke={i === 0 ? "rgb(var(--c-slate-400) / 0.22)" : "rgb(var(--c-slate-400) / 0.12)"}
                   strokeDasharray={i === 0 ? undefined : "3 3"}
                   strokeWidth={1}
                 />
@@ -1391,7 +1391,7 @@ function TrendChart({
                 cx={xAt(i)}
                 cy={yAt(v)}
                 r={n <= 1 ? 3.5 : 2.5}
-                fill="#0b1220"
+                fill="rgb(var(--surface))"
                 stroke={s.color}
                 strokeWidth={1.75}
               />

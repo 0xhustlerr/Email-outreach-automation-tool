@@ -158,7 +158,7 @@ export default function AppSidebar({
                     <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
                       {item.icon}
                       {isRail && (item.badge ?? 0) > 0 && (
-                        <span className="absolute -right-1.5 -top-1 h-2 w-2 rounded-full bg-cyan-300 ring-2 ring-[#0a1020]" />
+                        <span className="absolute -right-1.5 -top-1 h-2 w-2 rounded-full bg-cyan-300 ring-2 ring-[rgb(var(--chrome))]" />
                       )}
                     </span>
                     {!isRail && (
