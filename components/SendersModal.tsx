@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { MailIdentity } from "@/lib/types";
+import type { MailIdentity, SignatureScope } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
+import { renderSignature, textToEmailHtml } from "@/lib/mail-html";
 import {
   Card,
   EmptyState,
   PageBody,
   PageHeader,
+  Segmented,
   StatCard,
   StatGrid,
 } from "@/components/ui/dashboard";
@@ -56,6 +58,8 @@ type SendersState = {
   stored: string[];
   smtpConfigured: boolean;
   smtp?: Record<string, SmtpInfo>;
+  /** Each Sender's Signature (plain text or HTML, '' = none) and its scope. */
+  signatures?: Record<string, { signature: string; scope: SignatureScope }>;
   health?: SenderHealth[];
   replySync?: {
     /** Global fallback client exists (legacy shared-client setups / env). */
@@ -123,6 +127,13 @@ export default function SendersModal({
   const [renameFor, setRenameFor] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
+  // signature — inline editor for one account's Signature. A Gmail pull only
+  // fills the draft; nothing is stored until Save.
+  const [sigFor, setSigFor] = useState<string | null>(null);
+  const [sigDraft, setSigDraft] = useState("");
+  const [sigScope, setSigScope] = useState<SignatureScope>("all");
+  const [pulling, setPulling] = useState(false);
+
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -175,6 +186,7 @@ export default function SendersModal({
     (data?.health ?? []).map((h) => [h.email.toLowerCase(), h]),
   );
   const smtpByEmail = data?.smtp ?? {};
+  const sigByEmail = data?.signatures ?? {};
   const githubTokenSet = !!data?.github?.tokenSet;
   const trackingUrlSet = !!data?.tracking?.urlSet;
   const trackingEnabled = !!data?.tracking?.enabled;
@@ -330,6 +342,7 @@ export default function SendersModal({
     setRenewPort(String(cur?.port ?? 465));
     setRenewUser(cur?.user ?? addr);
     setRenewPass("");
+    setSigFor(null);
     setRenewFor(addr);
   };
 
@@ -419,6 +432,89 @@ export default function SendersModal({
       setError("Network error while renaming the account.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const openSignature = (addr: string) => {
+    clearMsgs();
+    setPendingRemove(null);
+    setRenewFor(null);
+    setSuggestion(null);
+    const cur = sigByEmail[addr.toLowerCase()];
+    setSigDraft(cur?.signature ?? "");
+    setSigScope(cur?.scope ?? "all");
+    setSigFor(addr);
+  };
+
+  // Store the draft (or '' to remove the signature) and its scope. Remove
+  // passes the saved scope, so an unsaved toggle isn't stored with it.
+  const saveSignature = async (
+    addr: string,
+    signature: string,
+    signatureScope: SignatureScope = "all",
+  ) => {
+    clearMsgs();
+    setBusy(true);
+    try {
+      const res = await fetch("/api/senders", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: addr, signature, signatureScope }),
+      });
+      const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        setError(body.error ?? "Could not save the signature.");
+        return;
+      }
+      setData(body);
+      setSigFor(null);
+      flash(
+        signature.trim()
+          ? `Saved the signature for ${addr}.`
+          : `Removed the signature from ${addr}.`,
+      );
+      onChanged?.();
+    } catch {
+      setError("Network error while saving the signature.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Fetch the signature set in Gmail into the draft, for review before Save.
+  const pullSignature = async (addr: string) => {
+    clearMsgs();
+    setPulling(true);
+    try {
+      const res = await fetch("/api/senders/signature", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: addr }),
+      });
+      const body = (await res.json()) as {
+        ok: boolean;
+        signature?: string;
+        error?: string;
+        needsReauth?: boolean;
+      };
+      if (!res.ok || !body.ok) {
+        setError(
+          (body.error ?? "Could not pull the Gmail signature.") +
+            (body.needsReauth ? " Reconnect Reply sync for this account." : ""),
+        );
+        return;
+      }
+      const sig = (body.signature ?? "").trim();
+      if (!sig) {
+        setWarnMsg("This Gmail account has no signature set.");
+        return;
+      }
+      setSigDraft(sig);
+      flash("Pulled the Gmail signature. Check the preview, then Save.");
+    } catch {
+      setError("Network error while pulling the Gmail signature.");
+    } finally {
+      setPulling(false);
     }
   };
 
@@ -865,6 +961,9 @@ export default function SendersModal({
                 const hp = healthByEmail.get(key);
                 const smtp = smtpByEmail[key];
                 const renewing = renewFor === id.email;
+                const sigOpen = sigFor === id.email;
+                const sigSaved = sigByEmail[key];
+                const hasSig = !!sigSaved?.signature.trim();
                 const sug = suggestion?.email.toLowerCase() === key ? suggestion : null;
                 // A password must be typed when there is none on file, or when
                 // the form points the account at a different server than the one
@@ -954,6 +1053,18 @@ export default function SendersModal({
                             ) : (
                               syncOn && <span className="badge badge-info shrink-0">Reply sync on</span>
                             )}
+                            {hasSig && (
+                              <span
+                                title={
+                                  sigSaved?.scope === "openers"
+                                    ? "A signature is added to Openers only"
+                                    : "A signature is added to every email from this account"
+                                }
+                                className="badge badge-info shrink-0"
+                              >
+                                Signature{sigSaved?.scope === "openers" ? " · Openers" : ""}
+                              </span>
+                            )}
                             {block && (
                               // No time shown: this page polls slowly, so a
                               // live-looking clock would read stale. The title
@@ -987,6 +1098,19 @@ export default function SendersModal({
                         >
                           <RefreshIcon className="h-3.5 w-3.5" />
                           Reconnect
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => (sigOpen ? setSigFor(null) : openSignature(id.email))}
+                          disabled={busy}
+                          title={hasSig ? "Edit this account's signature" : "Add a signature to emails from this account"}
+                          className={
+                            "btn btn-sm btn-secondary " +
+                            (sigOpen ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200" : "")
+                          }
+                        >
+                          <SignatureIcon className="h-3.5 w-3.5" />
+                          {hasSig ? "Signature" : "Add signature"}
                         </button>
                         <button
                           type="button"
@@ -1227,6 +1351,117 @@ export default function SendersModal({
                                 </>
                               ) : (
                                 "Save & reconnect"
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {sigOpen && (
+                      <div className="mt-4 space-y-4 rounded-xl border border-white/10 bg-slate-950/40 p-4">
+                        <div>
+                          <div className="flex flex-wrap items-end justify-between gap-2">
+                            <label className="field-label" htmlFor={`sig-${key}`}>
+                              Signature
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => pullSignature(id.email)}
+                              disabled={busy || pulling || !syncOn}
+                              title={
+                                syncOn
+                                  ? "Load the signature set in this account's Gmail settings into the box below"
+                                  : "Connect Reply sync for this account to pull its Gmail signature"
+                              }
+                              className="btn btn-sm btn-secondary"
+                            >
+                              {pulling ? (
+                                <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <MailIcon className="h-3.5 w-3.5" />
+                              )}
+                              Pull from Gmail
+                            </button>
+                          </div>
+                          <textarea
+                            id={`sig-${key}`}
+                            autoFocus
+                            value={sigDraft}
+                            onChange={(e) => setSigDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                e.stopPropagation();
+                                setSigFor(null);
+                              }
+                            }}
+                            rows={5}
+                            maxLength={10_000}
+                            disabled={busy}
+                            spellCheck={false}
+                            placeholder={"Jane Doe\nFounder, Acme · https://acme.com"}
+                            className="input mt-1.5 min-h-[7rem] font-mono text-xs leading-relaxed placeholder:font-sans"
+                          />
+                          <p className="field-hint">
+                            Plain text, or paste HTML. {"{{sender}}"} and {"{{sender_email}}"} work here too.
+                            {!syncOn && " Pull from Gmail needs Reply sync connected for this account."}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-medium text-slate-400">Add it to</span>
+                          <Segmented<SignatureScope>
+                            value={sigScope}
+                            onChange={setSigScope}
+                            options={[
+                              { value: "all", label: "Every email" },
+                              { value: "openers", label: "Openers only" },
+                            ]}
+                          />
+                          <span className="text-xs text-slate-500">
+                            {sigScope === "openers"
+                              ? "Pitches, Bumps and replies in the thread go without it."
+                              : "Openers, Pitches, Bumps and replies."}
+                          </span>
+                        </div>
+
+                        {sigDraft.trim() && (
+                          <div>
+                            <div className="field-label">Preview</div>
+                            <SignaturePreview signature={sigDraft} sender={id} />
+                          </div>
+                        )}
+
+                        <div className="flex flex-col gap-3 border-t border-white/5 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            {hasSig && (
+                              <button
+                                type="button"
+                                onClick={() => saveSignature(id.email, "", sigSaved?.scope)}
+                                disabled={busy}
+                                className="btn btn-sm btn-danger"
+                              >
+                                Remove signature
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <button type="button" onClick={() => setSigFor(null)} className="btn btn-ghost">
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveSignature(id.email, sigDraft, sigScope)}
+                              disabled={busy || pulling || (!sigDraft.trim() && !hasSig)}
+                              className="btn btn-primary"
+                            >
+                              {busy ? (
+                                <>
+                                  <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                  Saving…
+                                </>
+                              ) : (
+                                "Save signature"
                               )}
                             </button>
                           </div>
@@ -1554,7 +1789,45 @@ function AccountAvatar({ name, email }: { name: string; email: string }) {
   );
 }
 
+/** The signature as recipients will see it, placeholders filled with this
+ *  Sender, rendered by the same code the send path uses. Sandboxed: pasted
+ *  HTML can't run scripts in the app, and its styles stay inside the frame.
+ *  Same-origin (still without scripts) only so the frame can be sized to its
+ *  content. Always white, like an email client. */
+function SignaturePreview({ signature, sender }: { signature: string; sender: MailIdentity }) {
+  const ref = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(48);
+  const html = textToEmailHtml("", undefined, renderSignature(signature, sender).html);
+  const fit = () => {
+    const doc = ref.current?.contentDocument;
+    if (doc?.body) setHeight(Math.min(Math.max(doc.body.scrollHeight, 24), 400));
+  };
+  return (
+    // The padding sits on the frame element, outside the rendered email.
+    <div className="mt-1.5 rounded-lg border border-white/10 bg-white px-3.5 py-3">
+      <iframe
+        ref={ref}
+        title="Signature preview"
+        sandbox="allow-same-origin"
+        srcDoc={html}
+        onLoad={fit}
+        style={{ height }}
+        className="block w-full border-0 bg-white"
+      />
+    </div>
+  );
+}
+
 type IconProps = { className?: string };
+
+function SignatureIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 17c3-1 4-9 6-9s-1 9 2 9 3-5 5-5 1 4 3 4" />
+      <path d="M3 21h18" />
+    </svg>
+  );
+}
 
 function MailIcon({ className }: IconProps) {
   return (

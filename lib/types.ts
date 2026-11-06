@@ -43,6 +43,14 @@ export type ScanMatch = {
 
 export type MailIdentity = { name: string; email: string };
 
+/** Which sends carry a Sender's Signature: every email, or Openers only (never
+ *  a threaded Pitch, Bump or reply). */
+export type SignatureScope = "all" | "openers";
+
+export function isSignatureScope(v: unknown): v is SignatureScope {
+  return v === "all" || v === "openers";
+}
+
 export type DiscoverySourceKind =
   | "profile"
   | "readme"

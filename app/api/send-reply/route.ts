@@ -119,6 +119,8 @@ export async function POST(req: Request) {
       body,
       inReplyTo,
       references,
+      // Still a reply when the Gmail headers couldn't be fetched.
+      isReply: true,
     });
     return NextResponse.json({ ok: true, messageId: info.messageId });
   } catch (err) {

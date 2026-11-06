@@ -1,7 +1,7 @@
 import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
-import type { MailIdentity } from "./types";
+import type { MailIdentity, SignatureScope } from "./types";
 import { listStoredIdentities } from "./identities-store";
-import { textToEmailHtml } from "./mail-html";
+import { fillSenderVars, renderSignature, textToEmailHtml } from "./mail-html";
 
 export type { MailIdentity };
 
@@ -13,6 +13,8 @@ type MailIdentityFull = MailIdentity & {
   smtpSecure?: boolean;
   smtpUser?: string;
   smtpPass?: string;
+  signature?: string;
+  signatureScope?: SignatureScope;
 };
 
 function bool(v: string | undefined, fallback: boolean): boolean {
@@ -60,6 +62,8 @@ function parseIdentities(): MailIdentityFull[] {
       smtpSecure: s.smtpSecure,
       smtpUser: s.smtpUser,
       smtpPass: s.smtpPass,
+      signature: s.signature,
+      signatureScope: s.signatureScope,
     }));
   }
   return parseEnvIdentities();
@@ -389,6 +393,9 @@ export async function sendMail(args: {
   inReplyTo?: string;
   /** RFC References chain for threading. */
   references?: string;
+  /** A Pitch, Bump or manual reply — even when its thread headers could not
+   *  be found. Keeps an Openers-only Signature off it. */
+  isReply?: boolean;
   /** When set, adds this open-tracking pixel to the HTML part. */
   trackPixelUrl?: string;
 }): Promise<{ messageId: string }> {
@@ -413,11 +420,8 @@ export async function sendMail(args: {
   // Done here (the single choke point for every send) so it is correct for
   // immediate sends, queued sends, and follow-ups even when the queue rotates
   // to a different account than the one chosen when the email was composed.
-  const senderName = displayName || identity.name || identity.email;
-  const resolveSender = (t: string) =>
-    t
-      .replace(/\{\{\s*sender_email\s*\}\}/gi, identity.email)
-      .replace(/\{\{\s*sender\s*\}\}/gi, senderName);
+  const sender = { name: displayName || identity.name || identity.email, email: identity.email };
+  const resolveSender = (t: string) => fillSenderVars(t, sender);
 
   const headers: Record<string, string> = {};
   if (args.inReplyTo?.trim()) headers["In-Reply-To"] = args.inReplyTo.trim();
@@ -427,6 +431,17 @@ export async function sendMail(args: {
   const finalBody = resolveSender(args.body);
   const pixel = args.trackPixelUrl?.trim();
 
+  // The Signature of the account that is actually sending. An Openers-only one
+  // stays off Pitches, Bumps and replies.
+  const isReply = !!args.isReply || !!args.inReplyTo?.trim();
+  const sig =
+    identity.signatureScope === "openers" && isReply
+      ? { html: "", text: "" }
+      : renderSignature(identity.signature ?? "", sender);
+  const textPart = sig.text
+    ? [finalBody.trimEnd(), sig.text].filter(Boolean).join("\n\n")
+    : finalBody;
+
   const cc = args.cc?.trim();
   const mail: SendMailOptions = {
     from: fromHeader,
@@ -435,8 +450,8 @@ export async function sendMail(args: {
     subject: finalSubject,
     // Always multipart text+HTML: plain-text-only mail is not safe either —
     // Outlook's default "remove extra line breaks" joins its lines together.
-    text: finalBody,
-    html: textToEmailHtml(finalBody, pixel || undefined),
+    text: textPart,
+    html: textToEmailHtml(finalBody, pixel || undefined, sig.html),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   };
 

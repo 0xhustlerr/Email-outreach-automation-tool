@@ -303,6 +303,38 @@ export async function getAccessToken(senderEmail: string): Promise<string | null
   return data.access_token;
 }
 
+/** The signature set in Gmail's own settings for this Sender (HTML, '' when
+ *  none is set). Reads users.settings.sendAs, which the reply-sync token's
+ *  gmail.readonly scope already covers. Throws when the account has no reply
+ *  sync, the token is rejected, or Gmail refuses the request. */
+export async function fetchGmailSignature(senderEmail: string): Promise<string> {
+  const email = senderEmail.trim().toLowerCase();
+  const token = await getAccessToken(email);
+  if (!token) {
+    throw new Error("Connect Reply sync for this account to pull its Gmail signature.");
+  }
+  const res = await gmailFetch(
+    "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs",
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `Gmail refused to share this account's settings (HTTP ${res.status}). Reconnect Reply sync and try again.`,
+      );
+    }
+    throw new Error(`Gmail signature request failed (HTTP ${res.status}).`);
+  }
+  const data = (await res.json()) as {
+    sendAs?: { sendAsEmail?: string; isPrimary?: boolean; signature?: string }[];
+  };
+  const list = data.sendAs ?? [];
+  const match =
+    list.find((s) => (s.sendAsEmail ?? "").toLowerCase() === email) ??
+    list.find((s) => s.isPrimary);
+  return (match?.signature ?? "").trim();
+}
+
 function gmailAfterDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";

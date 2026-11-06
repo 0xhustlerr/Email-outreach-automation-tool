@@ -340,6 +340,7 @@ function threadedReplyContext(
     country: seq.country,
     inReplyTo: seq.opMessageId,
     references: seq.opMessageId,
+    isReply: true,
   };
 }
 

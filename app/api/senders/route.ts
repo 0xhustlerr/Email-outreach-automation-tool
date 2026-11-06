@@ -17,6 +17,7 @@ import {
   setGithubToken,
   setGmailClient,
   setIdentityName,
+  setIdentitySignature,
   setInboxOAuthClient,
   setOAuthRefreshToken,
   upsertStoredIdentity,
@@ -40,6 +41,7 @@ import {
   setTrackingEnabled,
 } from "@/lib/tracking";
 import { isSheetsLoggerConfigured } from "@/lib/sheets";
+import { isSignatureScope } from "@/lib/types";
 import { listActiveBlocks } from "@/lib/sender-blocks";
 import {
   forgetInboxAuth,
@@ -88,6 +90,11 @@ function snapshot() {
           hasPass: !!i.smtpPass,
         },
       ]),
+    ),
+    // Each Sender's Signature (plain text or HTML) and where it goes. Not a
+    // secret — it is what every recipient sees.
+    signatures: Object.fromEntries(
+      stored.map((i) => [i.email, { signature: i.signature, scope: i.signatureScope }]),
     ),
     // Last known SMTP status per account, from the startup check and any manual
     // recheck. In-memory, so it is empty until the first check completes.
@@ -288,6 +295,7 @@ export async function POST(req: Request) {
 
 // Account settings that don't touch SMTP. Shapes:
 //   { email, name }                   -> rename an account's display name
+//   { email, signature?, signatureScope? } -> set/clear a Sender's Signature
 //   { email, clientId, clientSecret } -> save that inbox's own OAuth client
 //   { clientId, clientSecret }        -> save the global fallback client
 //   { email, refreshToken }           -> set/clear an inbox's refresh token
@@ -301,11 +309,43 @@ export async function PUT(req: Request) {
     githubToken?: string;
     trackingUrl?: string;
     trackingEnabled?: boolean;
+    signature?: string;
+    signatureScope?: string;
   };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  // Set (or clear, with '') a Sender's Signature and/or its scope. Either field
+  // may be sent alone; the other keeps its stored value.
+  if (
+    body.email !== undefined &&
+    (body.signature !== undefined || body.signatureScope !== undefined)
+  ) {
+    const email = (body.email ?? "").trim().toLowerCase();
+    const stored = getStoredIdentity(email);
+    if (!stored) {
+      return NextResponse.json({ ok: false, error: "That account was not found." }, { status: 404 });
+    }
+    const signature =
+      body.signature !== undefined ? String(body.signature ?? "").trim() : stored.signature;
+    if (signature.length > 10_000) {
+      return NextResponse.json(
+        { ok: false, error: "Keep the signature under 10,000 characters." },
+        { status: 400 },
+      );
+    }
+    const scope = body.signatureScope ?? stored.signatureScope;
+    if (!isSignatureScope(scope)) {
+      return NextResponse.json(
+        { ok: false, error: "Choose where the signature goes: every email or Openers only." },
+        { status: 400 },
+      );
+    }
+    setIdentitySignature(email, signature, scope);
+    return NextResponse.json({ ok: true, ...snapshot() });
   }
 
   // Rename an account. Only the display name changes, so there is nothing to
