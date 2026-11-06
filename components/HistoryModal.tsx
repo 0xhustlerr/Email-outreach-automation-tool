@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSpin } from "@/hooks/useSpin";
 import { toast } from "sonner";
 import type { SheetHistoryRow } from "@/lib/sheets";
 import GmailAvatar from "@/components/GmailAvatar";
@@ -806,6 +807,8 @@ export default function HistoryModal({
   const [rangeFrom, setRangeFrom] = useState(initial.from);
   const [rangeTo, setRangeTo] = useState(initial.to);
   const [copiedToast, setCopiedToast] = useState(false);
+  // Keeps the reload icon turning long enough to be seen on a fast reload.
+  const refreshSpin = useSpin();
   const [searchQuery, setSearchQuery] = useState("");
   const [campaignOpen, setCampaignOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(
@@ -1354,13 +1357,16 @@ export default function HistoryModal({
             {onRefresh && (
               <button
                 type="button"
-                onClick={onRefresh}
+                onClick={() => {
+                  void refreshSpin.run();
+                  onRefresh();
+                }}
                 disabled={loading}
                 className="btn btn-secondary btn-icon"
                 title="Reload from Google Sheet"
                 aria-label="Reload from Google Sheet"
               >
-                <RefreshIcon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                <RefreshIcon className={`h-4 w-4 ${loading || refreshSpin.spinning ? "animate-spin" : ""}`} />
               </button>
             )}
             <button

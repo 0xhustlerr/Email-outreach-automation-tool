@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Spinner } from "@/components/ui/spinner";
+import { useSpin } from "@/hooks/useSpin";
 import { toast } from "sonner";
 import { CountryFlag } from "@/components/CountryFlag";
 import {
@@ -515,6 +517,8 @@ export default function QueueModal({
   const [rotating, setRotating] = useState(false);
   const rotateInited = useRef(false);
 
+  // Spins the header refresh icon for as long as a manual refresh is in flight.
+  const refreshSpin = useSpin();
   const refresh = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch("/api/queue");
@@ -1154,12 +1158,12 @@ export default function QueueModal({
           <>
             <button
               type="button"
-              onClick={() => void refresh()}
+              onClick={() => void refreshSpin.run(refresh())}
               className="btn btn-ghost btn-icon"
               title="Refresh"
               aria-label="Refresh"
             >
-              <RefreshIcon className="h-4 w-4" />
+              <RefreshIcon className={"h-4 w-4" + (refreshSpin.spinning ? " animate-spin" : "")} />
             </button>
             <button
               type="button"
@@ -2072,6 +2076,7 @@ export default function QueueModal({
                           }
                           className="btn btn-sm btn-secondary"
                         >
+                          {rotating && <Spinner />}
                           {rotating
                             ? "Rotating…"
                             : `Rotate ${num("queued")} queued`}
@@ -2106,7 +2111,14 @@ export default function QueueModal({
                 disabled={savingSettings}
                 className="btn btn-primary min-w-[5rem]"
               >
-                {savingSettings ? "Applying…" : "OK"}
+                {savingSettings ? (
+                  <>
+                    <Spinner />
+                    Applying…
+                  </>
+                ) : (
+                  "OK"
+                )}
               </button>
             </div>
           </div>

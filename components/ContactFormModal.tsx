@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import type { SavedContact } from "@/lib/contacts-store";
 import {
   githubLogin,
@@ -233,6 +234,7 @@ export default function ContactFormModal({
             data-ripple
             className="btn btn-primary"
           >
+            {saving && <Spinner />}
             {saving ? "Saving…" : editing ? "Save changes" : "Add contact"}
           </button>
         </div>

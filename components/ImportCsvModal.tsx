@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { CountryFlag } from "@/components/CountryFlag";
 import EmailScoreBadge from "@/components/EmailScoreBadge";
@@ -275,6 +276,7 @@ export default function ImportCsvModal({
                   : "Discover emails and queue every eligible lead"
               }
             >
+              {running && <Spinner />}
               {running ? "Importing…" : `Import & queue${rows.length ? ` (${rows.length})` : ""}`}
             </button>
           </>

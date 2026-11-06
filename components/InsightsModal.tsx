@@ -11,6 +11,7 @@ import type { SheetHistoryRow } from "@/lib/sheets";
 import type { ReplyNotification } from "@/lib/reply-alerts";
 import { CountryFlag } from "@/components/CountryFlag";
 import { Card, EmptyState, PageBody, PageHeader, StatCard } from "@/components/ui/dashboard";
+import { useSpin } from "@/hooks/useSpin";
 
 // Outreach dashboard for a selectable time range: totals, reply status, the
 // list of who replied (with good/neutral/bad sentiment), and breakdowns.
@@ -670,13 +671,18 @@ export function InsightsDashboard({
       "No activity in range"
     );
 
+  // Keeps the refresh icon turning long enough to be seen on a fast reload.
+  const refreshSpin = useSpin();
   const controls = (
     <>
       <RangePicker value={range} onChange={setRange} compact={!asPage} />
       {onRefresh && (
         <button
           type="button"
-          onClick={onRefresh}
+          onClick={() => {
+            void refreshSpin.run();
+            onRefresh();
+          }}
           disabled={loading}
           className={
             "btn btn-icon " + (asPage ? "btn-secondary" : "btn-ghost btn-sm")
@@ -684,7 +690,7 @@ export function InsightsDashboard({
           title="Refresh from sheet"
           aria-label="Refresh from sheet"
         >
-          <RefreshIcon className={"h-4 w-4 " + (loading ? "animate-spin" : "")} />
+          <RefreshIcon className={"h-4 w-4 " + (loading || refreshSpin.spinning ? "animate-spin" : "")} />
         </button>
       )}
     </>

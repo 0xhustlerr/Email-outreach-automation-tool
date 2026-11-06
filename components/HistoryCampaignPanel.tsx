@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
 import { useTemplates } from "@/hooks/useTemplates";
 
@@ -320,6 +321,7 @@ export default function HistoryCampaignPanel({
             data-ripple
             className="btn btn-primary tabular-nums"
           >
+            {busy && <Spinner />}
             {busy ? "Queuing…" : `Add ${count ?? 0} to queue`}
           </button>
         </div>

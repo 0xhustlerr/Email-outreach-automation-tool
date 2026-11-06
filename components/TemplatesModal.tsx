@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { useTemplates, type UiTemplate } from "@/hooks/useTemplates";
 import { Card, PageBody, PageHeader, Segmented } from "@/components/ui/dashboard";
 
@@ -197,6 +198,7 @@ export default function TemplatesModal(_props: {
               data-ripple
               className="btn btn-primary"
             >
+              {busy && <Spinner />}
               {busy ? "Saving…" : isNew ? "Add template" : "Save changes"}
             </button>
           </>
