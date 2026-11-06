@@ -27,6 +27,9 @@ export type SendContext = {
   /** RFC Message-ID of the message being replied to (threads the follow-up). */
   inReplyTo?: string;
   references?: string;
+  /** A Pitch or Bump (threaded reply), even if the opener's Message-ID is
+   *  missing — keeps an Openers-only Signature off it. */
+  isReply?: boolean;
 };
 
 export type SendResult =
@@ -102,6 +105,7 @@ export async function performSend(ctx: SendContext): Promise<SendResult> {
       body,
       inReplyTo: ctx.inReplyTo,
       references: ctx.references,
+      isReply: ctx.isReply,
       trackPixelUrl,
     });
 

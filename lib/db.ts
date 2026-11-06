@@ -446,6 +446,16 @@ function ensureSchema(db: Database.Database): void {
       `ALTER TABLE mail_identities ADD COLUMN oauth_refresh_token TEXT NOT NULL DEFAULT ''`,
     );
   }
+  // Per-Sender Signature: plain text or HTML ('' = none), and whether it goes
+  // on every email ('all') or on Openers only ('openers').
+  if (!identCols.includes("signature")) {
+    db.exec(`ALTER TABLE mail_identities ADD COLUMN signature TEXT NOT NULL DEFAULT ''`);
+  }
+  if (!identCols.includes("signature_scope")) {
+    db.exec(
+      `ALTER TABLE mail_identities ADD COLUMN signature_scope TEXT NOT NULL DEFAULT 'all'`,
+    );
+  }
   // NB: databases created before Gmail-API sending was removed still carry a
   // `last_transport` column. It is left in place (dropping it would rewrite the
   // table) and nothing reads or writes it — SMTP is now the only rail.

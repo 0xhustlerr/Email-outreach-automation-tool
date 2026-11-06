@@ -49,3 +49,7 @@ _Avoid_: inbox (that's where replies arrive), account, identity
 **Sender block**:
 A Sender stood down for the rest of the day after a policy bounce or failed login.
 _Avoid_: pause, suspension
+
+**Signature**:
+A Sender's name-and-details block, plain text or HTML (often pulled from Gmail), appended at send time from whichever Sender actually sends. It goes on every email, or on Openers only (never a threaded Pitch, Bump or reply).
+_Avoid_: footer, sign-off (that's the template's closing line)

@@ -3,6 +3,7 @@
 // production build can gain new Gmail senders without editing .env.local.
 
 import { db } from "./db";
+import { isSignatureScope, type SignatureScope } from "./types";
 
 export type StoredIdentity = {
   email: string;
@@ -20,6 +21,10 @@ export type StoredIdentity = {
    *  here — connecting one inbox then never touches the others'. */
   oauthClientId: string;
   oauthClientSecret: string;
+  /** Signature appended at send time: plain text or HTML ('' = none). */
+  signature: string;
+  /** Which sends carry the Signature: every email, or Openers only. */
+  signatureScope: SignatureScope;
 };
 
 type Row = {
@@ -33,6 +38,8 @@ type Row = {
   oauth_refresh_token: string;
   oauth_client_id: string;
   oauth_client_secret: string;
+  signature: string | null;
+  signature_scope: string | null;
 };
 
 function fromRow(r: Row): StoredIdentity {
@@ -47,6 +54,8 @@ function fromRow(r: Row): StoredIdentity {
     oauthRefreshToken: r.oauth_refresh_token ?? "",
     oauthClientId: r.oauth_client_id ?? "",
     oauthClientSecret: r.oauth_client_secret ?? "",
+    signature: r.signature ?? "",
+    signatureScope: isSignatureScope(r.signature_scope) ? r.signature_scope : "all",
   };
 }
 
@@ -98,8 +107,9 @@ export function upsertStoredIdentity(entry: {
   smtpPass: string;
 }): StoredIdentity {
   const email = entry.email.trim().toLowerCase();
-  // Note: oauth_refresh_token is intentionally NOT written here, so re-adding /
-  // editing a sending account preserves its reply-sync token.
+  // Note: oauth_refresh_token and the signature columns are intentionally NOT
+  // written here, so re-adding / reconnecting a sending account preserves its
+  // reply-sync token and its Signature.
   db.prepare(
     `INSERT INTO mail_identities
        (email, name, smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass, created_at)
@@ -146,6 +156,25 @@ export function setIdentityName(email: string, name: string): boolean {
     const info = db
       .prepare(`UPDATE mail_identities SET name = ? WHERE email = ?`)
       .run(name.trim() || key, key);
+    return info.changes > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Set (or clear, with '') a Sender's Signature and where it goes. Touches
+ *  nothing else on the account. */
+export function setIdentitySignature(
+  email: string,
+  signature: string,
+  scope: SignatureScope,
+): boolean {
+  try {
+    const info = db
+      .prepare(
+        `UPDATE mail_identities SET signature = ?, signature_scope = ? WHERE email = ?`,
+      )
+      .run(signature.trim(), scope, email.trim().toLowerCase());
     return info.changes > 0;
   } catch {
     return false;
