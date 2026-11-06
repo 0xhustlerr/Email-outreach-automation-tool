@@ -254,7 +254,7 @@ function openerLane(op: Sequence): LaneSpec {
     adapter: {
       revert: () => revertOpenerToPending(op.id),
       // Persist the account (and display name) that actually sent, so the
-      // threaded follow-up replies from the same address under the same name.
+      // threaded Pitch or Bump replies from the same address under the same name.
       markSent: (messageId, sender) =>
         markOpenerSent(op.id, messageId, sender, senderNameFor(op, sender)),
       markFailed: (error) => markOpenerFailed(op.id, error, MAX_ATTEMPTS),

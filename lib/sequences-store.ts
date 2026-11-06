@@ -633,7 +633,7 @@ export function markOpenerSent(
   // Persist the account the opener actually went out from so the threaded
   // follow-up replies from the SAME address (critical when the sender was
   // picked from a pool / rotation rather than the item's stored from_email).
-  // Likewise the name it went out under, so the follow-up's From matches the
+  // Likewise the name it went out under, so the Pitch or Bump's From matches the
   // opener's even if the account is renamed in between.
   const from = (sender ?? "").trim();
   const fromName = (senderName ?? "").trim();

@@ -80,7 +80,7 @@ export async function POST(req: Request) {
   recordSentSequence({
     toEmail: parsed.to ?? "",
     fromEmail: result.sender,
-    // Freeze the name the opener just went out under, so the follow-up keeps
+    // Freeze the name the opener just went out under, so the Pitch or Bump keeps
     // it even if the account is renamed before it sends.
     fromName: parsed.from?.name ?? "",
     name: parsed.name,

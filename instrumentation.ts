@@ -10,7 +10,8 @@ export async function register() {
     startAvatarPrefetchLoop();
     // With sending disabled the worker would claim due items, fail them at
     // sendMail and burn their retry attempts — so don't arm it at all.
-    if (process.env.NEXT_PUBLIC_SEND_DISABLED === "1") {
+    const { isSendingDisabled } = await import("./lib/mail");
+    if (isSendingDisabled()) {
       console.warn("[queue] sending disabled (NEXT_PUBLIC_SEND_DISABLED=1) — queue worker NOT started");
     } else {
       const { startQueueWorker } = await import("./lib/queue-worker");
