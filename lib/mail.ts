@@ -371,6 +371,13 @@ async function transportFor(id: MailIdentityFull): Promise<Transporter> {
   return t;
 }
 
+/** Kill switch for real sending, set NEXT_PUBLIC_SEND_DISABLED=1 (e.g. in
+ *  .env.development.local, which only `next dev` loads). Checked at the top of
+ *  sendMail — the single choke point — so no path can reach SMTP while on. */
+export function isSendingDisabled(): boolean {
+  return process.env.NEXT_PUBLIC_SEND_DISABLED === "1";
+}
+
 export async function sendMail(args: {
   from: MailIdentity;
   to: string;
@@ -385,6 +392,12 @@ export async function sendMail(args: {
   /** When set, adds this open-tracking pixel to the HTML part. */
   trackPixelUrl?: string;
 }): Promise<{ messageId: string }> {
+  if (isSendingDisabled()) {
+    console.warn(`[mail] blocked send to ${args.to} — sending is disabled`);
+    throw new Error(
+      "Sending is disabled on this server (NEXT_PUBLIC_SEND_DISABLED=1). No email was sent.",
+    );
+  }
   const identity = findIdentity(args.from.email);
   if (!identity) {
     throw new Error(

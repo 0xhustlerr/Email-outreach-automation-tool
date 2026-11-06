@@ -405,6 +405,14 @@ function ensureSchema(db: Database.Database): void {
   if (!seqCols.includes("claimed_at")) {
     db.exec(`ALTER TABLE sequences ADD COLUMN claimed_at TEXT NOT NULL DEFAULT ''`);
   }
+  // Sender display name as it was when the item was queued (or, once the
+  // opener went out, the name it actually went out under). Renaming an account
+  // in Accounts must not change the From name of mail already in the queue.
+  // Only applies while from_email is the account that sends; '' (rows from
+  // before this column) = use the account's current name.
+  if (!seqCols.includes("from_name")) {
+    db.exec(`ALTER TABLE sequences ADD COLUMN from_name TEXT NOT NULL DEFAULT ''`);
+  }
 
   const contactCols = (
     db.prepare(`PRAGMA table_info(contacts)`).all() as { name: string }[]

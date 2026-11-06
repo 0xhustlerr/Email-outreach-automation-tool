@@ -3,11 +3,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MailIdentity } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
+import {
+  Card,
+  EmptyState,
+  PageBody,
+  PageHeader,
+  StatCard,
+  StatGrid,
+} from "@/components/ui/dashboard";
 
 // Manage the Gmail accounts the app sends from. Everything lives in the local
 // database, so a shipped build starts empty and each user adds their own. Reply
-// sync (reading replies) is configured per account in its own modal. A GitHub
-// token (for scan rate limits) is also set here.
+// sync (reading replies) is configured per account in its own modal. Rendered
+// as two pages: Accounts (default) and Integrations (`focusSection="github"`:
+// the GitHub token for scan rate limits, and open tracking).
 
 // Mirrors SenderBlock in lib/sender-blocks.ts — `sender` is always lowercased.
 type SenderBlock = {
@@ -69,11 +78,11 @@ type SendersState = {
 type RemovedCounts = { history: number; sequences: number };
 
 export default function SendersModal({
-  onClose,
   onChanged,
   focusSection = null,
 }: {
   onClose: () => void;
+  asPage?: boolean;
   onChanged?: () => void;
   /** Opened straight to a section (e.g. from the Setup menu's "GitHub token"). */
   focusSection?: "github" | null;
@@ -110,6 +119,10 @@ export default function SendersModal({
   /** Account currently being verified — "*" while re-checking all of them. */
   const [checking, setChecking] = useState<string | null>(null);
 
+  // rename — inline edit of a connected account's display name.
+  const [renameFor, setRenameFor] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -121,11 +134,11 @@ export default function SendersModal({
   // separate from okMsg: a green "ready to send" would be a plain lie.
   const [warnMsg, setWarnMsg] = useState<string | null>(null);
 
-  // Deep-link support: scroll to + briefly highlight the GitHub token section
-  // when opened from the Setup menu's "GitHub token" item.
-  const githubRef = useRef<HTMLDivElement>(null);
+  // The Integrations page focuses the token field on open; the Accounts page's
+  // header "Add account" button jumps to the add form.
   const githubInputRef = useRef<HTMLInputElement>(null);
-  const [flashGithub, setFlashGithub] = useState(false);
+  const addCardRef = useRef<HTMLDivElement>(null);
+  const addNameRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -147,21 +160,10 @@ export default function SendersModal({
   useEffect(() => {
     if (focusSection !== "github") return;
     const t = window.setTimeout(() => {
-      githubRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       githubInputRef.current?.focus({ preventScroll: true });
-      setFlashGithub(true);
-      window.setTimeout(() => setFlashGithub(false), 2200);
     }, 80);
     return () => window.clearTimeout(t);
   }, [focusSection]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !replyFor) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, replyFor]);
 
   const clientConfigured = !!data?.replySync?.clientConfigured;
   const syncAccounts = data?.replySync?.accounts ?? {};
@@ -378,6 +380,48 @@ export default function SendersModal({
     }
   };
 
+  const openRename = (addr: string, current: string) => {
+    clearMsgs();
+    setPendingRemove(null);
+    setRenameValue(current);
+    setRenameFor(addr);
+  };
+
+  // Change only the display name — no SMTP re-verification, unlike Reconnect.
+  const saveRename = async (addr: string, current: string) => {
+    const next = renameValue.trim();
+    if (!next) {
+      setError("Enter a display name.");
+      return;
+    }
+    if (next === current) {
+      setRenameFor(null);
+      return;
+    }
+    clearMsgs();
+    setBusy(true);
+    try {
+      const res = await fetch("/api/senders", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: addr, name: next }),
+      });
+      const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        setError(body.error ?? "Could not rename the account.");
+        return;
+      }
+      setData(body);
+      setRenameFor(null);
+      flash(`Renamed ${addr} to “${next}”.`);
+      onChanged?.();
+    } catch {
+      setError("Network error while renaming the account.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const removeAccount = async (addr: string) => {
     clearMsgs();
     setBusy(true);
@@ -466,87 +510,352 @@ export default function SendersModal({
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) &&
     appPassword.trim().length >= 8;
 
+  const identities = data?.identities ?? [];
+  const connectedCount = identities.filter(
+    (id) => healthByEmail.get(id.email.toLowerCase())?.ok,
+  ).length;
+  const syncOnCount = identities.filter((id) => {
+    const k = id.email.toLowerCase();
+    return !!syncAccounts[k] && !syncErrors[k];
+  }).length;
+  const syncBrokenCount = identities.filter((id) => !!syncErrors[id.email.toLowerCase()]).length;
+  const blockedCount = identities.filter((id) => blockByEmail.has(id.email.toLowerCase())).length;
+
+  const scrollToAdd = () => {
+    addCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    addNameRef.current?.focus({ preventScroll: true });
+  };
+
+  const messages = (error || okMsg || warnMsg) && (
+    <div className="flex flex-col gap-2">
+      {error && (
+        <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-rose-200">
+          {error}
+        </p>
+      )}
+      {okMsg && !error && (
+        <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-200">
+          {okMsg}
+        </p>
+      )}
+      {warnMsg && !error && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-amber-200">
+          {warnMsg}
+        </p>
+      )}
+    </div>
+  );
+
+  const replyDialog = replyFor && (
+    <ReplySyncModal
+      email={replyFor}
+      clientConfigured={
+        data?.replySync?.accountClients?.[replyFor.toLowerCase()] ??
+        clientConfigured
+      }
+      syncOn={!!syncAccounts[replyFor.toLowerCase()]}
+      onClose={() => setReplyFor(null)}
+      onChanged={(snap) => {
+        setData((prev) => ({ ...(prev as SendersState), ...snap }));
+        onChanged?.();
+      }}
+    />
+  );
+
+  // ── Integrations page ────────────────────────────────────────────────────
+  if (focusSection === "github") {
+    return (
+      <>
+        <PageBody>
+          <PageHeader
+            title="Integrations"
+            description="Services that power scanning and tracking"
+            icon={<PlugIcon className="h-5 w-5" />}
+          />
+
+          {messages}
+
+          <div className="grid items-start gap-6 lg:grid-cols-2">
+            {/* GitHub token */}
+            <Card
+              title={
+                <span className="flex items-center gap-2">
+                  <GithubIcon className="h-4 w-4 text-slate-400" />
+                  GitHub access token
+                </span>
+              }
+              description="Optional but recommended: raises scanning from 60 to 5,000 requests/hour. Use your own token — it stays on this computer."
+              actions={
+                <span className={"badge " + (githubTokenSet ? "badge-success" : "badge-neutral")}>
+                  {githubTokenSet ? "Set" : "Not set"}
+                </span>
+              }
+            >
+              <label htmlFor="github-token" className="field-label">
+                {githubTokenSet ? "Replace token" : "Token"}
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="github-token"
+                  ref={githubInputRef}
+                  type="text"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder={githubTokenSet ? "Token set — paste to replace" : "ghp_… or github_pat_…"}
+                  autoComplete="off"
+                  className="input min-w-0 font-mono placeholder:font-sans sm:flex-1"
+                />
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => saveGithubToken(githubToken.trim())}
+                    disabled={busy || githubToken.trim().length < 10}
+                    className="btn btn-primary flex-1 sm:flex-none"
+                  >
+                    Save
+                  </button>
+                  {githubTokenSet && (
+                    <button
+                      type="button"
+                      onClick={() => saveGithubToken("")}
+                      disabled={busy}
+                      className="btn btn-danger flex-1 sm:flex-none"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="field-hint">We check the token against GitHub before saving it.</p>
+              <Collapsible
+                open={showGithubGuide}
+                onToggle={() => setShowGithubGuide((v) => !v)}
+                title="How to create a GitHub token (from zero)"
+              >
+                <ol className="space-y-3">
+                  <Step n={1} title="Open token settings">
+                    Signed in to GitHub, go to{" "}
+                    <Ext href="https://github.com/settings/tokens">github.com/settings/tokens</Ext>.
+                  </Step>
+                  <Step n={2} title="Generate a token">
+                    Click <span className="text-slate-100">Generate new token</span>. Either a{" "}
+                    classic token, or a fine-grained token with{" "}
+                    <span className="text-slate-100">Public repositories (read-only)</span> access —
+                    both work. No special scopes are needed for public data.
+                  </Step>
+                  <Step n={3} title="Copy &amp; paste">
+                    Copy the token (starts with{" "}
+                    <span className="font-mono text-slate-100">ghp_</span> or{" "}
+                    <span className="font-mono text-slate-100">github_pat_</span>) and paste it above →
+                    Save. We check it against GitHub before saving.
+                  </Step>
+                </ol>
+              </Collapsible>
+            </Card>
+
+            {/* Open tracking */}
+            <Card
+              title={
+                <span className="flex items-center gap-2">
+                  <EyeIcon className="h-4 w-4 text-slate-400" />
+                  Open tracking
+                </span>
+              }
+              description="See when recipients open your emails. Needs a small free tracking service (a Cloudflare Worker) — paste its URL. Opens are a rough signal, not exact; replies stay the strongest one."
+              actions={
+                <span
+                  className={
+                    "badge " +
+                    (trackingUrlSet && trackingEnabled
+                      ? "badge-success"
+                      : trackingUrlSet
+                        ? "badge-warning"
+                        : "badge-neutral")
+                  }
+                >
+                  {trackingUrlSet ? (trackingEnabled ? "On" : "Paused") : "Not set"}
+                </span>
+              }
+            >
+              {trackingUrlSet && (
+                <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3.5 py-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-slate-400">Tracking service</p>
+                    <p title={trackingCurrentUrl} className="mt-0.5 truncate font-mono text-xs text-slate-200">
+                      {trackingCurrentUrl}
+                    </p>
+                  </div>
+                  <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={trackingEnabled}
+                      onChange={(e) =>
+                        putTracking(
+                          { trackingEnabled: e.target.checked },
+                          e.target.checked ? "Open tracking enabled." : "Open tracking paused.",
+                        )
+                      }
+                      className="peer sr-only"
+                    />
+                    <span
+                      aria-hidden
+                      className="relative h-5 w-9 rounded-full bg-slate-700 transition after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition peer-checked:bg-cyan-500 peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-cyan-400/50"
+                    />
+                    Enabled
+                  </label>
+                </div>
+              )}
+              <label htmlFor="tracking-url" className="field-label">
+                {trackingUrlSet ? "Replace URL" : "Worker URL"}
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="tracking-url"
+                  type="text"
+                  value={trackingUrl}
+                  onChange={(e) => setTrackingUrl(e.target.value)}
+                  placeholder={trackingUrlSet ? "Replace URL…" : "https://open-tracking.you.workers.dev"}
+                  autoComplete="off"
+                  className="input min-w-0 font-mono placeholder:font-sans sm:flex-1"
+                />
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => putTracking({ trackingUrl: trackingUrl.trim() }, "Tracking service connected.")}
+                    disabled={busy || !/^https?:\/\//i.test(trackingUrl.trim())}
+                    className="btn btn-primary flex-1 sm:flex-none"
+                  >
+                    Save
+                  </button>
+                  {trackingUrlSet && (
+                    <button
+                      type="button"
+                      onClick={() => putTracking({ trackingUrl: "" }, "Tracking disconnected.")}
+                      disabled={busy}
+                      className="btn btn-danger flex-1 sm:flex-none"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+              <Collapsible
+                open={showTrackingGuide}
+                onToggle={() => setShowTrackingGuide((v) => !v)}
+                title="How to set up open tracking (from zero)"
+              >
+                <ol className="space-y-3">
+                  <Step n={1} title="Install Wrangler">
+                    On any computer: <span className="font-mono text-slate-100">npm i -g wrangler</span> then{" "}
+                    <span className="font-mono text-slate-100">wrangler login</span>.
+                  </Step>
+                  <Step n={2} title="Deploy the Worker">
+                    Open <span className="font-mono text-slate-100">tracking-worker/</span> → run{" "}
+                    <span className="font-mono text-slate-100">wrangler kv namespace create OPENS</span> (paste the
+                    id into wrangler.toml) → <span className="font-mono text-slate-100">wrangler deploy</span>.
+                  </Step>
+                  <Step n={3} title="Paste the URL">
+                    Wrangler prints a URL like{" "}
+                    <span className="font-mono text-slate-100">https://open-tracking.you.workers.dev</span> — paste
+                    it above and Save.
+                  </Step>
+                  <li className="mt-1 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-slate-400">
+                    Tracking switches emails to HTML with a hidden 1×1 pixel. Opens are approximate (Apple Mail and
+                    image-blockers skew them) — replies remain the strongest signal.
+                  </li>
+                </ol>
+              </Collapsible>
+            </Card>
+          </div>
+        </PageBody>
+        {replyDialog}
+      </>
+    );
+  }
+
+  // ── Accounts page ────────────────────────────────────────────────────────
   return (
     <>
-      <div
-        className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <div className="glass slide-in relative flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-          <div className="flex-1 overflow-auto p-6">
-            {/* Header */}
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div>
-                <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-                  <MailIcon className="h-5 w-5 text-cyan-300" />
-                  Accounts
-                  {(data?.identities?.length ?? 0) > 0 && (
-                    <span className="rounded-full bg-cyan-400/15 px-2 py-0.5 text-xs font-semibold text-cyan-200">
-                      {data!.identities.length}
-                    </span>
-                  )}
-                </h3>
-                <p className="mt-1 text-xs text-slate-400">
-                  Add the Gmail accounts you send from. Connect reply sync per
-                  account. Everything is stored on this computer.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-                aria-label="Close"
-              >
-                <CloseIcon className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Messages */}
-            {error && (
-              <p className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-                {error}
-              </p>
-            )}
-            {okMsg && !error && (
-              <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
-                {okMsg}
-              </p>
-            )}
-            {warnMsg && !error && (
-              <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-                {warnMsg}
-              </p>
-            )}
-
-            {/* Current accounts */}
-            {(data?.identities ?? []).length > 0 && (
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                  Connections
-                </span>
+      <PageBody>
+        <PageHeader
+          title="Accounts"
+          description="Gmail accounts you send from, and reply sync for each"
+          icon={<MailIcon className="h-5 w-5" />}
+          actions={
+            <>
+              {identities.length > 0 && (
                 <button
                   type="button"
                   onClick={() => recheck()}
                   disabled={busy || checking !== null}
                   title="Check every account right now: open a real SMTP connection and sign in, and verify its reply-sync token with Google"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/5 disabled:opacity-40"
+                  className="btn btn-secondary"
                 >
                   {checking === "*" ? (
-                    <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                    <SpinnerIcon className="h-4 w-4 animate-spin" />
                   ) : (
-                    <RefreshIcon className="h-3.5 w-3.5" />
+                    <RefreshIcon className="h-4 w-4" />
                   )}
                   {checking === "*" ? "Checking…" : "Recheck all"}
                 </button>
-              </div>
-            )}
-            <div className="space-y-2">
-              {(data?.identities ?? []).length === 0 && (
-                <p className="text-xs text-slate-500">No accounts yet. Add your first Gmail below.</p>
               )}
-              {(data?.identities ?? []).map((id) => {
+              <button type="button" onClick={scrollToAdd} className="btn btn-primary">
+                <PlusIcon className="h-4 w-4" />
+                Add account
+              </button>
+            </>
+          }
+        />
+
+        {identities.length > 0 && (
+          <StatGrid cols={4}>
+            <StatCard
+              label="Accounts"
+              value={identities.length}
+              hint="Stored on this computer"
+              icon={<MailIcon className="h-4 w-4" />}
+            />
+            <StatCard
+              label="Connected"
+              value={connectedCount}
+              tone={connectedCount > 0 ? "success" : "default"}
+              hint="SMTP login verified"
+              icon={<PlugIcon className="h-4 w-4" />}
+            />
+            <StatCard
+              label="Reply sync on"
+              value={syncOnCount}
+              tone={syncBrokenCount > 0 ? "warning" : syncOnCount > 0 ? "info" : "default"}
+              hint={syncBrokenCount > 0 ? `${syncBrokenCount} broken` : "Replies read automatically"}
+              icon={<RefreshIcon className="h-4 w-4" />}
+            />
+            <StatCard
+              label="Paused today"
+              value={blockedCount}
+              tone={blockedCount > 0 ? "warning" : "default"}
+              hint="Gmail policy blocks"
+              icon={<PauseIcon className="h-4 w-4" />}
+            />
+          </StatGrid>
+        )}
+
+        {messages}
+
+        {/* Current accounts */}
+        <Card
+          flush
+          title="Connections"
+          description="Reconnect to test or change an account's SMTP settings. Reply sync reads incoming replies."
+        >
+          {identities.length === 0 ? (
+            <EmptyState
+              icon={<MailIcon className="h-5 w-5" />}
+              title="No accounts yet"
+              description="Add your first Gmail below."
+            />
+          ) : (
+            <ul className="divide-y divide-white/5">
+              {identities.map((id) => {
                 const key = id.email.toLowerCase();
                 const syncOn = !!syncAccounts[key];
                 // Token on file but the last scan couldn't read the inbox —
@@ -567,30 +876,93 @@ export default function SendersModal({
                   (!smtp?.hasPass ||
                     renewHost.trim().toLowerCase() !== smtp.host.toLowerCase());
                 return (
-                  <div
-                    key={id.email}
-                    className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2.5"
-                  >
-                    <div className="flex items-center justify-between gap-3">
+                  <li key={id.email} className="px-5 py-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="flex min-w-0 items-center gap-3">
                         <AccountAvatar name={id.name} email={id.email} />
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
-                          {/* Wraps: the badges refuse to shrink, so on a narrow
-                              row (two badges at once) they would otherwise
-                              overflow this column and paint over the buttons. */}
-                          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                            <span className="max-w-full truncate font-mono text-[11px] text-slate-400">{id.email}</span>
+                          {renameFor === id.email ? (
+                            <form
+                              className="flex flex-wrap items-center gap-1.5"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                void saveRename(id.email, id.name);
+                              }}
+                            >
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") {
+                                    e.stopPropagation();
+                                    setRenameFor(null);
+                                  }
+                                }}
+                                maxLength={100}
+                                disabled={busy}
+                                aria-label={`Display name for ${id.email}`}
+                                className="input h-8 w-44 min-w-0"
+                              />
+                              <button
+                                type="submit"
+                                disabled={busy || !renameValue.trim()}
+                                className="btn btn-sm btn-primary"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRenameFor(null)}
+                                className="btn btn-sm btn-ghost"
+                              >
+                                Cancel
+                              </button>
+                            </form>
+                          ) : (
+                            <div className="group flex min-w-0 items-center gap-1">
+                              <div className="truncate text-sm font-medium text-slate-100">{id.name}</div>
+                              <button
+                                type="button"
+                                onClick={() => openRename(id.email, id.name)}
+                                disabled={busy}
+                                title="Edit display name"
+                                aria-label={`Edit display name for ${id.email}`}
+                                className="btn btn-sm btn-ghost btn-icon h-6 w-6 shrink-0 opacity-60 group-hover:opacity-100"
+                              >
+                                <PencilIcon className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )}
+                          <div title={id.email} className="mt-0.5 truncate font-mono text-xs text-slate-400">
+                            {id.email}
+                          </div>
+                          {/* Wraps: badges refuse to shrink, so a narrow row
+                              with several at once stays inside its column. */}
+                          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
                             <HealthBadge health={hp} checking={checking === id.email} />
+                            {syncErr ? (
+                              <span
+                                title={
+                                  `Replies to this inbox are NOT being read: ${syncErr.error}` +
+                                  (syncErr.needsReauth ? " Reconnect this account to fix it." : "")
+                                }
+                                className="badge badge-warning shrink-0"
+                              >
+                                Reply sync broken
+                              </span>
+                            ) : (
+                              syncOn && <span className="badge badge-info shrink-0">Reply sync on</span>
+                            )}
                             {block && (
-                              // No time shown: this modal polls slowly, so a
+                              // No time shown: this page polls slowly, so a
                               // live-looking clock would read stale. The title
                               // carries the detail; Resume lives in the queue.
                               <span
                                 title={`Gmail bounced this account with a policy block${
                                   block.detail ? `: ${block.detail}` : ""
                                 }. Outreach skips it until the next local midnight, then resumes on its own. Open the Queue to resume it early.`}
-                                className="shrink-0 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+                                className="badge badge-warning shrink-0"
                               >
                                 Paused — Gmail block
                               </span>
@@ -598,19 +970,19 @@ export default function SendersModal({
                           </div>
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5 md:justify-end">
                         <button
                           type="button"
                           onClick={() => (renewing ? setRenewFor(null) : openRenew(id.email))}
                           disabled={busy}
                           title="Re-test this account's SMTP connection, or renew its host, port, username and app password"
                           className={
-                            "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 " +
+                            "btn btn-sm btn-secondary " +
                             (renewing
                               ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200"
                               : hp && !hp.ok
-                                ? "border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
-                                : "border-white/10 text-slate-300 hover:bg-white/5")
+                                ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                                : "")
                           }
                         >
                           <RefreshIcon className="h-3.5 w-3.5" />
@@ -620,12 +992,8 @@ export default function SendersModal({
                           type="button"
                           onClick={() => setReplyFor(id.email)}
                           className={
-                            "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition " +
-                            (syncErr
-                              ? "border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-                              : syncOn
-                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                                : "border-cyan-400/30 text-cyan-200 hover:bg-cyan-400/10")
+                            "btn btn-sm btn-secondary " +
+                            (syncErr ? "border-amber-500/40 text-amber-200" : "")
                           }
                           title={
                             syncErr
@@ -654,14 +1022,14 @@ export default function SendersModal({
                               type="button"
                               onClick={() => removeAccount(id.email)}
                               disabled={busy}
-                              className="rounded-lg bg-rose-500/90 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-rose-400 disabled:opacity-40"
+                              className="btn btn-sm bg-rose-500 font-semibold text-white hover:bg-rose-400"
                             >
                               Delete + history
                             </button>
                             <button
                               type="button"
                               onClick={() => setPendingRemove(null)}
-                              className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-slate-300 transition hover:bg-white/5"
+                              className="btn btn-sm btn-ghost"
                             >
                               Cancel
                             </button>
@@ -674,7 +1042,7 @@ export default function SendersModal({
                               setPendingRemove(id.email);
                             }}
                             disabled={busy}
-                            className="rounded-lg border border-rose-500/30 px-2.5 py-1 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
+                            className="btn btn-sm btn-danger"
                           >
                             Remove
                           </button>
@@ -682,15 +1050,15 @@ export default function SendersModal({
                       </div>
                     </div>
                     {pendingRemove === id.email && (
-                      <p className="mt-2 text-[11px] text-rose-300/90">
+                      <p className="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-xs leading-relaxed text-rose-300/90">
                         Removes the account and deletes its send history (hidden from
                         History &amp; Insights) plus any pending queue items from it.
                       </p>
                     )}
 
                     {renewing && (
-                      <div className="mt-3 space-y-2.5 rounded-xl border border-white/10 bg-slate-950/40 p-3">
-                        <p className="text-[11px] leading-relaxed text-slate-400">
+                      <div className="mt-4 space-y-4 rounded-xl border border-white/10 bg-slate-950/40 p-4">
+                        <p className="text-xs leading-relaxed text-slate-400">
                           {hp
                             ? hp.ok
                               ? `Connected — SMTP login ok on ${hp.target}, checked at ${checkTime(hp.checkedAt)}.`
@@ -699,7 +1067,7 @@ export default function SendersModal({
                         </p>
 
                         {hp && !hp.ok && !hp.unconfigured && isTimeout(hp.error) && (
-                          <p className="text-[11px] leading-relaxed text-slate-500">
+                          <p className="text-xs leading-relaxed text-slate-500">
                             A timeout means the server never answered, so this says
                             nothing about your app password. Try the other port below.
                             If 465 and 587 both time out, the block is outside the app —
@@ -710,8 +1078,8 @@ export default function SendersModal({
                         )}
 
                         {sug && (
-                          <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-                            <span className="text-[11px] leading-relaxed text-emerald-200">
+                          <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+                            <span className="text-xs leading-relaxed text-emerald-200">
                               Port {sug.port} connected and signed in
                               {sug.secure ? " (SSL)" : " (STARTTLS)"}. Your current
                               port is blocked on this network.
@@ -722,210 +1090,255 @@ export default function SendersModal({
                                 setRenewHost(sug.host);
                                 setRenewPort(String(sug.port));
                               }}
-                              className="shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 transition hover:bg-emerald-500/20"
+                              className="btn btn-sm btn-secondary shrink-0 border-emerald-500/40 text-emerald-200"
                             >
                               Use port {sug.port}
                             </button>
                           </div>
                         )}
 
-                        <div className="grid grid-cols-2 gap-2.5">
-                          <input
-                            type="text"
-                            value={renewHost}
-                            onChange={(e) => setRenewHost(e.target.value)}
-                            placeholder="SMTP host"
-                            className="col-span-2 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
-                          />
-                          <input
-                            type="text"
-                            value={renewPort}
-                            onChange={(e) => setRenewPort(e.target.value)}
-                            placeholder="Port"
-                            className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
-                          />
-                          <input
-                            type="text"
-                            value={renewUser}
-                            onChange={(e) => setRenewUser(e.target.value)}
-                            placeholder="SMTP username"
-                            className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
-                          />
-                          <input
-                            type="text"
-                            value={renewPass}
-                            onChange={(e) => setRenewPass(e.target.value)}
-                            placeholder={
-                              needsPass
-                                ? `App password for ${renewHost.trim()}`
-                                : "New app password (leave blank to keep current)"
-                            }
-                            autoComplete="off"
-                            className="col-span-2 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 font-mono text-sm text-slate-200 outline-none placeholder:font-sans placeholder:text-slate-500 focus:border-cyan-400/50"
-                          />
-                        </div>
-
-                        {needsPass && (
-                          // Mirrors the server rule: the stored password is only
-                          // ever replayed to the account's own server, so moving
-                          // it elsewhere has to be typed out.
-                          <p className="text-[11px] leading-relaxed text-amber-300/90">
-                            {smtp?.hasPass
-                              ? `Enter the app password for ${renewHost.trim()} — the one on file belongs to ${smtp.host} and is not sent to a different server.`
-                              : "Enter the account's app password (16 characters for Gmail)."}
-                          </p>
-                        )}
-
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="mr-1 text-[11px] text-slate-500">Port:</span>
-                          {[
-                            { port: "465", label: "465 · SSL" },
-                            { port: "587", label: "587 · STARTTLS" },
-                          ].map((p) => (
-                            <button
-                              key={p.port}
-                              type="button"
-                              onClick={() => setRenewPort(p.port)}
-                              className={
-                                "rounded-lg border px-2 py-0.5 text-[11px] font-medium transition " +
-                                (renewPort.trim() === p.port
-                                  ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-200"
-                                  : "border-white/10 text-slate-400 hover:bg-white/5")
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="sm:col-span-2">
+                            <label className="field-label" htmlFor={`renew-host-${key}`}>SMTP host</label>
+                            <input
+                              id={`renew-host-${key}`}
+                              type="text"
+                              value={renewHost}
+                              onChange={(e) => setRenewHost(e.target.value)}
+                              placeholder="SMTP host"
+                              className="input"
+                            />
+                          </div>
+                          <div>
+                            <label className="field-label" htmlFor={`renew-port-${key}`}>Port</label>
+                            <input
+                              id={`renew-port-${key}`}
+                              type="text"
+                              value={renewPort}
+                              onChange={(e) => setRenewPort(e.target.value)}
+                              placeholder="Port"
+                              className="input tabular-nums"
+                            />
+                          </div>
+                          <div>
+                            <label className="field-label" htmlFor={`renew-user-${key}`}>SMTP username</label>
+                            <input
+                              id={`renew-user-${key}`}
+                              type="text"
+                              value={renewUser}
+                              onChange={(e) => setRenewUser(e.target.value)}
+                              placeholder="SMTP username"
+                              className="input"
+                            />
+                          </div>
+                          <div className="sm:col-span-2">
+                            <label className="field-label" htmlFor={`renew-pass-${key}`}>App password</label>
+                            <input
+                              id={`renew-pass-${key}`}
+                              type="text"
+                              value={renewPass}
+                              onChange={(e) => setRenewPass(e.target.value)}
+                              placeholder={
+                                needsPass
+                                  ? `App password for ${renewHost.trim()}`
+                                  : "New app password (leave blank to keep current)"
                               }
-                            >
-                              {p.label}
-                            </button>
-                          ))}
+                              autoComplete="off"
+                              className="input font-mono placeholder:font-sans"
+                            />
+                            {needsPass && (
+                              // Mirrors the server rule: the stored password is only
+                              // ever replayed to the account's own server, so moving
+                              // it elsewhere has to be typed out.
+                              <p className="field-hint text-amber-300/90">
+                                {smtp?.hasPass
+                                  ? `Enter the app password for ${renewHost.trim()} — the one on file belongs to ${smtp.host} and is not sent to a different server.`
+                                  : "Enter the account's app password (16 characters for Gmail)."}
+                              </p>
+                            )}
+                          </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                          <button
-                            type="button"
-                            onClick={() => recheck(id.email)}
-                            disabled={busy || checking !== null}
-                            title="Try the stored settings now, and the other standard port if this one can't be reached"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[12px] font-medium text-slate-200 transition hover:bg-white/5 disabled:opacity-40"
-                          >
-                            {checking === id.email ? (
-                              <>
-                                <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
-                                Testing…
-                              </>
-                            ) : (
-                              <>
-                                <PlugIcon className="h-3.5 w-3.5" />
-                                Test connection
-                              </>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => saveRenew(id.email)}
-                            disabled={busy || checking !== null || needsPass}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500/90 px-3 py-1.5 text-[12px] font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-40"
-                          >
-                            {busy ? (
-                              <>
-                                <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
-                                Verifying…
-                              </>
-                            ) : (
-                              "Save & reconnect"
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setRenewFor(null);
-                              setSuggestion(null);
-                            }}
-                            className="rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-slate-300 transition hover:bg-white/5"
-                          >
-                            Cancel
-                          </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-medium text-slate-400">Port preset</span>
+                          <div className="seg">
+                            {[
+                              { port: "465", label: "465 · SSL" },
+                              { port: "587", label: "587 · STARTTLS" },
+                            ].map((p) => (
+                              <button
+                                key={p.port}
+                                type="button"
+                                onClick={() => setRenewPort(p.port)}
+                                className={"seg-item " + (renewPort.trim() === p.port ? "seg-item-active" : "")}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <p className="text-[11px] leading-relaxed text-slate-500">
-                          Saving re-verifies the login and drops the cached connection,
-                          so the next send uses these settings. History, queue and reply
-                          sync for this account are untouched.
-                        </p>
+
+                        <div className="flex flex-col gap-3 border-t border-white/5 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="text-xs leading-relaxed text-slate-500 sm:max-w-md">
+                            Saving re-verifies the login and drops the cached connection,
+                            so the next send uses these settings. History, queue and reply
+                            sync for this account are untouched.
+                          </p>
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRenewFor(null);
+                                setSuggestion(null);
+                              }}
+                              className="btn btn-ghost"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => recheck(id.email)}
+                              disabled={busy || checking !== null}
+                              title="Try the stored settings now, and the other standard port if this one can't be reached"
+                              className="btn btn-secondary"
+                            >
+                              {checking === id.email ? (
+                                <>
+                                  <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                  Testing…
+                                </>
+                              ) : (
+                                <>
+                                  <PlugIcon className="h-3.5 w-3.5" />
+                                  Test connection
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveRenew(id.email)}
+                              disabled={busy || checking !== null || needsPass}
+                              className="btn btn-primary"
+                            >
+                              {busy ? (
+                                <>
+                                  <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                                  Verifying…
+                                </>
+                              ) : (
+                                "Save & reconnect"
+                              )}
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     )}
-                  </div>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
+          )}
+        </Card>
 
-            {/* Add account */}
-            <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <h4 className="mb-3 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Add a Gmail account
-              </h4>
-              <div className="space-y-2.5">
+        {/* Add account */}
+        <div ref={addCardRef} className="scroll-mt-6">
+          <Card
+            title="Add a Gmail account"
+            description="Sign in with a Google App Password. Everything is stored on this computer."
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="add-name" className="field-label">Display name</label>
                 <input
+                  id="add-name"
+                  ref={addNameRef}
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Display name (e.g. Wael)"
-                  className="w-full rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                  className="input"
                 />
+              </div>
+              <div>
+                <label htmlFor="add-email" className="field-label">Gmail address</label>
                 <input
+                  id="add-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@gmail.com"
                   autoComplete="off"
-                  className="w-full rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                  className="input"
                 />
+              </div>
+              <div className="sm:col-span-2">
+                <label htmlFor="add-pass" className="field-label">App password</label>
                 <input
+                  id="add-pass"
                   type="text"
                   value={appPassword}
                   onChange={(e) => setAppPassword(e.target.value)}
                   placeholder="16-character App Password"
                   autoComplete="off"
-                  className="w-full rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 font-mono text-sm text-slate-200 outline-none placeholder:font-sans placeholder:text-slate-500 focus:border-cyan-400/50"
+                  className="input font-mono placeholder:font-sans"
                 />
+                <p className="field-hint">Not your Gmail password — see the guide below to create one.</p>
               </div>
+            </div>
 
-              <button
-                type="button"
-                onClick={() => setShowAdvanced((v) => !v)}
-                className="mt-2 flex items-center gap-1 text-[11px] font-medium text-slate-400 transition hover:text-slate-200"
-              >
-                <ChevronIcon className={"h-3.5 w-3.5 transition " + (showAdvanced ? "rotate-90" : "")} />
-                Advanced (non-Gmail SMTP)
-              </button>
-              {showAdvanced && (
-                <div className="mt-2 grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              aria-expanded={showAdvanced}
+              className="btn btn-sm btn-ghost mt-3 -ml-2"
+            >
+              <ChevronIcon className={"h-3.5 w-3.5 transition " + (showAdvanced ? "rotate-90" : "")} />
+              Advanced (non-Gmail SMTP)
+            </button>
+            {showAdvanced && (
+              <div className="mt-2 grid gap-4 rounded-xl border border-white/5 bg-white/[0.02] p-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <label htmlFor="add-host" className="field-label">SMTP host</label>
                   <input
+                    id="add-host"
                     type="text"
                     value={smtpHost}
                     onChange={(e) => setSmtpHost(e.target.value)}
                     placeholder="SMTP host"
-                    className="col-span-2 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                    className="input"
                   />
+                </div>
+                <div>
+                  <label htmlFor="add-port" className="field-label">Port</label>
                   <input
+                    id="add-port"
                     type="text"
                     value={smtpPort}
                     onChange={(e) => setSmtpPort(e.target.value)}
                     placeholder="Port (465)"
-                    className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                    className="input tabular-nums"
                   />
+                </div>
+                <div>
+                  <label htmlFor="add-user" className="field-label">SMTP username</label>
                   <input
+                    id="add-user"
                     type="text"
                     value={smtpUser}
                     onChange={(e) => setSmtpUser(e.target.value)}
                     placeholder="SMTP username (defaults to email)"
-                    className="rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-cyan-400/50"
+                    className="input"
                   />
                 </div>
-              )}
+              </div>
+            )}
 
+            <div className="mt-4 flex justify-end border-t border-white/5 pt-4">
               <button
                 type="button"
                 onClick={addAccount}
                 disabled={!canAdd}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500/90 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
+                className="btn btn-primary w-full sm:w-auto"
               >
                 {busy ? (
                   <>
@@ -939,239 +1352,41 @@ export default function SendersModal({
                   </>
                 )}
               </button>
-
-              <Collapsible
-                open={showGmailGuide}
-                onToggle={() => setShowGmailGuide((v) => !v)}
-                title="How to get a Gmail App Password (from zero)"
-              >
-                <ol className="space-y-3">
-                  <Step n={1} title="Open your Google Account">
-                    Go to <Ext href="https://myaccount.google.com/">myaccount.google.com</Ext> and
-                    sign in with the Gmail you want to send from.
-                  </Step>
-                  <Step n={2} title="Turn on 2-Step Verification">
-                    Open{" "}
-                    <Ext href="https://myaccount.google.com/signinoptions/twosv">
-                      Security → 2-Step Verification
-                    </Ext>{" "}
-                    and finish setup.
-                  </Step>
-                  <Step n={3} title="Open App Passwords">
-                    Go to{" "}
-                    <Ext href="https://myaccount.google.com/apppasswords">
-                      myaccount.google.com/apppasswords
-                    </Ext>{" "}
-                    → name it (e.g. Outreach) → Create.
-                  </Step>
-                  <Step n={4} title="Copy &amp; paste">
-                    Copy the 16-character code into the App Password field above, then Add account.
-                  </Step>
-                </ol>
-              </Collapsible>
             </div>
 
-            {/* GitHub token */}
-            <div
-              ref={githubRef}
-              className={
-                "mt-4 rounded-2xl border p-4 transition-colors duration-500 " +
-                (flashGithub
-                  ? "border-cyan-400/60 bg-cyan-500/[0.06] ring-2 ring-cyan-400/40"
-                  : "border-white/10 bg-white/[0.03]")
-              }
+            <Collapsible
+              open={showGmailGuide}
+              onToggle={() => setShowGmailGuide((v) => !v)}
+              title="How to get a Gmail App Password (from zero)"
             >
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <h4 className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                  GitHub access token
-                </h4>
-                <span
-                  className={
-                    "rounded-full border px-2 py-0.5 text-[10px] font-medium " +
-                    (githubTokenSet
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                      : "border-white/10 bg-white/[0.03] text-slate-500")
-                  }
-                >
-                  {githubTokenSet ? "Set" : "Not set"}
-                </span>
-              </div>
-              <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
-                Optional but recommended: raises scanning from 60 to 5,000 requests/hour.
-                Use your own token — it stays on this computer.
-              </p>
-              <div className="flex items-center gap-2">
-                <input
-                  ref={githubInputRef}
-                  type="text"
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.target.value)}
-                  placeholder={githubTokenSet ? "Token set — paste to replace" : "ghp_… or github_pat_…"}
-                  autoComplete="off"
-                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 font-mono text-[12px] text-slate-200 outline-none placeholder:font-sans placeholder:text-slate-500 focus:border-cyan-400/50"
-                />
-                <button
-                  type="button"
-                  onClick={() => saveGithubToken(githubToken.trim())}
-                  disabled={busy || githubToken.trim().length < 10}
-                  className="shrink-0 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-[12px] font-semibold text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-40"
-                >
-                  Save
-                </button>
-                {githubTokenSet && (
-                  <button
-                    type="button"
-                    onClick={() => saveGithubToken("")}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg border border-rose-500/30 px-3 py-2 text-[12px] text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <Collapsible
-                open={showGithubGuide}
-                onToggle={() => setShowGithubGuide((v) => !v)}
-                title="How to create a GitHub token (from zero)"
-              >
-                <ol className="space-y-3">
-                  <Step n={1} title="Open token settings">
-                    Signed in to GitHub, go to{" "}
-                    <Ext href="https://github.com/settings/tokens">github.com/settings/tokens</Ext>.
-                  </Step>
-                  <Step n={2} title="Generate a token">
-                    Click <span className="text-slate-100">Generate new token</span>. Either a{" "}
-                    classic token, or a fine-grained token with{" "}
-                    <span className="text-slate-100">Public repositories (read-only)</span> access —
-                    both work. No special scopes are needed for public data.
-                  </Step>
-                  <Step n={3} title="Copy &amp; paste">
-                    Copy the token (starts with{" "}
-                    <span className="font-mono text-slate-100">ghp_</span> or{" "}
-                    <span className="font-mono text-slate-100">github_pat_</span>) and paste it above →
-                    Save. We check it against GitHub before saving.
-                  </Step>
-                </ol>
-              </Collapsible>
-            </div>
-
-            {/* Open tracking */}
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <h4 className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                  Open tracking
-                </h4>
-                <span
-                  className={
-                    "rounded-full border px-2 py-0.5 text-[10px] font-medium " +
-                    (trackingUrlSet && trackingEnabled
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                      : trackingUrlSet
-                        ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
-                        : "border-white/10 bg-white/[0.03] text-slate-500")
-                  }
-                >
-                  {trackingUrlSet ? (trackingEnabled ? "On" : "Paused") : "Not set"}
-                </span>
-              </div>
-              <p className="mb-3 text-[11px] leading-relaxed text-slate-500">
-                See when recipients open your emails. Needs a small free tracking
-                service (a Cloudflare Worker) — paste its URL. Opens are a rough
-                signal, not exact; replies stay the strongest one.
-              </p>
-              {trackingUrlSet && (
-                <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                  <span className="truncate font-mono text-[11px] text-slate-300">{trackingCurrentUrl}</span>
-                  <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-slate-400">
-                    <input
-                      type="checkbox"
-                      checked={trackingEnabled}
-                      onChange={(e) =>
-                        putTracking(
-                          { trackingEnabled: e.target.checked },
-                          e.target.checked ? "Open tracking enabled." : "Open tracking paused.",
-                        )
-                      }
-                      className="h-3.5 w-3.5 accent-cyan-500"
-                    />
-                    Enabled
-                  </label>
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={trackingUrl}
-                  onChange={(e) => setTrackingUrl(e.target.value)}
-                  placeholder={trackingUrlSet ? "Replace URL…" : "https://open-tracking.you.workers.dev"}
-                  autoComplete="off"
-                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900/70 px-3 py-2 font-mono text-[12px] text-slate-200 outline-none placeholder:font-sans placeholder:text-slate-500 focus:border-cyan-400/50"
-                />
-                <button
-                  type="button"
-                  onClick={() => putTracking({ trackingUrl: trackingUrl.trim() }, "Tracking service connected.")}
-                  disabled={busy || !/^https?:\/\//i.test(trackingUrl.trim())}
-                  className="shrink-0 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-[12px] font-semibold text-cyan-200 transition hover:bg-cyan-400/20 disabled:opacity-40"
-                >
-                  Save
-                </button>
-                {trackingUrlSet && (
-                  <button
-                    type="button"
-                    onClick={() => putTracking({ trackingUrl: "" }, "Tracking disconnected.")}
-                    disabled={busy}
-                    className="shrink-0 rounded-lg border border-rose-500/30 px-3 py-2 text-[12px] text-rose-300 transition hover:bg-rose-500/10 disabled:opacity-40"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <Collapsible
-                open={showTrackingGuide}
-                onToggle={() => setShowTrackingGuide((v) => !v)}
-                title="How to set up open tracking (from zero)"
-              >
-                <ol className="space-y-3">
-                  <Step n={1} title="Install Wrangler">
-                    On any computer: <span className="font-mono text-slate-100">npm i -g wrangler</span> then{" "}
-                    <span className="font-mono text-slate-100">wrangler login</span>.
-                  </Step>
-                  <Step n={2} title="Deploy the Worker">
-                    Open <span className="font-mono text-slate-100">tracking-worker/</span> → run{" "}
-                    <span className="font-mono text-slate-100">wrangler kv namespace create OPENS</span> (paste the
-                    id into wrangler.toml) → <span className="font-mono text-slate-100">wrangler deploy</span>.
-                  </Step>
-                  <Step n={3} title="Paste the URL">
-                    Wrangler prints a URL like{" "}
-                    <span className="font-mono text-slate-100">https://open-tracking.you.workers.dev</span> — paste
-                    it above and Save.
-                  </Step>
-                  <li className="mt-1 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-slate-400">
-                    Tracking switches emails to HTML with a hidden 1×1 pixel. Opens are approximate (Apple Mail and
-                    image-blockers skew them) — replies remain the strongest signal.
-                  </li>
-                </ol>
-              </Collapsible>
-            </div>
-          </div>
+              <ol className="space-y-3">
+                <Step n={1} title="Open your Google Account">
+                  Go to <Ext href="https://myaccount.google.com/">myaccount.google.com</Ext> and
+                  sign in with the Gmail you want to send from.
+                </Step>
+                <Step n={2} title="Turn on 2-Step Verification">
+                  Open{" "}
+                  <Ext href="https://myaccount.google.com/signinoptions/twosv">
+                    Security → 2-Step Verification
+                  </Ext>{" "}
+                  and finish setup.
+                </Step>
+                <Step n={3} title="Open App Passwords">
+                  Go to{" "}
+                  <Ext href="https://myaccount.google.com/apppasswords">
+                    myaccount.google.com/apppasswords
+                  </Ext>{" "}
+                  → name it (e.g. Outreach) → Create.
+                </Step>
+                <Step n={4} title="Copy &amp; paste">
+                  Copy the 16-character code into the App Password field above, then Add account.
+                </Step>
+              </ol>
+            </Collapsible>
+          </Card>
         </div>
-      </div>
-
-      {replyFor && (
-        <ReplySyncModal
-          email={replyFor}
-          clientConfigured={
-            data?.replySync?.accountClients?.[replyFor.toLowerCase()] ??
-            clientConfigured
-          }
-          syncOn={!!syncAccounts[replyFor.toLowerCase()]}
-          onClose={() => setReplyFor(null)}
-          onChanged={(snap) => {
-            setData((prev) => ({ ...(prev as SendersState), ...snap }));
-            onChanged?.();
-          }}
-        />
-      )}
+      </PageBody>
+      {replyDialog}
     </>
   );
 }
@@ -1205,10 +1420,10 @@ function HealthBadge({
   health?: SenderHealth;
   checking: boolean;
 }) {
-  const base = "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium ";
+  const base = "badge shrink-0 ";
   if (checking) {
     return (
-      <span className={base + "border-cyan-400/30 bg-cyan-400/10 text-cyan-200"}>
+      <span className={base + "badge-info"}>
         Checking…
       </span>
     );
@@ -1217,7 +1432,7 @@ function HealthBadge({
     return (
       <span
         title="Not checked since the app started. Use Recheck all, or Reconnect on this account."
-        className={base + "border-white/10 bg-white/[0.03] text-slate-500"}
+        className={base + "badge-neutral"}
       >
         Not checked
       </span>
@@ -1227,7 +1442,7 @@ function HealthBadge({
     return (
       <span
         title={`SMTP login ok on ${health.target}, checked at ${checkTime(health.checkedAt)}.`}
-        className={base + "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}
+        className={base + "badge-success"}
       >
         Connected
       </span>
@@ -1238,7 +1453,7 @@ function HealthBadge({
       title={`${health.target ? `${health.target}: ` : ""}${health.error} (checked at ${checkTime(
         health.checkedAt,
       )}). Open Reconnect to test again or change the port.`}
-      className={base + "border-rose-500/30 bg-rose-500/10 text-rose-300"}
+      className={base + "badge-danger"}
     >
       {health.unconfigured ? "No credentials" : "Can't connect"}
     </span>
@@ -1257,19 +1472,21 @@ function Collapsible({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02]">
+    <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02]">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 rounded-xl px-4 py-3 text-left transition hover:bg-white/[0.03]"
       >
-        <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-300">
+        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-200">
+          <BookIcon className="h-4 w-4 shrink-0 text-cyan-300" />
           {title}
         </span>
         <ChevronIcon className={"h-4 w-4 shrink-0 text-slate-400 transition " + (open ? "rotate-90" : "")} />
       </button>
       {open && (
-        <div className="border-t border-white/5 px-3 py-3 text-[12px] leading-relaxed text-slate-300">
+        <div className="border-t border-white/5 px-4 py-4 text-[13px] leading-relaxed text-slate-300">
           {children}
         </div>
       )}
@@ -1280,7 +1497,7 @@ function Collapsible({
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
     <li className="flex gap-3">
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-semibold text-cyan-200">
+      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 text-[11px] font-semibold tabular-nums text-cyan-200 ring-1 ring-inset ring-cyan-400/25">
         {n}
       </span>
       <div>
@@ -1348,11 +1565,37 @@ function MailIcon({ className }: IconProps) {
   );
 }
 
-function CloseIcon({ className }: IconProps) {
+function GithubIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+      <path d="M9 18c-4.51 2-5-2-7-2" />
+    </svg>
+  );
+}
+
+function EyeIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </svg>
+  );
+}
+
+function BookIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
     </svg>
   );
 }
@@ -1380,6 +1623,14 @@ function RefreshIcon({ className }: IconProps) {
       <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.35 3.8" />
       <path d="M21 3v5h-5" />
       <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
+function PencilIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
     </svg>
   );
 }

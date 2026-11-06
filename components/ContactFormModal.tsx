@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import type { SavedContact } from "@/lib/contacts-store";
 import {
   githubLogin,
@@ -53,10 +54,8 @@ const splitList = (v: string): string[] =>
     .map((s) => s.trim())
     .filter(Boolean);
 
-const INPUT =
-  "w-full rounded-full border border-white/10 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30";
-const LABEL =
-  "mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400";
+const INPUT = "input";
+const LABEL = "field-label";
 
 const FIELDS: { id: keyof Fields; label: string; placeholder: string; wide?: boolean }[] = [
   { id: "name", label: "Name", placeholder: "Jane Doe" },
@@ -165,33 +164,34 @@ export default function ContactFormModal({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4"
+      className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <form
-        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl"
+        className="card flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden bg-slate-900 shadow-2xl"
         onSubmit={(e) => {
           e.preventDefault();
           void onSave();
         }}
       >
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
+        <div className="card-header items-center">
+          <h2 className="text-base font-semibold text-slate-50">
             {editing ? "Edit contact" : "Add contact"}
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full px-2 py-1 text-slate-400 transition hover:text-white"
+            className="btn btn-ghost btn-sm btn-icon -my-1 -mr-1.5"
+            aria-label="Close"
             title="Close"
           >
             ✕
           </button>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-cols-2 gap-x-3 gap-y-3 overflow-y-auto px-5 py-4">
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-x-3 gap-y-4 overflow-y-auto px-5 py-5">
           {FIELDS.map((field) => (
             <div key={field.id} className={field.wide ? "col-span-2" : ""}>
               <label htmlFor={`cf-${field.id}`} className={LABEL}>
@@ -208,19 +208,23 @@ export default function ContactFormModal({
               />
             </div>
           ))}
-          <p className="col-span-2 text-[11px] text-slate-500">
+          <p className="field-hint col-span-2 mt-0">
             Separate several emails, phones or handles with commas.
             {editing && " Emails already sent to stay blocked from a new opener even if removed here."}
           </p>
         </div>
 
-        {error && <p className="px-5 pb-1 text-xs text-rose-300">{error}</p>}
+        {error && (
+          <p className="mx-5 mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {error}
+          </p>
+        )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-white/10 px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-white/[0.08] px-5 py-3.5">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full px-4 py-2 text-sm text-slate-400 transition hover:text-white"
+            className="btn btn-ghost"
           >
             Cancel
           </button>
@@ -228,8 +232,9 @@ export default function ContactFormModal({
             type="submit"
             disabled={saving}
             data-ripple
-            className="btn-press rounded-full border border-cyan-400/40 bg-cyan-500/15 px-5 py-2 text-sm font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-400/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="btn btn-primary"
           >
+            {saving && <Spinner />}
             {saving ? "Saving…" : editing ? "Save changes" : "Add contact"}
           </button>
         </div>

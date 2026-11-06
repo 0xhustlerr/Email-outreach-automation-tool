@@ -8,8 +8,15 @@ export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { startAvatarPrefetchLoop } = await import("./lib/avatar-prefetch");
     startAvatarPrefetchLoop();
-    const { startQueueWorker } = await import("./lib/queue-worker");
-    startQueueWorker();
+    // With sending disabled the worker would claim due items, fail them at
+    // sendMail and burn their retry attempts — so don't arm it at all.
+    const { isSendingDisabled } = await import("./lib/mail");
+    if (isSendingDisabled()) {
+      console.warn("[queue] sending disabled (NEXT_PUBLIC_SEND_DISABLED=1) — queue worker NOT started");
+    } else {
+      const { startQueueWorker } = await import("./lib/queue-worker");
+      startQueueWorker();
+    }
     // Watches the connected inboxes for Gmail "Message blocked" bounces and
     // stands the affected account down for the rest of the day.
     const { startBounceWatch } = await import("./lib/bounce-watch");

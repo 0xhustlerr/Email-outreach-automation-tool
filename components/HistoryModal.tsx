@@ -1,11 +1,22 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSpin } from "@/hooks/useSpin";
 import { toast } from "sonner";
 import type { SheetHistoryRow } from "@/lib/sheets";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
 import HistoryCampaignPanel from "@/components/HistoryCampaignPanel";
+import {
+  Card,
+  EmptyState,
+  PageBody,
+  PageHeader,
+  SearchInput,
+  StatCard,
+  StatGrid,
+  Toolbar,
+} from "@/components/ui/dashboard";
 
 function PhoneBadgeIcon({ className }: { className?: string }) {
   return (
@@ -28,17 +39,14 @@ function RowStatus({
   tick?: { opSent: boolean; fuSent: boolean; hasFollow: boolean; failed: boolean };
 }) {
   const pill = (text: string, cls: string, title: string) => (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`}
-      title={title}
-    >
+    <span className={`badge ${cls}`} title={title}>
       {text}
     </span>
   );
   if (replied) {
     return (
       <span
-        className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
+        className="badge badge-success"
         title="This contact replied"
       >
         {/* Static: this badge renders once PER REPLIED ROW, so a pulsing dot
@@ -52,25 +60,25 @@ function RowStatus({
     );
   }
   if (tick?.failed) {
-    return pill("⚠ Failed", "border-rose-400/30 bg-rose-500/15 text-rose-300", "A send step failed");
+    return pill("⚠ Failed", "badge-danger", "A send step failed");
   }
   if (tick?.hasFollow && !tick.fuSent) {
     return pill(
       "⏳ Follow-up",
-      "border-amber-400/30 bg-amber-500/15 text-amber-300",
+      "badge-warning",
       "Opener sent · follow-up pending",
     );
   }
   if (tick?.hasFollow && tick.fuSent) {
     return pill(
       "✓✓ 2-step",
-      "border-cyan-400/30 bg-cyan-500/15 text-cyan-200",
+      "badge-info",
       "Opener + follow-up sent · awaiting reply",
     );
   }
   return pill(
     "✓ Sent",
-    "border-white/10 bg-white/5 text-slate-400",
+    "badge-neutral",
     "Sent · no reply yet",
   );
 }
@@ -108,12 +116,12 @@ type DatePresetId =
 const DATE_PRESETS: { id: DatePresetId; label: string }[] = [
   { id: "today", label: "Today" },
   { id: "yesterday", label: "Yesterday" },
-  { id: "last7", label: "Last 7 Days" },
-  { id: "last14", label: "Last 14 Days" },
-  { id: "last30", label: "Last 30 Days" },
-  { id: "last90", label: "Last 90 Days" },
-  { id: "last365", label: "Last 365 Days" },
-  { id: "lastMonth", label: "Last Month" },
+  { id: "last7", label: "Last 7 days" },
+  { id: "last14", label: "Last 14 days" },
+  { id: "last30", label: "Last 30 days" },
+  { id: "last90", label: "Last 90 days" },
+  { id: "last365", label: "Last 365 days" },
+  { id: "lastMonth", label: "Last month" },
 ];
 
 const SENDER_PALETTE: Record<string, { text: string; bg: string; border: string }> = {
@@ -265,7 +273,7 @@ function presetRange(id: DatePresetId): { from: Date; to: Date; label: string } 
       return {
         from: startOfDay(first),
         to: endOfDay(last),
-        label: "Last Month",
+        label: "Last month",
       };
     }
     default:
@@ -316,10 +324,10 @@ function detectContactProvider(email: string): ContactProvider {
 }
 
 const CONTACT_PROVIDER_TEXT: Record<ContactProvider, string> = {
-  gmail: "text-[#f28b82]",
-  hotmail: "text-[#4fc3f7]",
-  outlook: "text-[#60a5fa]",
-  proton: "text-[#b4a0ff]",
+  gmail: "text-red-300",
+  hotmail: "text-sky-300",
+  outlook: "text-blue-400",
+  proton: "text-violet-300",
   other: "text-slate-300",
 };
 
@@ -466,7 +474,7 @@ function ChevronIcon({ className }: { className?: string }) {
   );
 }
 
-function SearchIcon({ className }: { className?: string }) {
+function HistoryIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -477,8 +485,26 @@ function SearchIcon({ className }: { className?: string }) {
       strokeLinejoin="round"
       className={className}
     >
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" />
+      <path d="M21 3v5h-5" />
     </svg>
   );
 }
@@ -625,7 +651,7 @@ function HistoryDateRangePicker({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex max-w-[min(100%,280px)] items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-cyan-400/40 hover:text-white"
+        className="btn btn-secondary max-w-[min(100%,300px)] tabular-nums"
       >
         <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
         <span className="truncate">{rangeLabel}</span>
@@ -635,16 +661,16 @@ function HistoryDateRangePicker({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-2 flex w-[min(100vw-2rem,520px)] overflow-hidden rounded-xl border border-white/10 bg-slate-950 shadow-2xl shadow-black/60">
-          <ul className="w-[140px] shrink-0 border-r border-white/5 bg-slate-900/80 py-2">
+        <div className="card absolute left-0 top-full z-30 mt-2 flex w-[min(100vw-2rem,520px)] overflow-hidden bg-slate-950 shadow-2xl shadow-black/60 sm:left-auto sm:right-0">
+          <ul className="w-[132px] shrink-0 space-y-0.5 border-r border-white/5 bg-white/[0.02] p-1.5">
             {DATE_PRESETS.map((p) => (
               <li key={p.id}>
                 <button
                   type="button"
                   onClick={() => selectPreset(p.id)}
-                  className={`w-full px-4 py-2 text-left text-xs transition ${
+                  className={`w-full rounded-md px-2.5 py-1.5 text-left text-xs transition ${
                     draftPreset === p.id
-                      ? "bg-cyan-500/15 font-medium text-cyan-200"
+                      ? "bg-cyan-400/10 font-medium text-cyan-200"
                       : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
                   }`}
                 >
@@ -655,7 +681,7 @@ function HistoryDateRangePicker({
           </ul>
 
           <div className="min-w-0 flex-1 p-4">
-            <p className="mb-3 text-[11px] text-slate-500">
+            <p className="mb-3 text-xs text-slate-500">
               {pickStart ? "Tap end date" : "Tap start date"}
             </p>
             <div className="mb-3 flex items-center justify-between">
@@ -664,7 +690,7 @@ function HistoryDateRangePicker({
                 onClick={() =>
                   setViewMonth(new Date(year, month - 1, 1))
                 }
-                className="rounded p-1 text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                className="btn btn-ghost btn-sm btn-icon"
                 aria-label="Previous month"
               >
                 ‹
@@ -680,7 +706,7 @@ function HistoryDateRangePicker({
                 onClick={() =>
                   setViewMonth(new Date(year, month + 1, 1))
                 }
-                className="rounded p-1 text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                className="btn btn-ghost btn-sm btn-icon"
                 aria-label="Next month"
               >
                 ›
@@ -709,21 +735,25 @@ function HistoryDateRangePicker({
                     type="button"
                     onClick={() => onDayClick(day)}
                     className={`relative py-1.5 text-xs transition ${
-                      inRange ? "bg-blue-600/40 text-slate-100" : "text-slate-300 hover:bg-white/5"
+                      inRange ? "bg-cyan-400/15 text-slate-100" : "text-slate-300 hover:bg-white/5"
                     } ${isStart || isEnd ? "font-semibold" : ""} ${
                       isToday && !inRange ? "ring-1 ring-cyan-400/50 ring-inset" : ""
                     } rounded-md`}
                   >
                     {(isStart || isEnd) && (
-                      <span className="absolute inset-0.5 rounded-full bg-blue-500" />
+                      <span className="absolute inset-0.5 rounded-md bg-cyan-400" />
                     )}
-                    <span className="relative z-[1]">{day.getDate()}</span>
+                    <span
+                      className={`relative z-[1] tabular-nums ${isStart || isEnd ? "text-slate-950" : ""}`}
+                    >
+                      {day.getDate()}
+                    </span>
                   </button>
                 );
               })}
             </div>
 
-            <p className="mt-3 text-[10px] leading-relaxed text-slate-600">
+            <p className="field-hint mt-3">
               Last N days end yesterday (sheet export alignment).
             </p>
 
@@ -731,14 +761,14 @@ function HistoryDateRangePicker({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+                className="btn btn-ghost btn-sm"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={apply}
-                className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-500"
+                className="btn btn-primary btn-sm"
               >
                 Apply
               </button>
@@ -752,8 +782,9 @@ function HistoryDateRangePicker({
 
 // --- Main modal -------------------------------------------------------------
 
+// Rendered only as the History page (?view=history). `asPage` / `onClose`
+// stay in the props type for the dashboard shell but aren't needed here.
 export default function HistoryModal({
-  onClose,
   onSendRow,
   rows,
   loading,
@@ -761,6 +792,7 @@ export default function HistoryModal({
   onRefresh,
 }: {
   onClose: () => void;
+  asPage?: boolean;
   /** Opens compose modal prefilled from this history row. */
   onSendRow?: (row: SheetHistoryRow) => void;
   rows: SheetHistoryRow[];
@@ -775,6 +807,8 @@ export default function HistoryModal({
   const [rangeFrom, setRangeFrom] = useState(initial.from);
   const [rangeTo, setRangeTo] = useState(initial.to);
   const [copiedToast, setCopiedToast] = useState(false);
+  // Keeps the reload icon turning long enough to be seen on a fast reload.
+  const refreshSpin = useSpin();
   const [searchQuery, setSearchQuery] = useState("");
   const [campaignOpen, setCampaignOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(
@@ -887,14 +921,6 @@ export default function HistoryModal({
       if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
     };
   }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const dateFilteredRows = useMemo(() => {
     const fromMs = rangeFrom.getTime();
@@ -1105,7 +1131,7 @@ export default function HistoryModal({
   const contactCell = (contact: string) => {
     const display = contact.trim() || "-";
     if (!contact.trim()) {
-      return <td className="truncate px-3 py-3 text-slate-600">-</td>;
+      return <td className="truncate text-slate-600">-</td>;
     }
     const email = primaryEmail(contact);
     const provider = email.includes("@")
@@ -1126,7 +1152,7 @@ export default function HistoryModal({
       : "";
     return (
       <td
-        className="cursor-pointer truncate px-3 py-3 transition hover:bg-cyan-500/10"
+        className="cursor-pointer truncate transition hover:bg-cyan-500/10"
         title="Click to copy"
         onClick={() => void copyToClipboard(contact)}
       >
@@ -1146,7 +1172,7 @@ export default function HistoryModal({
               : 0;
             return n > 1 ? (
               <span
-                className="shrink-0 rounded-full border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300"
+                className="badge badge-warning h-5 shrink-0 px-1.5 tabular-nums"
                 title={`This address has been emailed ${n} times`}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -1156,7 +1182,7 @@ export default function HistoryModal({
           })()}
           {fallback && (
             <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"
+              className="badge badge-success h-5 shrink-0 gap-0.5 px-1.5 tabular-nums"
               title={`Fallback contact available - ${fallbackTitle}`}
               onClick={(e) => e.stopPropagation()}
             >
@@ -1189,7 +1215,7 @@ export default function HistoryModal({
 
     return (
       <td
-        className="cursor-pointer overflow-hidden px-3 py-3 transition hover:bg-cyan-500/10"
+        className="cursor-pointer overflow-hidden transition hover:bg-cyan-500/10"
         title={canSend ? "Click to send email" : "Click to copy"}
         onClick={() => (canSend ? onSendRow(row) : void copyToClipboard(row.name))}
       >
@@ -1214,10 +1240,8 @@ export default function HistoryModal({
               return (
                 <span
                   className={
-                    "inline-flex max-w-full items-center gap-1 self-start overflow-hidden rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ring-1 ring-inset ring-white/10 " +
-                    (hot
-                      ? "border border-orange-400/50 bg-gradient-to-b from-orange-500/30 to-amber-500/10 text-orange-100 shadow-[0_0_10px_-3px_rgba(251,146,60,0.85)]"
-                      : "border border-violet-400/40 bg-gradient-to-b from-violet-500/25 to-fuchsia-500/10 text-violet-100 shadow-[0_0_10px_-3px_rgba(167,139,250,0.75)]")
+                    "badge ml-8 h-5 max-w-full gap-1 self-start overflow-hidden px-1.5 " +
+                    (hot ? "badge-warning" : "badge-violet")
                   }
                   title={`${hot ? "Hot lead — viewed" : "Viewed"} ${rel}${times}`}
                   aria-label={`${hot ? "Hot, viewed" : "Viewed"} ${rel}`}
@@ -1260,17 +1284,17 @@ export default function HistoryModal({
   const senderCell = (sender: string) => {
     const display = sender.trim() || "-";
     if (!sender.trim()) {
-      return <td className="truncate px-3 py-3 text-slate-600">-</td>;
+      return <td className="truncate text-slate-600">-</td>;
     }
     const style = senderStyle(sender);
     const short = senderLocalPart(sender);
     return (
       <td
-        className="cursor-pointer truncate px-3 py-3 transition hover:bg-cyan-500/10"
+        className="cursor-pointer truncate transition hover:bg-cyan-500/10"
         title={sender}
         onClick={() => void copyToClipboard(sender)}
       >
-        <span className={`truncate font-mono text-[11px] ${style.text}`}>
+        <span className={`truncate font-mono text-xs ${style.text}`}>
           {short}
         </span>
       </td>
@@ -1283,36 +1307,43 @@ export default function HistoryModal({
     const email = primaryEmail(row.contact);
     const tick = email.includes("@") ? ticksByEmail[email.toLowerCase()] : undefined;
     return (
-      <td className="px-3 py-3">
+      <td>
         <RowStatus replied={replied} tick={tick} />
       </td>
     );
   };
 
+  // Header stats — all derived from memos above, no extra fetches.
+  const rangeCount = showSelectedOnly || searchActive ? displayCount : periodCount;
+  const rangeStatLabel = showSelectedOnly
+    ? "Rows for selected"
+    : searchActive
+      ? "Search matches"
+      : `Sent · ${periodLabel}`;
+  const uniqueContacts = sentCountByEmail.size;
+  const repliedCount = repliedEmails.size;
+  const replyRate =
+    uniqueContacts > 0 ? Math.round((repliedCount / uniqueContacts) * 1000) / 10 : 0;
+  const statsPending = loading && rows.length === 0;
+  const statValue = (n: number) => (statsPending ? "…" : n.toLocaleString());
+
   return (
-    <div
-      className="fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="glass slide-in relative flex h-[min(85vh,720px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-        {copiedToast && (
-          <div className="pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full border border-cyan-400/40 bg-cyan-500/20 px-4 py-1.5 text-xs font-medium text-cyan-100 shadow-lg">
-            Copied
-          </div>
-        )}
+    <PageBody>
+      {copiedToast && (
+        <div
+          className="badge badge-info pointer-events-none fixed bottom-6 left-1/2 z-50 h-8 -translate-x-1/2 px-3 text-xs shadow-lg shadow-black/40"
+          role="status"
+        >
+          Copied to clipboard
+        </div>
+      )}
 
-        <div className="flex shrink-0 flex-col gap-4 border-b border-white/5 px-6 py-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <h3 className="text-lg font-semibold text-slate-100">Sent history</h3>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Click a name to send · other cells to copy
-            </p>
-            </div>
-
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
+      <PageHeader
+        title="History"
+        description="Every email sent, logged to your Google Sheet. Click a name to send, any other cell to copy."
+        icon={<HistoryIcon className="h-5 w-5" />}
+        actions={
+          <>
             <HistoryDateRangePicker
               preset={datePreset}
               rangeFrom={rangeFrom}
@@ -1323,115 +1354,82 @@ export default function HistoryModal({
                 setRangeTo(endOfDay(to));
               }}
             />
-            {selectableNonReplied.length > 0 && (
+            {onRefresh && (
               <button
                 type="button"
-                onClick={selectNonReplied}
-                className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-200 transition hover:border-cyan-300/70 hover:bg-cyan-400/20 hover:text-white"
-                title="Select every non-replier last-emailed between 1 year and 6 days ago (deduped, skips the recent 6 days)"
+                onClick={() => {
+                  void refreshSpin.run();
+                  onRefresh();
+                }}
+                disabled={loading}
+                className="btn btn-secondary btn-icon"
+                title="Reload from Google Sheet"
+                aria-label="Reload from Google Sheet"
               >
-                Select non-replied ({selectableNonReplied.length})
-              </button>
-            )}
-            {selectedEmails.size > 0 && (
-              <button
-                type="button"
-                onClick={() => void deleteSelected()}
-                className="rounded-full border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:border-rose-300/70 hover:bg-rose-400/20 hover:text-white"
-                title="Remove the selected contacts from history"
-              >
-                Delete {selectedEmails.size}
+                <RefreshIcon className={`h-4 w-4 ${loading || refreshSpin.spinning ? "animate-spin" : ""}`} />
               </button>
             )}
             <button
               type="button"
               onClick={() => setCampaignOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/50 bg-cyan-500/90 px-3.5 py-1.5 text-xs font-semibold text-slate-950 shadow-[0_0_16px_rgba(34,211,238,0.3)] transition hover:bg-cyan-400"
+              className="btn btn-primary"
               title="Send a two-step sequence to the selected contacts (or this date range)"
             >
-              <SendIcon className="h-3.5 w-3.5" />
+              <SendIcon className="h-4 w-4" />
               {selectedEmails.size > 0
                 ? `Send 2-step to ${selectedEmails.size}`
                 : "Send 2-step to these"}
             </button>
-            {onRefresh && (
-              <button
-                type="button"
-                onClick={onRefresh}
-                disabled={loading}
-                className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-50"
-                title="Reload from Google Sheet"
-              >
-                {loading ? "…" : "↻"}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-              aria-label="Close"
-            >
-              <CloseIcon className="h-4 w-4" />
-            </button>
-            </div>
-          </div>
+          </>
+        }
+      />
 
-          {!loading && !error && rows.length > 0 && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-white/5 bg-white/[0.02] px-3.5 py-2 text-xs">
-              <span className="inline-flex items-baseline gap-1.5">
-                <span className="text-lg font-bold tabular-nums leading-none text-white">
-                  {showSelectedOnly || searchActive ? displayCount : periodCount}
-                </span>
-                <span className="text-slate-400">
-                  {showSelectedOnly
-                    ? "selected"
-                    : `email${(searchActive ? displayCount : periodCount) === 1 ? "" : "s"} · ${searchActive ? "search" : periodLabel}`}
-                </span>
-              </span>
-              <span className="text-slate-700">·</span>
-              <span className="inline-flex items-baseline gap-1.5 text-slate-500">
-                <span className="font-semibold tabular-nums text-slate-300">
-                  {rows.length}
-                </span>
-                all-time
-              </span>
-            </div>
-          )}
+      <StatGrid>
+        <StatCard
+          label={rangeStatLabel}
+          value={statValue(rangeCount)}
+          tone="info"
+          hint={
+            showSelectedOnly
+              ? `${selectedEmails.size.toLocaleString()} contacts selected`
+              : searchActive
+                ? "Across all history"
+                : `${formatShortDate(rangeFrom)} – ${formatShortDate(rangeTo)}`
+          }
+        />
+        <StatCard
+          label="All-time sends"
+          value={statValue(rows.length)}
+          hint="Rows in the sheet"
+        />
+        <StatCard
+          label="Unique contacts"
+          value={statValue(uniqueContacts)}
+          hint="Deduped by address"
+        />
+        <StatCard
+          label="Replied"
+          value={statValue(repliedCount)}
+          tone="success"
+          hint={statsPending ? undefined : `${replyRate}% of contacts`}
+        />
+      </StatGrid>
 
-          <div className="relative w-full">
-            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search all history…"
-              className="w-full rounded-lg border border-white/10 bg-slate-950/70 py-2 pl-9 pr-8 text-xs text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/20"
-              aria-label="Search all history"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-slate-500 hover:bg-white/5 hover:text-slate-200"
-                aria-label="Clear search"
-              >
-                <CloseIcon className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-
-          {selectedEmails.size > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs">
-              <span className="text-cyan-100">
-                <span className="font-bold">{selectedEmails.size}</span> contact
-                {selectedEmails.size === 1 ? "" : "s"} selected
-                {showSelectedOnly ? " · showing only these" : ""}
-              </span>
-              <div className="flex items-center gap-2">
+      <Toolbar
+        actions={
+          <>
+            {selectedEmails.size > 0 && (
+              <>
+                <span className="mr-1 text-xs text-slate-400">
+                  <span className="font-semibold tabular-nums text-slate-100">
+                    {selectedEmails.size}
+                  </span>{" "}
+                  selected{showSelectedOnly ? " · showing only these" : ""}
+                </span>
                 <button
                   type="button"
                   onClick={() => setShowSelectedOnly((v) => !v)}
-                  className="rounded-full border border-cyan-400/30 px-2.5 py-1 font-medium text-cyan-200 transition hover:bg-cyan-400/20 hover:text-white"
+                  className="btn btn-ghost btn-sm"
                 >
                   {showSelectedOnly ? "Show all rows" : "Review selected"}
                 </button>
@@ -1441,144 +1439,182 @@ export default function HistoryModal({
                     setSelectedEmails(new Set());
                     setShowSelectedOnly(false);
                   }}
-                  className="rounded-full px-2.5 py-1 text-slate-400 transition hover:text-white"
+                  className="btn btn-ghost btn-sm"
                 >
                   Clear
                 </button>
-              </div>
-            </div>
+              </>
+            )}
+            {selectableNonReplied.length > 0 && (
+              <button
+                type="button"
+                onClick={selectNonReplied}
+                className="btn btn-secondary btn-sm"
+                title="Select every non-replier last-emailed between 1 year and 6 days ago (deduped, skips the recent 6 days)"
+              >
+                Select non-replied ({selectableNonReplied.length})
+              </button>
+            )}
+            {selectedEmails.size > 0 && (
+              <button
+                type="button"
+                onClick={() => void deleteSelected()}
+                className="btn btn-danger btn-sm"
+                title="Remove the selected contacts from history"
+              >
+                Delete {selectedEmails.size}
+              </button>
+            )}
+          </>
+        }
+      >
+        <div className="relative w-full sm:max-w-sm">
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search all history…"
+            className="sm:max-w-none [&_input]:pr-8"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              className="btn btn-ghost btn-sm btn-icon absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+              aria-label="Clear search"
+            >
+              <CloseIcon className="h-3.5 w-3.5" />
+            </button>
           )}
         </div>
+      </Toolbar>
 
-        <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-white/5">
-            {loading && rows.length === 0 && (
-              <div className="flex flex-1 items-center justify-center">
-                <p className="text-sm text-slate-400">Loading history…</p>
-              </div>
-            )}
-            {error && rows.length === 0 && (
-              <div className="m-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                {error}
-              </div>
-            )}
-            {!loading && !error && rows.length === 0 && (
-              <div className="flex flex-1 items-center justify-center">
-                <p className="text-sm text-slate-400">No sent emails logged yet.</p>
-              </div>
-            )}
-            {!loading && !error && rows.length > 0 && sortedRows.length === 0 && (
-              <div className="flex flex-1 items-center justify-center px-4 text-center">
-                <p className="text-sm text-slate-400">
-                  {searchActive
-                    ? `No matches for "${searchQuery.trim()}" in full history.`
-                    : "No entries in this date range."}
-                </p>
-              </div>
-            )}
-            {!loading && !error && sortedRows.length > 0 && (
-              <div className="min-h-0 flex-1 overflow-auto">
-                <table className="w-full table-fixed border-collapse text-left text-[11px]">
-                  <colgroup>
-                    <col className="w-[3%]" />
-                    <col className="w-[10%]" />
-                    <col className="w-[13%]" />
-                    <col className="w-[9%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[7%]" />
-                    <col className="w-[10%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[12%]" />
-                  </colgroup>
-                  <thead className="sticky top-0 z-10 bg-slate-950">
-                    <tr className="border-b border-white/5 text-[10px] font-medium uppercase tracking-[0.12em] text-slate-500">
-                      <th className="px-3 py-3">
-                        <input
-                          type="checkbox"
-                          checked={allVisibleSelected}
-                          onChange={toggleSelectAll}
-                          className="accent-cyan-500"
-                          title="Select all shown"
-                        />
-                      </th>
-                      {COLUMNS.map((col) => (
-                        <th key={col.key} className="px-3 py-3">
-                          {col.sortable ? (
-                            <button
-                              type="button"
-                              onClick={() => toggleSort(col.key)}
-                              className="inline-flex items-center transition hover:text-cyan-300"
-                            >
-                              {col.label}
-                              {sortIndicator(col.key)}
-                            </button>
-                          ) : (
-                            col.label
-                          )}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortedRows.map((row, i) => {
-                      const dateDisplay = formatHistoryDate(row.date);
-                      const dateCopy = row.date.trim() || dateDisplay;
-                      const active = isYes(row.active);
-                      const rowEmail = primaryEmail(row.contact);
-                      return (
-                        <tr
-                          key={`${row.date}-${row.contact}-${row.sender}-${hashString(row.link)}-${i}`}
-                          className={`border-b text-slate-300 transition-colors ${
-                            active
-                              ? "history-row-active border-cyan-500/20"
-                              : "border-white/5 hover:bg-white/[0.02]"
-                          }`}
-                        >
-                          <td className="px-3 py-3">
-                            {rowEmail.includes("@") && (
-                              <input
-                                type="checkbox"
-                                checked={selectedEmails.has(rowEmail)}
-                                onChange={() => toggleEmail(rowEmail)}
-                                className="accent-cyan-500"
-                              />
-                            )}
-                          </td>
-                          {copyCell(
-                            dateCopy,
-                            <span className="whitespace-nowrap text-slate-400">
-                              {dateDisplay}
-                            </span>,
-                            "px-3 py-3",
-                          )}
-                          {nameCell(row)}
-                          {copyCell(
-                            row.country,
-                            <span className="inline-flex items-center gap-1.5">
-                              <CountryFlag country={row.country} size={13} />
-                              <span className="truncate">{row.country || "-"}</span>
-                            </span>,
-                            "truncate px-3 py-3",
-                          )}
-                          {contactCell(row.contact)}
-                          {copyCell(row.site, row.site || "-", "truncate px-3 py-3")}
-                          {senderCell(row.sender)}
-                          {copyCell(
-                            row.link,
-                            <span className="block truncate">{row.link || "-"}</span>,
-                            "truncate px-3 py-3",
-                          )}
-                          {statusCell(row)}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+      <Card flush>
+        {loading && rows.length === 0 && (
+          <EmptyState title="Loading history…" description="Reading sent emails from your Google Sheet." />
+        )}
+        {error && rows.length === 0 && (
+          <div className="m-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {error}
           </div>
-        </div>
-      </div>
+        )}
+        {!loading && !error && rows.length === 0 && (
+          <EmptyState
+            icon={<HistoryIcon className="h-5 w-5" />}
+            title="No sent emails logged yet"
+            description="Emails you send are logged to your Google Sheet and show up here."
+          />
+        )}
+        {!loading && !error && rows.length > 0 && sortedRows.length === 0 && (
+          <EmptyState
+            title={
+              searchActive
+                ? `No matches for "${searchQuery.trim()}" in full history`
+                : "No entries in this date range"
+            }
+            description={
+              searchActive ? "Try a different name, address or site." : "Pick a wider range above."
+            }
+          />
+        )}
+        {!loading && !error && sortedRows.length > 0 && (
+          <div className="max-h-[calc(100vh-14rem)] min-h-[16rem] overflow-auto">
+            <table className="table-modern min-w-[1120px] table-fixed">
+              <colgroup>
+                <col className="w-11" />
+                <col className="w-[11%]" />
+                <col className="w-[14%]" />
+                <col className="w-[13%]" />
+                <col className="w-[20%]" />
+                <col className="w-[8%]" />
+                <col className="w-[10%]" />
+                <col className="w-[13%]" />
+                <col className="w-[11%]" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th className="pl-4 pr-0">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectAll}
+                      className="accent-cyan-500"
+                      title="Select all shown"
+                      aria-label="Select all shown"
+                    />
+                  </th>
+                  {COLUMNS.map((col) => (
+                    <th key={col.key}>
+                      {col.sortable ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(col.key)}
+                          className="inline-flex items-center transition hover:text-slate-100"
+                        >
+                          {col.label}
+                          {sortIndicator(col.key)}
+                        </button>
+                      ) : (
+                        col.label
+                      )}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedRows.map((row, i) => {
+                  const dateDisplay = formatHistoryDate(row.date);
+                  const dateCopy = row.date.trim() || dateDisplay;
+                  const active = isYes(row.active);
+                  const rowEmail = primaryEmail(row.contact);
+                  return (
+                    <tr
+                      key={`${row.date}-${row.contact}-${row.sender}-${hashString(row.link)}-${i}`}
+                      className={active ? "history-row-active" : undefined}
+                    >
+                      <td className="pl-4 pr-0">
+                        {rowEmail.includes("@") && (
+                          <input
+                            type="checkbox"
+                            checked={selectedEmails.has(rowEmail)}
+                            onChange={() => toggleEmail(rowEmail)}
+                            className="accent-cyan-500"
+                            aria-label={`Select ${rowEmail}`}
+                          />
+                        )}
+                      </td>
+                      {copyCell(
+                        dateCopy,
+                        <span className="whitespace-nowrap tabular-nums text-slate-400">
+                          {dateDisplay}
+                        </span>,
+                        "",
+                      )}
+                      {nameCell(row)}
+                      {copyCell(
+                        row.country,
+                        <span className="inline-flex max-w-full items-center gap-1.5">
+                          <CountryFlag country={row.country} size={13} />
+                          <span className="truncate">{row.country || "-"}</span>
+                        </span>,
+                        "truncate",
+                      )}
+                      {contactCell(row.contact)}
+                      {copyCell(row.site, row.site || "-", "truncate")}
+                      {senderCell(row.sender)}
+                      {copyCell(
+                        row.link,
+                        <span className="block truncate text-slate-400">{row.link || "-"}</span>,
+                        "truncate",
+                      )}
+                      {statusCell(row)}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
 
       {campaignOpen && (
         <HistoryCampaignPanel
@@ -1595,6 +1631,6 @@ export default function HistoryModal({
           }}
         />
       )}
-    </div>
+    </PageBody>
   );
 }

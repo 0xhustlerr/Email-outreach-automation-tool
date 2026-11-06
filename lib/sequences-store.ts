@@ -9,6 +9,7 @@
 
 import { db } from "./db";
 import { resolveLocation } from "./country";
+import { getStoredIdentity } from "./identities-store";
 
 // Legacy follow-up delay, in minutes. The timed pitch was retired (the worker
 // never imports claimDueFollowup), and with it the user-facing delay controls.
@@ -31,6 +32,9 @@ export type Sequence = {
   toEmail: string;
   ccEmail: string;
   fromEmail: string;
+  /** Sender display name frozen at queue time ('' = use the account's current
+   *  name). Valid only for `fromEmail` — see senderNameFor. */
+  fromName: string;
   name: string;
   link: string;
   linkLinkedin: string;
@@ -66,6 +70,7 @@ type Row = {
   to_email: string;
   cc_email: string;
   from_email: string;
+  from_name: string;
   name: string;
   link: string;
   link_linkedin: string;
@@ -102,6 +107,7 @@ function toSeq(r: Row): Sequence {
     toEmail: r.to_email,
     ccEmail: r.cc_email ?? "",
     fromEmail: r.from_email,
+    fromName: r.from_name ?? "",
     name: r.name,
     link: r.link,
     linkLinkedin: r.link_linkedin ?? "",
@@ -137,6 +143,8 @@ export type SequenceInput = {
   /** Optional second recipient, CC'd on the opener and the follow-up. */
   ccEmail?: string;
   fromEmail: string;
+  /** Display name to send under. Omitted = the account's name right now. */
+  fromName?: string;
   name?: string;
   link?: string;
   linkLinkedin?: string;
@@ -169,16 +177,35 @@ function resolveSeqLocation(input: SequenceInput) {
   };
 }
 
+/** The name to freeze onto a new row: the caller's, else the account's
+ *  current display name. */
+function frozenFromName(input: SequenceInput): string {
+  const given = (input.fromName ?? "").trim();
+  if (given) return given;
+  return getStoredIdentity(input.fromEmail)?.name.trim() ?? "";
+}
+
+/** The From name to send a sequence's step under, given the account that was
+ *  actually picked. The frozen name belongs to `fromEmail` only: when the
+ *  worker rotated the step onto a different account (pool, rotation, block),
+ *  that account's own current name is used instead. Rows queued before names
+ *  were frozen also fall back to the current name. */
+export function senderNameFor(seq: Sequence, sender: string): string {
+  const same = sender.trim().toLowerCase() === seq.fromEmail.trim().toLowerCase();
+  const frozen = same ? seq.fromName.trim() : "";
+  return frozen || (getStoredIdentity(sender)?.name.trim() ?? "");
+}
+
 const insertStmt = () =>
   db.prepare(
     `INSERT INTO sequences (
-       lane, to_email, cc_email, from_email, name, link, link_linkedin, link_github,
+       lane, to_email, cc_email, from_email, from_name, name, link, link_linkedin, link_github,
        username, country, country_std, timezone, tz_source,
        op_subject, op_body, op_status, op_message_id, op_sent_at, op_send_after,
        has_follow, fu_subject, fu_body, fu_delay_min, fu_status, fu_send_after,
        created_at
      ) VALUES (
-       @lane, @toEmail, @ccEmail, @fromEmail, @name, @link, @linkLinkedin, @linkGithub,
+       @lane, @toEmail, @ccEmail, @fromEmail, @fromName, @name, @link, @linkLinkedin, @linkGithub,
        @username, @country, @countryStd, @timezone, @tzSource,
        @opSubject, @opBody, @opStatus, @opMessageId, @opSentAt, @opSendAfter,
        @hasFollow, @fuSubject, @fuBody, @fuDelayMin, @fuStatus, @fuSendAfter,
@@ -202,6 +229,7 @@ export function recordSentSequence(
     toEmail: input.toEmail.trim().toLowerCase(),
     ccEmail: (input.ccEmail ?? "").trim().toLowerCase(),
     fromEmail: input.fromEmail,
+    fromName: frozenFromName(input),
     name: input.name ?? "",
     link: input.link ?? "",
     linkLinkedin: input.linkLinkedin ?? "",
@@ -255,6 +283,7 @@ export function enqueueSequence(
     toEmail: to,
     ccEmail: (input.ccEmail ?? "").trim().toLowerCase(),
     fromEmail: input.fromEmail,
+    fromName: frozenFromName(input),
     name: input.name ?? "",
     link: input.link ?? "",
     linkLinkedin: input.linkLinkedin ?? "",
@@ -591,6 +620,7 @@ export function markOpenerSent(
   id: number,
   messageId: string,
   sender?: string,
+  senderName?: string,
 ): void {
   const seq = getSequence(id);
   if (!seq) return;
@@ -603,15 +633,19 @@ export function markOpenerSent(
   // Persist the account the opener actually went out from so the threaded
   // follow-up replies from the SAME address (critical when the sender was
   // picked from a pool / rotation rather than the item's stored from_email).
+  // Likewise the name it went out under, so the Pitch or Bump's From matches the
+  // opener's even if the account is renamed in between.
   const from = (sender ?? "").trim();
+  const fromName = (senderName ?? "").trim();
   db.prepare(
     `UPDATE sequences SET
        op_status = 'sent', op_message_id = ?, op_sent_at = ?, last_error = '',
        from_email = CASE WHEN ? <> '' THEN ? ELSE from_email END,
+       from_name = CASE WHEN ? <> '' THEN ? ELSE from_name END,
        fu_status = CASE WHEN has_follow = 1 THEN 'scheduled' ELSE 'skipped' END,
        fu_send_after = ?
      WHERE id = ?`,
-  ).run(messageId, now, from, from, fuSendAfter, id);
+  ).run(messageId, now, from, from, fromName, fromName, fuSendAfter, id);
 }
 
 export function markOpenerFailed(

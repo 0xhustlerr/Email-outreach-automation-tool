@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 // System font stack - avoids the Google Fonts fetch that blocks dev-server
 // startup when egress to fonts.googleapis.com is slow or blocked. Modern OS
@@ -26,7 +27,21 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" style={{ ["--font-sans" as string]: SYSTEM_SANS }}>
+    // data-theme is set by THEME_INIT_SCRIPT before React hydrates, so the
+    // server markup can't match it — hence suppressHydrationWarning.
+    <html
+      lang="en"
+      data-theme="dark"
+      suppressHydrationWarning
+      style={{ ["--font-sans" as string]: SYSTEM_SANS }}
+    >
+      <head>
+        {/* Applies the saved (or OS) theme before first paint — no flash.
+            A raw inline script runs while the HTML is parsed; next/script's
+            beforeInteractive is deferred until Next's runtime boots in the
+            App Router, which can paint the wrong theme first. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body
         className="h-screen w-screen font-sans antialiased"
         suppressHydrationWarning

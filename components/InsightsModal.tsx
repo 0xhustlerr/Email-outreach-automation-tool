@@ -10,6 +10,8 @@ import {
 import type { SheetHistoryRow } from "@/lib/sheets";
 import type { ReplyNotification } from "@/lib/reply-alerts";
 import { CountryFlag } from "@/components/CountryFlag";
+import { Card, EmptyState, PageBody, PageHeader, StatCard } from "@/components/ui/dashboard";
+import { useSpin } from "@/hooks/useSpin";
 
 // Outreach dashboard for a selectable time range: totals, reply status, the
 // list of who replied (with good/neutral/bad sentiment), and breakdowns.
@@ -25,19 +27,19 @@ const MAX_BARS = 14;
 // Hex palette for SVG/inline-styled charts (tailwind classes can't be used in
 // SVG strokes). Kept in the app's cyan-forward family.
 const SEGMENT_COLORS = [
-  "#22d3ee",
-  "#a78bfa",
-  "#34d399",
-  "#fbbf24",
-  "#fb7185",
-  "#38bdf8",
-  "#f472b6",
-  "#2dd4bf",
+  "rgb(var(--c-cyan-400))",
+  "rgb(var(--c-violet-400))",
+  "rgb(var(--c-emerald-400))",
+  "rgb(var(--c-amber-400))",
+  "rgb(var(--c-rose-400))",
+  "rgb(var(--c-sky-400))",
+  "rgb(var(--c-pink-400))",
+  "rgb(var(--c-teal-400))",
 ];
-const POSITIVE_COLOR = "#34d399";
-const NEUTRAL_COLOR = "#38bdf8";
-const NEGATIVE_COLOR = "#fb7185";
-const NOREPLY_COLOR = "rgba(148,163,184,0.28)";
+const POSITIVE_COLOR = "rgb(var(--c-emerald-400))";
+const NEUTRAL_COLOR = "rgb(var(--c-sky-400))";
+const NEGATIVE_COLOR = "rgb(var(--c-rose-400))";
+const NOREPLY_COLOR = "rgb(var(--c-slate-400) / 0.28)";
 
 function isYes(value: string | undefined): boolean {
   const v = (value ?? "").trim().toLowerCase();
@@ -486,9 +488,12 @@ function rangeButtonLabel(r: RangeState): string {
 function RangePicker({
   value,
   onChange,
+  compact = false,
 }: {
   value: RangeState;
   onChange: (r: RangeState) => void;
+  /** Small control for the scanner's side panel. */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -521,19 +526,28 @@ function RangePicker({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex max-w-[240px] items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 py-1.5 pl-3 pr-2.5 text-xs font-medium text-slate-200 transition hover:border-cyan-400/40"
+        className={
+          "btn btn-secondary max-w-[260px] " + (compact ? "btn-sm" : "")
+        }
         title="Select time range"
+        aria-expanded={open}
       >
-        <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+        <CalendarIcon className="h-4 w-4 shrink-0 text-slate-400" />
         <span className="truncate">{rangeButtonLabel(value)}</span>
         <ChevronIcon
-          className={"h-3.5 w-3.5 shrink-0 text-slate-400 transition " + (open ? "rotate-180" : "")}
+          className={"h-3.5 w-3.5 shrink-0 text-slate-500 transition " + (open ? "rotate-180" : "")}
         />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-2 w-[260px] overflow-hidden rounded-xl border border-white/10 bg-slate-950 p-3 shadow-2xl shadow-black/60">
-          <div className="flex flex-wrap gap-1.5">
+        <div
+          className={
+            "card absolute top-full z-30 mt-2 w-[280px] max-w-[calc(100vw-2rem)] p-3 shadow-2xl shadow-black/60 " +
+            // Page header actions sit on the left on mobile, so open rightwards there.
+            (compact ? "right-0" : "left-0 sm:left-auto sm:right-0")
+          }
+        >
+          <div className="grid grid-cols-2 gap-1">
             {RANGE_PRESETS.map((p) => {
               const active = value.preset === p.id;
               return (
@@ -542,10 +556,10 @@ function RangePicker({
                   type="button"
                   onClick={() => pick(p.id)}
                   className={
-                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition " +
+                    "btn btn-sm justify-start " +
                     (active
-                      ? "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-400/40"
-                      : "bg-white/5 text-slate-300 hover:bg-white/10")
+                      ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-200"
+                      : "btn-ghost")
                   }
                 >
                   {p.label}
@@ -554,16 +568,15 @@ function RangePicker({
             })}
           </div>
           <div className="mt-3 border-t border-white/5 pt-3">
-            <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
-              Custom range
-            </div>
+            <span className="field-label">Custom range</span>
             <div className="flex items-center gap-2">
               <input
                 type="date"
                 value={toDateInput(value.from)}
                 max={toDateInput(value.to)}
                 onChange={(e) => setFrom(e.target.value)}
-                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-xs text-slate-200 outline-none [color-scheme:dark] focus:border-cyan-400/50"
+                className="input h-8 min-w-0 flex-1 px-2 text-xs [color-scheme:dark]"
+                aria-label="From date"
               />
               <span className="text-xs text-slate-500">→</span>
               <input
@@ -571,7 +584,8 @@ function RangePicker({
                 value={toDateInput(value.to)}
                 min={toDateInput(value.from)}
                 onChange={(e) => setTo(e.target.value)}
-                className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-xs text-slate-200 outline-none [color-scheme:dark] focus:border-cyan-400/50"
+                className="input h-8 min-w-0 flex-1 px-2 text-xs [color-scheme:dark]"
+                aria-label="To date"
               />
             </div>
           </div>
@@ -588,9 +602,9 @@ export function InsightsDashboard({
   replies = [],
   loading = false,
   onRefresh,
-  onClose,
   className = "",
   initialPreset = "today",
+  asPage = false,
 }: {
   rows: SheetHistoryRow[];
   replies?: ReplyNotification[];
@@ -598,10 +612,14 @@ export function InsightsDashboard({
   onRefresh?: () => void;
   onClose?: () => void;
   className?: string;
-  /** Range selected on first render. The modal keeps "today" — you open it to
-   *  ask about now. The always-on home-page panel opens on "all", because a
-   *  panel that is always visible must still say something after a quiet week. */
+  /** Range selected on first render. The Insights page keeps "today" — you
+   *  open it to ask about now. The always-on scanner panel opens on "all",
+   *  because a panel that is always visible must still say something after a
+   *  quiet week. */
   initialPreset?: Exclude<PresetId, "custom">;
+  /** Full dashboard page (page header, wide grid). Without it the dashboard
+   *  renders as the compact side panel on the scanner page. */
+  asPage?: boolean;
 }) {
   const [range, setRange] = useState<RangeState>(() => {
     const r = presetRange(initialPreset);
@@ -639,226 +657,188 @@ export function InsightsDashboard({
     });
   }, [sender, data, rows, range.from, range.to, replies]);
 
-  return (
-    <div className={className}>
-      {/* Header */}
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
-            <ChartIcon className="h-5 w-5 text-cyan-300" />
-            Insights
-          </h3>
-          <p className="mt-1 truncate text-xs text-slate-400">
-            {data.sent > 0 ? (
-              <>
-                <span className="font-medium text-cyan-300">{data.rangeLabel}</span>
-                <span className="text-slate-600"> · </span>
-                {data.uniqueContacts} contact{data.uniqueContacts === 1 ? "" : "s"} ·{" "}
-                {data.sent} email{data.sent === 1 ? "" : "s"}
-              </>
-            ) : (
-              <span className="text-slate-500">No activity in range</span>
-            )}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <RangePicker value={range} onChange={setRange} />
-          {onRefresh && (
-            <button
-              type="button"
-              onClick={onRefresh}
-              disabled={loading}
-              className="rounded-full border border-white/10 p-2 text-slate-300 transition hover:border-cyan-400/40 hover:text-cyan-300 disabled:opacity-40"
-              title="Refresh from sheet"
-            >
-              <RefreshIcon className={"h-4 w-4 " + (loading ? "animate-spin" : "")} />
-            </button>
-          )}
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-full p-2 text-slate-400 transition hover:bg-white/5 hover:text-slate-100"
-              aria-label="Close"
-            >
-              <CloseIcon className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-      </div>
+  const summary =
+    data.sent > 0 ? (
+      <>
+        <span className="font-medium text-slate-300">{data.rangeLabel}</span>
+        <span className="text-slate-600"> · </span>
+        <span className="tabular-nums">
+          {data.uniqueContacts} contact{data.uniqueContacts === 1 ? "" : "s"} ·{" "}
+          {data.sent} email{data.sent === 1 ? "" : "s"}
+        </span>
+      </>
+    ) : (
+      "No activity in range"
+    );
 
-      {data.sent === 0 ? (
-        <p className="py-16 text-center text-sm text-slate-500">
-          {loading ? "Loading insights…" : "No emails sent in the selected range."}
-        </p>
-      ) : (
-        <div className="space-y-2.5">
-          {/* Stat cards */}
-          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
-            <StatCard label="Contacts" value={data.uniqueContacts} accent="#38bdf8" />
-            <StatCard label="Emails sent" value={data.sent} accent="#e8edf5" />
-            <StatCard
-              label="Replied"
-              value={data.replied}
-              sub={`of ${data.uniqueContacts} contacts`}
-              accent={POSITIVE_COLOR}
-            />
-            <StatCard
-              label="Reply rate"
-              value={`${replyPct}%`}
-              sub="by contact"
-              accent="#22d3ee"
-            />
-            <StatCard
-              label="Viewed"
-              value={data.openedEmails}
-              sub={`of ${data.sent} emails`}
-              accent="#a78bfa"
-            />
-            <StatCard
-              label="Viewed rate"
-              value={`${viewedPct}%`}
-              sub="by email"
-              accent="#c4b5fd"
-            />
-          </div>
-
-          {/* Performance over time, per sending account */}
-          <PerformancePanel
-            view={view}
-            allData={data}
-            sender={sender}
-            onSender={setSender}
-          />
-
-          {/* Who replied */}
-          <Panel
-            title={`Who replied · ${data.replied}`}
-            action={
-              data.replied > 0 ? (
-                <div className="flex items-center gap-3 text-[10px]">
-                  <Legend color={POSITIVE_COLOR} label={`${data.positive}`} small />
-                  <Legend color={NEUTRAL_COLOR} label={`${data.neutral}`} small />
-                  <Legend color={NEGATIVE_COLOR} label={`${data.negative}`} small />
-                </div>
-              ) : null
-            }
-          >
-            <RepliersList repliers={data.repliers} />
-          </Panel>
-
-          {/* Breakdowns */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <Panel title="By sender">
-              <Breakdown items={data.bySender} />
-            </Panel>
-            <Panel title="By site">
-              <Breakdown items={data.bySite} />
-            </Panel>
-            <Panel title="Top countries">
-              <Breakdown items={data.byCountry} />
-            </Panel>
-          </div>
-        </div>
+  // Keeps the refresh icon turning long enough to be seen on a fast reload.
+  const refreshSpin = useSpin();
+  const controls = (
+    <>
+      <RangePicker value={range} onChange={setRange} compact={!asPage} />
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={() => {
+            void refreshSpin.run();
+            onRefresh();
+          }}
+          disabled={loading}
+          className={
+            "btn btn-icon " + (asPage ? "btn-secondary" : "btn-ghost btn-sm")
+          }
+          title="Refresh from sheet"
+          aria-label="Refresh from sheet"
+        >
+          <RefreshIcon className={"h-4 w-4 " + (loading || refreshSpin.spinning ? "animate-spin" : "")} />
+        </button>
       )}
+    </>
+  );
+
+  const header = asPage ? (
+    <PageHeader
+      title="Insights"
+      description={summary}
+      icon={<ChartIcon className="h-5 w-5" />}
+      actions={controls}
+    />
+  ) : (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+          <ChartIcon className="h-4 w-4 text-cyan-300" />
+          Insights
+        </h3>
+        <p className="mt-1 truncate text-xs text-slate-500">{summary}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">{controls}</div>
     </div>
   );
-}
 
-export default function InsightsModal({
-  rows,
-  replies = [],
-  loading,
-  onRefresh,
-  onClose,
-}: {
-  rows: SheetHistoryRow[];
-  replies?: ReplyNotification[];
-  loading: boolean;
-  onRefresh: () => void;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div
-      className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="glass slide-in relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl shadow-2xl shadow-black/50">
-        <div className="flex-1 overflow-auto p-4">
-          <InsightsDashboard
-            rows={rows}
-            replies={replies}
-            loading={loading}
-            onRefresh={onRefresh}
-            onClose={onClose}
+  const body =
+    data.sent === 0 ? (
+      <Card>
+        <EmptyState
+          icon={<ChartIcon className="h-5 w-5" />}
+          title={loading ? "Loading insights…" : "No emails sent in the selected range"}
+          description={loading ? undefined : "Pick a wider date range to see more activity."}
+        />
+      </Card>
+    ) : (
+      <>
+        {/* Stat tiles */}
+        <div
+          className={
+            "grid grid-cols-2 gap-3 " +
+            (asPage ? "sm:grid-cols-3 xl:grid-cols-6" : "xl:grid-cols-3")
+          }
+        >
+          <StatCard
+            label="Contacts"
+            value={data.uniqueContacts}
+            tone="info"
+            icon={<UsersIcon className="h-4 w-4" />}
           />
+          <StatCard
+            label="Emails sent"
+            value={data.sent}
+            icon={<SendIcon className="h-4 w-4" />}
+          />
+          <StatCard
+            label="Replied"
+            value={data.replied}
+            hint={`of ${data.uniqueContacts} contacts`}
+            tone="success"
+            icon={<ReplyIcon className="h-4 w-4" />}
+          />
+          <StatCard label="Reply rate" value={`${replyPct}%`} hint="by contact" tone="info" />
+          <StatCard
+            label="Viewed"
+            value={data.openedEmails}
+            hint={`of ${data.sent} emails`}
+            tone="violet"
+            icon={<EyeIcon className="h-4 w-4" />}
+          />
+          <StatCard label="Viewed rate" value={`${viewedPct}%`} hint="by email" tone="violet" />
         </div>
-      </div>
+
+        {/* Performance over time, per sending account */}
+        <PerformancePanel
+          view={view}
+          allData={data}
+          sender={sender}
+          onSender={setSender}
+        />
+
+        {/* Who replied */}
+        <Card
+          title={
+            <span className="flex items-center gap-2">
+              Who replied
+              <span className="badge badge-neutral tabular-nums">{data.replied}</span>
+            </span>
+          }
+          actions={
+            data.replied > 0 ? (
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <span className="badge badge-success tabular-nums" title="Positive replies">
+                  {data.positive}
+                  <span className="hidden sm:inline">positive</span>
+                </span>
+                <span className="badge badge-info tabular-nums" title="Neutral replies">
+                  {data.neutral}
+                  <span className="hidden sm:inline">neutral</span>
+                </span>
+                <span className="badge badge-danger tabular-nums" title="Negative replies">
+                  {data.negative}
+                  <span className="hidden sm:inline">negative</span>
+                </span>
+              </div>
+            ) : null
+          }
+          flush
+        >
+          <RepliersList repliers={data.repliers} tall={asPage} />
+        </Card>
+
+        {/* Breakdowns */}
+        <div
+          className={
+            asPage ? "grid gap-6 lg:grid-cols-3" : "grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+          }
+        >
+          <Card title="By sender" description="Contacts per account">
+            <Breakdown items={data.bySender} />
+          </Card>
+          <Card title="By site" description="Contacts per site">
+            <Breakdown items={data.bySite} />
+          </Card>
+          <Card title="Top countries" description="Contacts per country">
+            <Breakdown items={data.byCountry} />
+          </Card>
+        </div>
+      </>
+    );
+
+  return asPage ? (
+    <PageBody className={className}>
+      {header}
+      {body}
+    </PageBody>
+  ) : (
+    <div className={"flex flex-col gap-3 " + className}>
+      {header}
+      {body}
     </div>
   );
 }
 
 // --- Pieces -----------------------------------------------------------
 
-function Panel({
-  title,
-  action,
-  children,
-}: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h4 className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-          {title}
-        </h4>
-        {action}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-  sub,
-  accent,
-}: {
-  label: string;
-  value: string | number;
-  sub?: string;
-  accent: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2.5">
-      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-slate-400">
-        {label}
-      </div>
-      <div className="mt-0.5 text-xl font-bold sm:text-2xl" style={{ color: accent }}>
-        {value}
-      </div>
-      {sub && <div className="mt-0.5 text-[10px] text-slate-500">{sub}</div>}
-    </div>
-  );
-}
-
 // Timeline line colours (distinct, in the app palette).
-const LINE_CONTACTS = "#38bdf8";
-const LINE_VIEWED = "#a78bfa";
+const LINE_CONTACTS = "rgb(var(--c-sky-400))";
+const LINE_VIEWED = "rgb(var(--c-violet-400))";
 const LINE_REPLIED = POSITIVE_COLOR;
 
 function pctOf(n: number, d: number): number {
@@ -881,19 +861,14 @@ function SenderTab({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       title={title}
-      className={
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition " +
-        (active
-          ? "bg-cyan-500/20 text-cyan-100 ring-1 ring-cyan-400/40"
-          : "bg-white/5 text-slate-300 hover:bg-white/10")
-      }
+      className={"seg-item " + (active ? "seg-item-active" : "")}
     >
-      <span className="max-w-[120px] truncate">{label}</span>
-      <span className={"tabular-nums " + (active ? "text-cyan-300" : "text-slate-500")}>
-        {rate}%
-      </span>
+      <span className="max-w-[140px] truncate">{label}</span>
+      <span className={"seg-count " + (active ? "text-cyan-300" : "")}>{rate}%</span>
     </button>
   );
 }
@@ -902,24 +877,32 @@ function MiniStat({
   label,
   value,
   sub,
-  accent,
+  tone,
 }: {
   label: string;
   value: string | number;
   sub?: string;
-  accent: string;
+  tone: string;
 }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-2.5 py-2">
-      <div className="text-[9px] font-medium uppercase tracking-[0.14em] text-slate-400">
-        {label}
-      </div>
-      <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="text-lg font-bold" style={{ color: accent }}>
+    <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5">
+      <div className="text-xs font-medium text-slate-400">{label}</div>
+      <div className="mt-1 flex items-baseline gap-1.5">
+        <span className={"text-lg font-semibold tabular-nums tracking-tight " + tone}>
           {value}
         </span>
-        {sub && <span className="text-[10px] text-slate-500">{sub}</span>}
+        {sub && <span className="text-xs tabular-nums text-slate-500">{sub}</span>}
       </div>
+    </div>
+  );
+}
+
+function ChartLegend({ className = "" }: { className?: string }) {
+  return (
+    <div className={"items-center gap-3 text-xs " + className}>
+      <Legend color={LINE_CONTACTS} label="Contacts" small />
+      <Legend color={LINE_VIEWED} label="Viewed" small />
+      <Legend color={LINE_REPLIED} label="Replied" small />
     </div>
   );
 }
@@ -942,50 +925,47 @@ function PerformancePanel({
   const stats = allData.senderStats;
   const multiDay = view.perDay.length > 1;
   return (
-    <Panel
+    <Card
       title="Performance"
-      action={
-        <div className="flex items-center gap-3 text-[10px]">
-          <Legend color={LINE_CONTACTS} label="Contacts" small />
-          <Legend color={LINE_VIEWED} label="Viewed" small />
-          <Legend color={LINE_REPLIED} label="Replied" small />
-        </div>
-      }
+      description="Contacts, views and replies over time"
+      actions={<ChartLegend className="hidden sm:flex" />}
     >
       {stats.length > 1 && (
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          <SenderTab
-            active={sender === "all"}
-            label="All accounts"
-            rate={Math.round(allData.replyRate * 100)}
-            onClick={() => onSender("all")}
-          />
-          {stats.map((s) => (
+        <div className="-mx-1 mb-4 overflow-x-auto px-1 pb-1">
+          <div className="seg" role="tablist" aria-label="Sending account">
             <SenderTab
-              key={s.email}
-              active={sender === s.email}
-              label={s.label}
-              title={`${s.email} · ${s.contacts} contacts · ${s.replied} replied · ${Math.round(s.replyRate * 100)}% reply`}
-              rate={Math.round(s.replyRate * 100)}
-              onClick={() => onSender(s.email)}
+              active={sender === "all"}
+              label="All accounts"
+              rate={Math.round(allData.replyRate * 100)}
+              onClick={() => onSender("all")}
             />
-          ))}
+            {stats.map((s) => (
+              <SenderTab
+                key={s.email}
+                active={sender === s.email}
+                label={s.label}
+                title={`${s.email} · ${s.contacts} contacts · ${s.replied} replied · ${Math.round(s.replyRate * 100)}% reply`}
+                rate={Math.round(s.replyRate * 100)}
+                onClick={() => onSender(s.email)}
+              />
+            ))}
+          </div>
         </div>
       )}
 
-      <div className="mb-3 grid grid-cols-3 gap-2">
-        <MiniStat label="Sent" value={view.sent} accent="#e8edf5" />
+      <div className="mb-4 grid grid-cols-3 gap-3">
+        <MiniStat label="Sent" value={view.sent} tone="text-slate-50" />
         <MiniStat
           label="Viewed"
           value={view.openedEmails}
           sub={`${pctOf(view.openedEmails, view.sent)}%`}
-          accent={LINE_VIEWED}
+          tone="text-violet-300"
         />
         <MiniStat
           label="Replied"
           value={view.replied}
           sub={`${pctOf(view.replied, view.uniqueContacts)}%`}
-          accent={LINE_REPLIED}
+          tone="text-emerald-300"
         />
       </div>
 
@@ -997,30 +977,26 @@ function PerformancePanel({
           { label: "Replied", color: LINE_REPLIED, points: view.perDay.map((d) => d.replied) },
         ]}
       />
+      <ChartLegend className="mt-3 flex justify-center sm:hidden" />
       {!multiDay && (
-        <p className="mt-2 text-center text-[10px] text-slate-500">
+        <p className="mt-2 text-center text-xs text-slate-500">
           Day one of tracking — the timeline fills in as more days pass.
         </p>
       )}
-    </Panel>
+    </Card>
   );
 }
 
-const SENTIMENT_META: Record<Sentiment, { label: string; color: string; dot: string }> = {
-  positive: { label: "Positive", color: "text-emerald-300", dot: POSITIVE_COLOR },
-  neutral: { label: "Neutral", color: "text-sky-300", dot: NEUTRAL_COLOR },
-  negative: { label: "Negative", color: "text-rose-300", dot: NEGATIVE_COLOR },
+const SENTIMENT_META: Record<Sentiment, { label: string; badge: string; dot: string }> = {
+  positive: { label: "Positive", badge: "badge-success", dot: POSITIVE_COLOR },
+  neutral: { label: "Neutral", badge: "badge-info", dot: NEUTRAL_COLOR },
+  negative: { label: "Negative", badge: "badge-danger", dot: NEGATIVE_COLOR },
 };
 
 function SentimentBadge({ sentiment }: { sentiment: Sentiment }) {
   const m = SENTIMENT_META[sentiment];
   return (
-    <span
-      className={
-        "inline-flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold " +
-        m.color
-      }
-    >
+    <span className={"badge shrink-0 " + m.badge}>
       <span
         className="h-1.5 w-1.5 rounded-full"
         style={{ backgroundColor: m.dot }}
@@ -1031,27 +1007,28 @@ function SentimentBadge({ sentiment }: { sentiment: Sentiment }) {
   );
 }
 
-function RepliersList({ repliers }: { repliers: Replier[] }) {
+function RepliersList({ repliers, tall = false }: { repliers: Replier[]; tall?: boolean }) {
   if (repliers.length === 0) {
-    return <p className="text-xs text-slate-500">No replies in this range yet.</p>;
+    return <p className="px-5 py-8 text-center text-sm text-slate-500">No replies in this range yet.</p>;
   }
   return (
-    <ul className="-mr-1 max-h-52 space-y-1.5 overflow-y-auto pr-1">
+    <ul
+      className={
+        "divide-y divide-white/5 overflow-y-auto " + (tall ? "max-h-[28rem]" : "max-h-64")
+      }
+    >
       {repliers.map((r) => (
-        <li
-          key={r.email}
-          className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 transition hover:border-white/10 hover:bg-white/[0.04]"
-        >
+        <li key={r.email} className="px-5 py-3 transition hover:bg-white/[0.02]">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium text-slate-100">
                   {r.name || r.email}
                 </span>
                 <SentimentBadge sentiment={r.sentiment} />
               </div>
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400">
-                {r.name && <span className="truncate">{r.email}</span>}
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
+                {r.name && <span className="truncate font-mono text-[11px]">{r.email}</span>}
                 {r.site && (
                   <>
                     <span className="text-slate-600">·</span>
@@ -1069,13 +1046,13 @@ function RepliersList({ repliers }: { repliers: Replier[] }) {
                 )}
               </div>
             </div>
-            <span className="shrink-0 whitespace-nowrap text-[10px] text-slate-500">
+            <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-slate-500">
               {fmtWhen(r.whenMs)}
             </span>
           </div>
           {r.snippet && (
-            <p className="mt-1.5 line-clamp-2 text-[11px] italic text-slate-400">
-              “{r.snippet}”
+            <p className="mt-2 line-clamp-2 border-l-2 border-white/10 pl-3 text-xs text-slate-400">
+              {r.snippet}
             </p>
           )}
         </li>
@@ -1096,14 +1073,14 @@ function Legend({
   small?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1.5">
       <span
         className={"inline-block rounded-full " + (small ? "h-2 w-2" : "h-2.5 w-2.5")}
         style={{ backgroundColor: color }}
       />
       <span className={small ? "text-slate-400" : "text-slate-300"}>{label}</span>
       {value !== undefined && (
-        <span className="font-mono text-slate-100">{value}</span>
+        <span className="tabular-nums text-slate-100">{value}</span>
       )}
     </div>
   );
@@ -1134,7 +1111,7 @@ function Donut({
             cy={size / 2}
             r={r}
             fill="none"
-            stroke="rgba(255,255,255,0.05)"
+            stroke="rgb(var(--c-white) / 0.05)"
             strokeWidth={thickness}
           />
           {segments.map((s, i) => {
@@ -1222,12 +1199,12 @@ function Funnel({
   const base = Math.max(1, sent, contacts, opened, replied, positive);
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : 0);
   const rows = [
-    { label: "Emails sent", value: sent, color: "#94a3b8", rate: "" },
-    { label: "Contacts", value: contacts, color: "#38bdf8", rate: "" },
+    { label: "Emails sent", value: sent, color: "rgb(var(--c-slate-400))", rate: "" },
+    { label: "Contacts", value: contacts, color: "rgb(var(--c-sky-400))", rate: "" },
     {
       label: "Opened",
       value: opened,
-      color: "#a78bfa",
+      color: "rgb(var(--c-violet-400))",
       rate: contacts > 0 ? `${pct(opened, contacts)}% open` : "",
     },
     {
@@ -1239,7 +1216,7 @@ function Funnel({
     {
       label: "Positive",
       value: positive,
-      color: "#22d3ee",
+      color: "rgb(var(--c-cyan-400))",
       rate: replied > 0 ? `${pct(positive, replied)}% of repl.` : "",
     },
   ];
@@ -1354,8 +1331,8 @@ function TrendChart({
         <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
           <defs>
             <linearGradient id="trend-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={series[0]?.color ?? "#22d3ee"} stopOpacity="0.22" />
-              <stop offset="100%" stopColor={series[0]?.color ?? "#22d3ee"} stopOpacity="0" />
+              <stop offset="0%" stopColor={series[0]?.color ?? "rgb(var(--c-cyan-400))"} stopOpacity="0.22" />
+              <stop offset="100%" stopColor={series[0]?.color ?? "rgb(var(--c-cyan-400))"} stopOpacity="0" />
             </linearGradient>
           </defs>
 
@@ -1369,15 +1346,16 @@ function TrendChart({
                   y1={y}
                   x2={W - padR}
                   y2={y}
-                  stroke="rgba(148,163,184,0.12)"
+                  stroke={i === 0 ? "rgb(var(--c-slate-400) / 0.22)" : "rgb(var(--c-slate-400) / 0.12)"}
+                  strokeDasharray={i === 0 ? undefined : "3 3"}
                   strokeWidth={1}
                 />
                 <text
                   x={padL - 7}
                   y={y + 3}
                   textAnchor="end"
-                  fontSize={9}
-                  fill="rgba(148,163,184,0.75)"
+                  fontSize={10}
+                  fill="#64748b"
                 >
                   {fmtTick(tv)}
                 </text>
@@ -1419,7 +1397,7 @@ function TrendChart({
                 cx={xAt(i)}
                 cy={yAt(v)}
                 r={n <= 1 ? 3.5 : 2.5}
-                fill="#0b1220"
+                fill="rgb(var(--surface))"
                 stroke={s.color}
                 strokeWidth={1.75}
               />
@@ -1428,14 +1406,15 @@ function TrendChart({
 
           {/* x-axis date labels */}
           {labels.map((lb, i) =>
-            i % labelStep === 0 || i === n - 1 ? (
+            // Skip a stepped label that would collide with the last one.
+            i === n - 1 || (i % labelStep === 0 && xAt(n - 1) - xAt(i) >= 44) ? (
               <text
                 key={i}
                 x={xAt(i)}
                 y={H - 8}
                 textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
-                fontSize={9}
-                fill="rgba(148,163,184,0.75)"
+                fontSize={10}
+                fill="#64748b"
               >
                 {lb}
               </text>
@@ -1453,20 +1432,20 @@ function Breakdown({
   items: { label: string; value: number; color: string }[];
 }) {
   if (items.length === 0) {
-    return <p className="text-xs text-slate-500">No data.</p>;
+    return <p className="text-sm text-slate-500">No data.</p>;
   }
   const max = Math.max(1, ...items.map((i) => i.value));
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {items.map((it, i) => (
-        <div key={i} className="flex items-center gap-2">
+        <div key={i} className="flex items-center gap-3">
           <span
-            className="w-16 shrink-0 truncate text-[11px] text-slate-300"
+            className="w-24 shrink-0 truncate text-xs text-slate-300"
             title={it.label}
           >
             {it.label}
           </span>
-          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800/60">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
             <div
               className="h-full rounded-full transition-[width]"
               style={{
@@ -1475,7 +1454,7 @@ function Breakdown({
               }}
             />
           </div>
-          <span className="w-6 shrink-0 text-right font-mono text-[11px] text-slate-200">
+          <span className="w-8 shrink-0 text-right text-xs font-medium tabular-nums text-slate-200">
             {it.value}
           </span>
         </div>
@@ -1499,11 +1478,39 @@ function ChartIcon({ className }: IconProps) {
   );
 }
 
-function CloseIcon({ className }: IconProps) {
+function UsersIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M18 6 6 18" />
-      <path d="m6 6 12 12" />
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function SendIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </svg>
+  );
+}
+
+function ReplyIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="m9 17-5-5 5-5" />
+      <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+    </svg>
+  );
+}
+
+function EyeIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }

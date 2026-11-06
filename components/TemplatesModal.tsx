@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Spinner } from "@/components/ui/spinner";
 import { useTemplates, type UiTemplate } from "@/hooks/useTemplates";
+import { Card, PageBody, PageHeader, Segmented } from "@/components/ui/dashboard";
 
 // Manage Templates: edit existing templates or add new ones. Saved to the
 // database via /api/templates and applied to all future sends.
@@ -17,7 +19,38 @@ function TrashIcon({ className }: { className?: string }) {
   );
 }
 
-export default function TemplatesModal({ onClose }: { onClose: () => void }) {
+function FileTextIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+    </svg>
+  );
+}
+
+function PlusIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} aria-hidden>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+const PLACEHOLDERS = [
+  "{{name}}",
+  "{{url_upwork}}",
+  "{{url_linkedin}}",
+  "{{url_github}}",
+  "{{sender}}",
+  "{{sender_email}}",
+];
+
+// Props kept for app/page.tsx's call site; the page needs neither.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export default function TemplatesModal(_props: {
+  onClose: () => void;
+  asPage?: boolean;
+}) {
   const { templates, templatesLoaded, saveTemplate, deleteTemplate } =
     useTemplates();
 
@@ -76,14 +109,6 @@ export default function TemplatesModal({ onClose }: { onClose: () => void }) {
       setBody(t.body);
     }
   }, [templatesLoaded, templates, dirty, selectedId]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const onSave = async () => {
     if (busy) return;
@@ -146,210 +171,223 @@ export default function TemplatesModal({ onClose }: { onClose: () => void }) {
   const canSave = !!label.trim() && !!subject.trim() && !!body.trim() && !busy;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-4"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-200">
-            Manage templates
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full px-2 py-1 text-slate-400 transition hover:text-white"
-            title="Close"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Tabs: Message 1 (opener) / Message 2 (follow-up) */}
-        <div className="flex gap-1 border-b border-white/10 px-5 pt-3">
-          {(
-            [
-              { id: "opener", label: "Message 1 · Opener" },
-              { id: "followup", label: "Message 2 · Follow-up" },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => switchTab(t.id)}
-              className={
-                "rounded-t-lg px-4 py-2 text-xs font-medium transition " +
-                (tab === t.id
-                  ? "border-b-2 border-cyan-400 text-cyan-100"
-                  : "text-slate-400 hover:text-white")
-              }
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5 md:flex-row md:overflow-hidden">
-          {/* Template list (current tab) — scrolls on its own on desktop */}
-          <div className="flex shrink-0 flex-col gap-2 md:w-52 md:min-h-0 md:overflow-y-auto md:pr-1">
-            {tabTemplates.map((t) => (
-              <div
-                key={t.id}
-                className={
-                  "group flex items-center gap-1 rounded-lg border pr-1 transition " +
-                  (selectedId === t.id
-                    ? "border-cyan-400/60 bg-cyan-500/10"
-                    : "border-white/10 bg-slate-950/50 hover:border-white/25")
-                }
-              >
-                <button
-                  type="button"
-                  onClick={() => loadIntoEditor(t)}
-                  className={
-                    "min-w-0 flex-1 truncate px-3 py-2 text-left text-sm transition " +
-                    (selectedId === t.id
-                      ? "text-cyan-100"
-                      : "text-slate-300 group-hover:text-white")
-                  }
-                  title={t.label}
-                >
-                  {t.label}
-                </button>
-                {tabTemplates.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => void removeTemplate(t.id, t.label)}
-                    disabled={busy}
-                    title={`Delete "${t.label}"`}
-                    className="shrink-0 rounded-md p-1.5 text-slate-500 opacity-60 transition hover:bg-rose-500/15 hover:text-rose-300 hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    <TrashIcon className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            ))}
+    <PageBody>
+      <PageHeader
+        title="Templates"
+        description="The opener and follow-up messages used for every future send."
+        icon={<FileTextIcon className="h-5 w-5" />}
+        meta={
+          dirty && !feedback ? (
+            <span className="badge badge-warning">Unsaved changes</span>
+          ) : undefined
+        }
+        actions={
+          <>
             <button
               type="button"
               onClick={() => loadIntoEditor(null)}
-              className={
-                "rounded-lg border border-dashed px-3 py-2 text-left text-sm transition " +
-                (isNew
-                  ? "border-cyan-400/60 bg-cyan-500/10 text-cyan-100"
-                  : "border-white/20 text-slate-400 hover:border-white/40 hover:text-white")
-              }
+              className="btn btn-secondary"
             >
-              + New template
+              <PlusIcon className="h-4 w-4" />
+              New template
             </button>
-          </div>
+            <button
+              type="button"
+              onClick={() => void onSave()}
+              disabled={!canSave}
+              data-ripple
+              className="btn btn-primary"
+            >
+              {busy && <Spinner />}
+              {busy ? "Saving…" : isNew ? "Add template" : "Save changes"}
+            </button>
+          </>
+        }
+      />
 
-          {/* Editor — stays fixed while the list scrolls */}
-          <div className="flex min-w-0 flex-1 flex-col gap-3 md:min-h-0">
-            <div>
-              <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Template name
-              </label>
-              <input
-                type="text"
-                value={label}
-                onChange={(e) => {
-                  setLabel(e.target.value);
-                  setDirty(true);
-                }}
-                placeholder="e.g. Collaboration suggestion"
-                className="w-full rounded-lg border border-white/10 bg-slate-950/70 px-4 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
-              />
-            </div>
+      {/* Tabs: Message 1 (opener) / Message 2 (follow-up) */}
+      <div className="max-w-full overflow-x-auto">
+        <Segmented
+          value={tab}
+          onChange={switchTab}
+          options={[
+            { value: "opener", label: "Message 1 · Opener" },
+            { value: "followup", label: "Message 2 · Follow-up" },
+          ]}
+        />
+      </div>
 
-            <div>
-              <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Subject
-              </label>
-              <input
-                type="text"
-                value={subject}
-                onChange={(e) => {
-                  setSubject(e.target.value);
-                  setDirty(true);
-                }}
-                className="w-full rounded-lg border border-white/10 bg-slate-950/70 px-4 py-2.5 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
-              />
-              {tab === "followup" && (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Ignored when sent — follow-ups reuse the opener&apos;s subject
-                  as{" "}
-                  <span className="font-mono text-indigo-300">Re: …</span> so
-                  they thread correctly. Only the body is used.
-                </p>
-              )}
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col">
-              <div className="mb-1 flex items-center justify-between">
-                <label className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                  Body
-                </label>
-                <span className="text-[11px] text-slate-500">
-                  Placeholders:{" "}
-                  <code className="text-cyan-300">{"{{name}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{url_upwork}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{url_linkedin}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{url_github}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{sender}}"}</code>{" "}
-                  <code className="text-cyan-300">{"{{sender_email}}"}</code>{" "}
-                  — <code className="text-cyan-300">{"{{url}}"}</code> ={" "}
-                  <code className="text-cyan-300">{"{{url_upwork}}"}</code>
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+        {/* Template list (current tab) */}
+        <Card
+          title="Templates"
+          description={`${tabTemplates.length} ${tab === "opener" ? "opener" : "follow-up"} template${tabTemplates.length === 1 ? "" : "s"}`}
+          flush
+          className="self-start"
+        >
+          <ul className="flex flex-col gap-1 p-2">
+            {tabTemplates.map((t) => {
+              const active = selectedId === t.id;
+              return (
+                <li
+                  key={t.id}
+                  className={
+                    "group relative flex items-center gap-1 rounded-lg pr-1 transition " +
+                    (active ? "bg-cyan-400/10" : "hover:bg-white/[0.04]")
+                  }
+                >
+                  {active && (
+                    <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-cyan-400" aria-hidden />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => loadIntoEditor(t)}
+                    className="min-w-0 flex-1 px-3 py-2 text-left"
+                    title={t.label}
+                  >
+                    <span
+                      className={
+                        "block truncate text-sm " +
+                        (active ? "font-medium text-cyan-100" : "text-slate-300 group-hover:text-white")
+                      }
+                    >
+                      {t.label}
+                    </span>
+                    <span className="block truncate text-xs text-slate-500">{t.subject}</span>
+                  </button>
+                  {tabTemplates.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => void removeTemplate(t.id, t.label)}
+                      disabled={busy}
+                      title={`Delete "${t.label}"`}
+                      aria-label={`Delete "${t.label}"`}
+                      className="btn btn-ghost btn-sm btn-icon shrink-0 opacity-60 hover:!bg-rose-500/15 hover:!text-rose-300 hover:opacity-100"
+                    >
+                      <TrashIcon className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+            {isNew && (
+              <li className="relative rounded-lg bg-cyan-400/10">
+                <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-cyan-400" aria-hidden />
+                <span className="block truncate px-3 py-2 text-sm font-medium text-cyan-100">
+                  {label.trim() || "New template"}
+                  <span className="ml-2 text-xs font-normal text-slate-500">draft</span>
                 </span>
+              </li>
+            )}
+          </ul>
+        </Card>
+
+        {/* Editor */}
+        <Card
+          title={isNew ? "New template" : "Edit template"}
+          description={tab === "opener" ? "Message 1 · Opener" : "Message 2 · Follow-up"}
+          className="min-w-0"
+          actions={
+            !isNew && tabTemplates.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => void onDelete()}
+                disabled={busy}
+                className="btn btn-danger btn-sm"
+              >
+                <TrashIcon className="h-3.5 w-3.5" />
+                Delete
+              </button>
+            ) : undefined
+          }
+        >
+          <div className="flex flex-col gap-5">
+            <div className="grid gap-5 md:grid-cols-2">
+              <div>
+                <label htmlFor="tpl-label" className="field-label">
+                  Template name
+                </label>
+                <input
+                  id="tpl-label"
+                  type="text"
+                  value={label}
+                  onChange={(e) => {
+                    setLabel(e.target.value);
+                    setDirty(true);
+                  }}
+                  placeholder="e.g. Collaboration suggestion"
+                  className="input"
+                />
               </div>
+
+              <div>
+                <label htmlFor="tpl-subject" className="field-label">
+                  Subject
+                </label>
+                <input
+                  id="tpl-subject"
+                  type="text"
+                  value={subject}
+                  onChange={(e) => {
+                    setSubject(e.target.value);
+                    setDirty(true);
+                  }}
+                  className="input"
+                />
+                {tab === "followup" && (
+                  <p className="field-hint">
+                    Ignored when sent — follow-ups reuse the opener&apos;s subject
+                    as{" "}
+                    <span className="font-mono text-violet-300">Re: …</span> so
+                    they thread correctly. Only the body is used.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="tpl-body" className="field-label">
+                Body
+              </label>
               <textarea
+                id="tpl-body"
                 value={body}
                 onChange={(e) => {
                   setBody(e.target.value);
                   setDirty(true);
                 }}
                 rows={12}
-                className="w-full flex-1 resize-y rounded-lg border border-white/10 bg-slate-950/70 px-4 py-3 font-mono text-[13px] leading-relaxed text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30"
+                className="input min-h-[22rem] resize-y font-mono text-[13px]"
               />
+              <div className="field-hint flex flex-wrap items-center gap-1.5">
+                <span className="mr-0.5">Placeholders</span>
+                {PLACEHOLDERS.map((p) => (
+                  <code key={p} className="badge badge-neutral font-mono">
+                    {p}
+                  </code>
+                ))}
+                <span className="ml-0.5">
+                  <code className="font-mono text-slate-400">{"{{url}}"}</code> ={" "}
+                  <code className="font-mono text-slate-400">{"{{url_upwork}}"}</code>
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => void onSave()}
-                disabled={!canSave}
-                data-ripple
-                className="btn-press inline-flex items-center gap-1.5 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-4 py-1.5 text-sm font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-400/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            {feedback && (
+              <p
+                className={
+                  "rounded-lg border px-3 py-2 text-xs " +
+                  (feedback.ok
+                    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+                    : "border-rose-400/30 bg-rose-500/10 text-rose-200")
+                }
               >
-                {busy ? "Saving…" : isNew ? "Add template" : "Save changes"}
-              </button>
-              {!isNew && tabTemplates.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => void onDelete()}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-rose-400/30 bg-rose-500/10 px-4 py-1.5 text-sm font-medium text-rose-200 transition hover:border-rose-300 hover:bg-rose-400/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Delete
-                </button>
-              )}
-              {feedback && (
-                <span
-                  className={
-                    "text-xs " +
-                    (feedback.ok ? "text-emerald-300" : "text-rose-300")
-                  }
-                >
-                  {feedback.message}
-                </span>
-              )}
-              {dirty && !feedback && (
-                <span className="text-xs text-slate-500">Unsaved changes</span>
-              )}
-            </div>
+                {feedback.message}
+              </p>
+            )}
           </div>
-        </div>
+        </Card>
       </div>
-    </div>
+    </PageBody>
   );
 }

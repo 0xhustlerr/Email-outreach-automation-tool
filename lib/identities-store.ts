@@ -138,6 +138,20 @@ export function deleteStoredIdentity(email: string): boolean {
   }
 }
 
+/** Rename an account's display name (the "From" name on sends) without
+ *  touching its SMTP or reply-sync settings. */
+export function setIdentityName(email: string, name: string): boolean {
+  try {
+    const key = email.trim().toLowerCase();
+    const info = db
+      .prepare(`UPDATE mail_identities SET name = ? WHERE email = ?`)
+      .run(name.trim() || key, key);
+    return info.changes > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Set (or clear, with '') one inbox's own OAuth client. Empty means this
  *  inbox falls back to the global client in app_meta. */
 export function setInboxOAuthClient(
