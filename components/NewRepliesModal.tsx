@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
 import type { SheetHistoryRow } from "@/lib/sheets";
 import { primaryEmail, rowKey } from "@/lib/sheet-active";
@@ -78,9 +79,9 @@ export default function NewRepliesModal({ rows, onClose, onMarkSeen }: Props) {
         setMsgError("No message found in Gmail for this contact.");
       }
     } catch (err) {
-      setMsgError(
-        err instanceof Error ? err.message : "Failed to load message.",
-      );
+      // The error is a toast; the pane just says nothing loaded.
+      toast.error(err instanceof Error ? err.message : "Failed to load message.");
+      setMsgError("This message didn't load.");
     } finally {
       setLoadingMsg(false);
     }
@@ -232,7 +233,7 @@ export default function NewRepliesModal({ rows, onClose, onMarkSeen }: Props) {
                     <p className="text-sm text-slate-400">Loading from Gmail…</p>
                   )}
                   {msgError && !loadingMsg && (
-                    <p className="text-sm text-rose-300">{msgError}</p>
+                    <p className="text-sm text-slate-400">{msgError}</p>
                   )}
                   {preview && !loadingMsg && (
                     <div className="space-y-3 text-sm">

@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { toast } from "sonner";
 import type { GmailReplyMessage, GmailThreadMessage } from "@/lib/gmail";
 import type { InboxScanError, ReplyNotification } from "@/lib/reply-alerts";
 import { inboxContextLabel, type ReplyInboxContext } from "@/lib/reply-inbox";
@@ -423,7 +424,6 @@ export default function ReplyNotificationsBell({
   const [replyFrom, setReplyFrom] = useState("");
   const [replyBody, setReplyBody] = useState("");
   const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
   const [sendOk, setSendOk] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const bellRef = useRef<HTMLButtonElement>(null);
@@ -575,7 +575,6 @@ export default function ReplyNotificationsBell({
       setSelectedKey(key);
       setSelectedRow(row);
       setMsgError(null);
-      setSendError(null);
       setSendOk(false);
       setReplyBody("");
       setReplyFrom(pickDefaultSender(row));
@@ -598,9 +597,9 @@ export default function ReplyNotificationsBell({
         }
         applyConversation(conv.thread);
       } catch (err) {
-        setMsgError(
-          err instanceof Error ? err.message : "Failed to load conversation.",
-        );
+        // The error is a toast; the pane just says nothing loaded.
+        toast.error(err instanceof Error ? err.message : "Failed to load conversation.");
+        setMsgError("This conversation didn't load.");
       } finally {
         setLoadingMsg(false);
       }
@@ -619,7 +618,8 @@ export default function ReplyNotificationsBell({
         }
       } catch {
         if (!silent) {
-          setMsgError("Failed to refresh conversation.");
+          toast.error("Failed to refresh conversation.");
+          setMsgError("This conversation didn't load.");
           setLoadingMsg(false);
         }
       }
@@ -663,12 +663,11 @@ export default function ReplyNotificationsBell({
       (s) => s.email.toLowerCase() === replyFrom.toLowerCase(),
     );
     if (!picked) {
-      setSendError("Choose a sender from your configured mail identities.");
+      toast.error("Choose a sender from your configured mail identities.");
       return;
     }
 
     setSending(true);
-    setSendError(null);
     setSendOk(false);
     try {
       const res = await fetch("/api/send-reply", {
@@ -691,7 +690,7 @@ export default function ReplyNotificationsBell({
       const conv = await loadConversation(selectedRow, true);
       if (conv?.thread) applyConversation(conv.thread);
     } catch (err) {
-      setSendError(
+      toast.error(
         err instanceof Error ? err.message : "Failed to send reply.",
       );
     } finally {
@@ -1046,7 +1045,7 @@ export default function ReplyNotificationsBell({
                 )}
                 {conversationActive && msgError && !loadingMsg && (
                   <div className="flex h-full items-center justify-center px-6 text-center">
-                    <p className="text-sm text-rose-300">{msgError}</p>
+                    <p className="text-sm text-slate-400">{msgError}</p>
                   </div>
                 )}
                 {conversationActive && threadMessages.length > 0 && selectedRow && (
@@ -1164,10 +1163,7 @@ export default function ReplyNotificationsBell({
                     <span className="text-[10px] text-slate-600">
                       Enter to send · Shift+Enter for a new line
                     </span>
-                    {sendError && (
-                      <span className="text-[11px] text-rose-300">{sendError}</span>
-                    )}
-                    {sendOk && !sendError && (
+                    {sendOk && (
                       <span className="text-[11px] text-emerald-400">Sent ✓</span>
                     )}
                   </div>

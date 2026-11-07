@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 // Per-account reply-sync setup, opened from an account's "Reply sync" button in
 // the Accounts modal. Each inbox stores its OWN Google OAuth client (Client ID
@@ -35,7 +36,6 @@ export default function ReplySyncModal({
   const [refreshToken, setRefreshToken] = useState("");
   const [showGuide, setShowGuide] = useState(!clientConfigured);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   // The save succeeded but broke something else — e.g. a replaced OAuth client
   // that invalidates other accounts' refresh tokens. Amber, not green.
@@ -51,7 +51,6 @@ export default function ReplySyncModal({
   }, [onClose]);
 
   const saveClient = async () => {
-    setError(null);
     setOkMsg(null);
     setWarnMsg(null);
     setBusy(true);
@@ -67,7 +66,7 @@ export default function ReplySyncModal({
         warning?: string;
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not save the OAuth client.");
+        toast.error(body.error ?? "Could not save the OAuth client.");
         return;
       }
       setClientId("");
@@ -80,14 +79,13 @@ export default function ReplySyncModal({
       }
       onChanged?.(body);
     } catch {
-      setError("Network error while saving the OAuth client.");
+      toast.error("Network error while saving the OAuth client.");
     } finally {
       setBusy(false);
     }
   };
 
   const saveToken = async (token: string) => {
-    setError(null);
     setOkMsg(null);
     setWarnMsg(null);
     setBusy(true);
@@ -99,7 +97,7 @@ export default function ReplySyncModal({
       });
       const body = (await res.json()) as Snapshot & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not save the refresh token.");
+        toast.error(body.error ?? "Could not save the refresh token.");
         return;
       }
       onChanged?.(body);
@@ -107,7 +105,7 @@ export default function ReplySyncModal({
       setRefreshToken("");
       if (token) window.setTimeout(onClose, 900);
     } catch {
-      setError("Network error while saving the refresh token.");
+      toast.error("Network error while saving the refresh token.");
     } finally {
       setBusy(false);
     }
@@ -143,17 +141,12 @@ export default function ReplySyncModal({
             </button>
           </div>
 
-          {error && (
-            <p className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-              {error}
-            </p>
-          )}
-          {okMsg && !error && (
+          {okMsg && (
             <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
               {okMsg}
             </p>
           )}
-          {warnMsg && !error && (
+          {warnMsg && (
             <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
               {warnMsg}
             </p>

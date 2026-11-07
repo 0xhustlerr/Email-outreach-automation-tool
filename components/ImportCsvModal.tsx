@@ -80,7 +80,6 @@ export default function ImportCsvModal({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
-  const [runError, setRunError] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const initedTemplates = useRef(false);
@@ -139,7 +138,6 @@ export default function ImportCsvModal({
     setUnmapped(parsed.unmapped);
     setResults([]);
     setProgress(null);
-    setRunError("");
     if (parsed.rows.length === 0) {
       toast.error("No rows with a GitHub URL found in that file.");
     }
@@ -162,7 +160,6 @@ export default function ImportCsvModal({
 
     setRunning(true);
     setResults([]);
-    setRunError("");
     setProgress({ done: 0, total: rows.length });
     setSettingsOpen(false);
 
@@ -215,13 +212,13 @@ export default function ImportCsvModal({
             );
             onQueued?.();
           } else if (ev.type === "error") {
-            setRunError(String(ev.message ?? "Import failed."));
+            toast.error(String(ev.message ?? "Import failed."));
           }
         }
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        setRunError(err instanceof Error ? err.message : "Import failed.");
+        toast.error(err instanceof Error ? err.message : "Import failed.");
       }
     } finally {
       abortRef.current = null;
@@ -367,7 +364,7 @@ export default function ImportCsvModal({
           </Card>
 
           {/* Run log */}
-          {(results.length > 0 || running || runError) && (
+          {(results.length > 0 || running) && (
             <Card
               title="Import log"
               actions={
@@ -395,12 +392,6 @@ export default function ImportCsvModal({
                     }}
                   />
                 </div>
-              )}
-
-              {runError && (
-                <p className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-                  {runError}
-                </p>
               )}
 
               <div className="max-h-[32rem] divide-y divide-white/5 overflow-y-auto">
@@ -476,7 +467,7 @@ export default function ImportCsvModal({
                     )}
                   </div>
                 ))}
-                {results.length === 0 && !runError && (
+                {results.length === 0 && (
                   <p className="text-xs text-slate-500">Waiting for the first lead…</p>
                 )}
               </div>

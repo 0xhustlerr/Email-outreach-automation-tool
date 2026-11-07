@@ -175,7 +175,6 @@ export default function Page() {
   );
   const [matches, setMatches] = useState<ScanMatch[]>([]);
   const [scannedCount, setScannedCount] = useState<number>(0);
-  const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [discoveryPhase, setDiscoveryPhase] = useState<
@@ -239,7 +238,6 @@ export default function Page() {
     setProgress(null);
     setMatches([]);
     setScannedCount(0);
-    setError(null);
     setLog([]);
     logIdRef.current = 0;
     setDiscovery(null);
@@ -255,7 +253,6 @@ export default function Page() {
       setRepos(null);
       setSelectedRepo("");
       setUser(null);
-      setError(null);
       setPhase("idle");
       resetRunState();
       return;
@@ -295,7 +292,7 @@ export default function Page() {
           appendLog("match", `Resolved: github.com/${j.login}`);
         } catch (err) {
           if ((err as { name?: string }).name === "AbortError") return;
-          setError(
+          toast.error(
             err instanceof Error ? err.message : "Stack Overflow lookup failed.",
           );
           setPhase("error");
@@ -324,7 +321,7 @@ export default function Page() {
       } catch (err) {
         if ((err as { name?: string }).name === "AbortError") return;
         setRepos(null);
-        setError(err instanceof Error ? err.message : "Failed to load repos.");
+        toast.error(err instanceof Error ? err.message : "Failed to load repos.");
         setPhase("error");
       }
     }, 400);
@@ -472,7 +469,7 @@ export default function Page() {
         if ((err as { name?: string }).name === "AbortError") return;
         const msg = err instanceof Error ? err.message : "Scan failed.";
         appendLog("error", msg);
-        setError(msg);
+        toast.error(msg, { id: "scan-error" });
         setPhase("error");
       }
     })();
@@ -535,7 +532,7 @@ export default function Page() {
         break;
       case "error":
         appendLog("error", event.message);
-        setError(event.message);
+        toast.error(event.message, { id: "scan-error" });
         break;
     }
   };
@@ -1475,12 +1472,6 @@ export default function Page() {
                 )}
               </div>
             </div>
-
-            {error && (
-              <div className="fade-in relative z-10 shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                {error}
-              </div>
-            )}
 
             {noRepos && (
               <div className="fade-in relative z-10 shrink-0 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
@@ -2598,9 +2589,8 @@ function SendModal({
 
   const [showPreview, setShowPreview] = useState(false);
   const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<
-    { ok: true; message: string } | { ok: false; message: string } | null
-  >(null);
+  // Success only; failures are toasts.
+  const [result, setResult] = useState<{ message: string } | null>(null);
   const closeTimerRef = useRef<number | null>(null);
 
   // In single mode the Message-1 dropdown lists ALL templates (pick any as the
@@ -2784,7 +2774,6 @@ function SendModal({
         throw new Error(data.error ?? `Send failed (${res.status}).`);
       }
       setResult({
-        ok: true,
         message: data.followUpScheduled
           ? `Opener sent. The pitch goes out when they reply. Closing…`
           : `Email sent successfully. Closing in 3s…`,
@@ -2794,10 +2783,7 @@ function SendModal({
         onClose();
       }, 3000);
     } catch (err) {
-      setResult({
-        ok: false,
-        message: err instanceof Error ? err.message : "Send failed.",
-      });
+      toast.error(err instanceof Error ? err.message : "Send failed.");
     } finally {
       setSending(false);
     }
@@ -2849,20 +2835,17 @@ function SendModal({
       if (!res.ok || !data.ok) throw new Error("Failed to add to queue.");
       const added = data.added ?? 0;
       if (added > 0) {
-        setResult({ ok: true, message: "Added to queue. Closing in 2s…" });
+        setResult({ message: "Added to queue. Closing in 2s…" });
         onQueued?.(recipientEmail);
       } else {
         const reason = data.skipped?.[0]?.reason ?? "already sent or queued";
-        setResult({ ok: false, message: `Not queued — ${reason}.` });
+        toast.error(`Not queued — ${reason}.`);
       }
       if (added > 0) {
         closeTimerRef.current = window.setTimeout(() => onClose(), 2000);
       }
     } catch (err) {
-      setResult({
-        ok: false,
-        message: err instanceof Error ? err.message : "Failed to add to queue.",
-      });
+      toast.error(err instanceof Error ? err.message : "Failed to add to queue.");
     } finally {
       setSending(false);
     }
@@ -3260,14 +3243,7 @@ function SendModal({
           )}
 
           {result && (
-            <div
-              className={
-                "fade-in rounded-lg border px-4 py-3 text-xs " +
-                (result.ok
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                  : "border-rose-500/40 bg-rose-500/10 text-rose-200")
-              }
-            >
+            <div className="fade-in rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">
               {result.message}
             </div>
           )}

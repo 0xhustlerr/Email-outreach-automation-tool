@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Spinner } from "@/components/ui/spinner";
 import type { SavedContact } from "@/lib/contacts-store";
 import {
@@ -84,7 +85,6 @@ export default function ContactFormModal({
   const editing = !!initial;
   const [fields, setFields] = useState<Fields>(() => fieldsFrom(initial));
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,12 +104,12 @@ export default function ContactFormModal({
     const linkedinUrl = withScheme(fields.linkedinUrl);
     const login = githubUrl ? githubLogin(githubUrl) : null;
     if (githubUrl && !login) {
-      setError("GitHub URL must look like github.com/username.");
+      toast.error("GitHub URL must look like github.com/username.");
       return;
     }
     const legacyProfile = hasLegacyProfile(initial);
     if (!fields.name.trim() && !githubUrl && !upworkUrl && !linkedinUrl && !legacyProfile) {
-      setError("Enter at least a name or one URL.");
+      toast.error("Enter at least a name or one URL.");
       return;
     }
     // Omitted = keep the saved legacy link; otherwise GitHub (or "" = clear).
@@ -135,7 +135,6 @@ export default function ContactFormModal({
     }
 
     setSaving(true);
-    setError(null);
     try {
       const res = await fetch("/api/contacts", {
         method: "POST",
@@ -157,7 +156,7 @@ export default function ContactFormModal({
       if (!res.ok || !data.ok) throw new Error(data.error ?? "Failed to save.");
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save contact.");
+      toast.error(err instanceof Error ? err.message : "Failed to save contact.");
       setSaving(false);
     }
   };
@@ -213,12 +212,6 @@ export default function ContactFormModal({
             {editing && " Emails already sent to stay blocked from a new opener even if removed here."}
           </p>
         </div>
-
-        {error && (
-          <p className="mx-5 mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-            {error}
-          </p>
-        )}
 
         <div className="flex items-center justify-end gap-2 border-t border-white/[0.08] px-5 py-3.5">
           <button

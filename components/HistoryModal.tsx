@@ -801,6 +801,16 @@ export default function HistoryModal({
   onRefresh?: () => void;
 }) {
   const initial = presetRange("today");
+
+  // Load errors are toasts. The background poll fails the same way every
+  // minute or so; toast each distinct message once instead of each poll.
+  const toastedErrorRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!error || error === toastedErrorRef.current) return;
+    toastedErrorRef.current = error;
+    toast.error(error, { id: "history-load" });
+  }, [error]);
+
   const [sortKey, setSortKey] = useState<HistorySortKey>("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [datePreset, setDatePreset] = useState<DatePresetId>("today");
@@ -1492,10 +1502,12 @@ export default function HistoryModal({
         {loading && rows.length === 0 && (
           <EmptyState title="Loading history…" description="Reading sent emails from your Google Sheet." />
         )}
-        {error && rows.length === 0 && (
-          <div className="m-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {error}
-          </div>
+        {!loading && error && rows.length === 0 && (
+          <EmptyState
+            icon={<HistoryIcon className="h-5 w-5" />}
+            title="History didn't load"
+            description="Press Refresh to try again."
+          />
         )}
         {!loading && !error && rows.length === 0 && (
           <EmptyState

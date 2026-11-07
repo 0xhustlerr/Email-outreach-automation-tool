@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Spinner } from "@/components/ui/spinner";
 import { useTemplates, type UiTemplate } from "@/hooks/useTemplates";
 import { Card, PageBody, PageHeader, Segmented } from "@/components/ui/dashboard";
@@ -63,9 +64,8 @@ export default function TemplatesModal(_props: {
   const [body, setBody] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<
-    { ok: boolean; message: string } | null
-  >(null);
+  // Success notices only; errors are toasts.
+  const [feedback, setFeedback] = useState<string | null>(null);
 
   const isNew = selection === "new";
   const selectedId = !isNew ? selection : null;
@@ -125,22 +125,16 @@ export default function TemplatesModal(_props: {
     if (res.ok) {
       setDirty(false);
       if (res.id) setSelection(res.id);
-      setFeedback({
-        ok: true,
-        message: "Saved - will be used for future messages.",
-      });
+      setFeedback("Saved - will be used for future messages.");
     } else {
-      setFeedback({ ok: false, message: res.error ?? "Failed to save." });
+      toast.error(res.error ?? "Failed to save.");
     }
   };
 
   const removeTemplate = async (id: string, name: string) => {
     if (busy) return;
     if (tabTemplates.length <= 1) {
-      setFeedback({
-        ok: false,
-        message: `Cannot delete the last ${tab} template.`,
-      });
+      toast.error(`Cannot delete the last ${tab} template.`);
       return;
     }
     if (!window.confirm(`Delete template "${name}"? This cannot be undone.`)) {
@@ -157,9 +151,9 @@ export default function TemplatesModal(_props: {
         setSelection(null);
         setDirty(false);
       }
-      setFeedback({ ok: true, message: "Template deleted." });
+      setFeedback("Template deleted.");
     } else {
-      setFeedback({ ok: false, message: res.error ?? "Failed to delete." });
+      toast.error(res.error ?? "Failed to delete.");
     }
   };
 
@@ -374,15 +368,8 @@ export default function TemplatesModal(_props: {
             </div>
 
             {feedback && (
-              <p
-                className={
-                  "rounded-lg border px-3 py-2 text-xs " +
-                  (feedback.ok
-                    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
-                    : "border-rose-400/30 bg-rose-500/10 text-rose-200")
-                }
-              >
-                {feedback.message}
+              <p className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                {feedback}
               </p>
             )}
           </div>

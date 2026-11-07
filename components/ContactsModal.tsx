@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import ContactFormModal from "@/components/ContactFormModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import {
@@ -124,7 +125,6 @@ export default function ContactsModal({
   const [category, setCategory] = useState<ContactsFilter>(initialFilter);
   // null = form closed; "new" = add; a contact = edit that one.
   const [form, setForm] = useState<SavedContact | "new" | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -132,7 +132,7 @@ export default function ContactsModal({
       const data = (await res.json()) as { ok?: boolean; contacts?: SavedContact[] };
       if (res.ok && data.ok) setContacts(data.contacts ?? []);
     } catch {
-      setError("Failed to load contacts.");
+      toast.error("Failed to load contacts.", { id: "contacts-load" });
     } finally {
       setLoading(false);
     }
@@ -219,12 +219,6 @@ export default function ContactsModal({
           />
         </div>
       </Toolbar>
-
-      {error && (
-        <p className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-          {error}
-        </p>
-      )}
 
       {loading ? (
         <Card>

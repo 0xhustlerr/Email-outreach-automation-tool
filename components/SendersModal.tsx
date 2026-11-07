@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { MailIdentity, SignatureScope } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
 import { renderSignature, textToEmailHtml } from "@/lib/mail-html";
@@ -137,13 +138,13 @@ export default function SendersModal({
   const [sigScope, setSigScope] = useState<SignatureScope>("all");
   const [pulling, setPulling] = useState(false);
   // Shown inside the editor: the page-level messages sit above the account
-  // list, usually scrolled out of view from the row being edited.
-  const [sigMsg, setSigMsg] = useState<{ kind: "error" | "warn" | "ok"; text: string } | null>(null);
+  // list, usually scrolled out of view from the row being edited. Errors go
+  // to a toast instead, like every other error.
+  const [sigMsg, setSigMsg] = useState<{ kind: "warn" | "ok"; text: string } | null>(null);
 
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   // A caveat the server attached to an otherwise successful save — the account
   // was stored but may not actually be able to send (e.g. its app password
@@ -200,7 +201,6 @@ export default function SendersModal({
   const trackingCurrentUrl = data?.tracking?.url ?? "";
 
   const clearMsgs = () => {
-    setError(null);
     setOkMsg(null);
     setWarnMsg(null);
   };
@@ -208,6 +208,26 @@ export default function SendersModal({
   const flash = (msg: string) => {
     clearMsgs();
     setOkMsg(msg);
+  };
+
+  // Errors are toasts, so they show wherever the page is scrolled.
+  const showError = (msg: string) => {
+    clearMsgs();
+    toast.error(msg);
+  };
+
+  // Typing or pulling past the limit says so once, as it crosses; the counter
+  // stays amber and Save stays disabled until it's back under, which clears it.
+  const updateSigDraft = (next: string) => {
+    if (next.trim().length > SIG_MAX && sigDraft.trim().length <= SIG_MAX) {
+      toast.error(
+        `This signature is ${next.trim().length.toLocaleString()} characters; the limit is ${SIG_MAX.toLocaleString()} (Gmail's own). Embedded images make pulled signatures long. Host the image instead, or shorten it.`,
+        { id: "signature-too-long" },
+      );
+    } else if (next.trim().length <= SIG_MAX) {
+      toast.dismiss("signature-too-long");
+    }
+    setSigDraft(next);
   };
 
   const addAccount = async () => {
@@ -232,7 +252,7 @@ export default function SendersModal({
         warning?: string;
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not add the account.");
+        showError(body.error ?? "Could not add the account.");
         return;
       }
       setData(body);
@@ -251,7 +271,7 @@ export default function SendersModal({
       }
       onChanged?.();
     } catch {
-      setError("Network error while adding the account.");
+      showError("Network error while adding the account.");
     } finally {
       setBusy(false);
     }
@@ -293,7 +313,7 @@ export default function SendersModal({
         replySync?: { checked: number; broken: number };
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not check the connection.");
+        showError(body.error ?? "Could not check the connection.");
         return;
       }
       const results = body.results ?? [];
@@ -334,7 +354,7 @@ export default function SendersModal({
         );
       }
     } catch {
-      setError("Network error while checking the connection.");
+      showError("Network error while checking the connection.");
     } finally {
       setChecking(null);
     }
@@ -379,7 +399,7 @@ export default function SendersModal({
         warning?: string;
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not update the connection.");
+        showError(body.error ?? "Could not update the connection.");
         return;
       }
       setData(body);
@@ -394,7 +414,7 @@ export default function SendersModal({
       }
       onChanged?.();
     } catch {
-      setError("Network error while updating the connection.");
+      showError("Network error while updating the connection.");
     } finally {
       setBusy(false);
     }
@@ -411,7 +431,7 @@ export default function SendersModal({
   const saveRename = async (addr: string, current: string) => {
     const next = renameValue.trim();
     if (!next) {
-      setError("Enter a display name.");
+      showError("Enter a display name.");
       return;
     }
     if (next === current) {
@@ -428,7 +448,7 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not rename the account.");
+        showError(body.error ?? "Could not rename the account.");
         return;
       }
       setData(body);
@@ -436,7 +456,7 @@ export default function SendersModal({
       flash(`Renamed ${addr} to “${next}”.`);
       onChanged?.();
     } catch {
-      setError("Network error while renaming the account.");
+      showError("Network error while renaming the account.");
     } finally {
       setBusy(false);
     }
@@ -475,7 +495,7 @@ export default function SendersModal({
         error?: string;
       };
       if (!res.ok || !body.ok) {
-        setSigMsg({ kind: "error", text: body.error ?? `Could not save the signature (HTTP ${res.status}).` });
+        showError(body.error ?? `Could not save the signature (HTTP ${res.status}).`);
         return;
       }
       setData(body as SendersState);
@@ -487,7 +507,7 @@ export default function SendersModal({
       );
       onChanged?.();
     } catch {
-      setSigMsg({ kind: "error", text: "Network error while saving the signature." });
+      showError("Network error while saving the signature.");
     } finally {
       setBusy(false);
     }
@@ -511,12 +531,10 @@ export default function SendersModal({
         needsReauth?: boolean;
       };
       if (!res.ok || !body.ok) {
-        setSigMsg({
-          kind: "error",
-          text:
-            (body.error ?? `Could not pull the Gmail signature (HTTP ${res.status}).`) +
+        showError(
+          (body.error ?? `Could not pull the Gmail signature (HTTP ${res.status}).`) +
             (body.needsReauth ? " Reconnect Reply sync for this account." : ""),
-        });
+        );
         return;
       }
       const sig = (body.signature ?? "").trim();
@@ -524,10 +542,10 @@ export default function SendersModal({
         setSigMsg({ kind: "warn", text: "This Gmail account has no signature set." });
         return;
       }
-      setSigDraft(sig);
+      updateSigDraft(sig);
       setSigMsg({ kind: "ok", text: "Pulled from Gmail — not saved yet. Check the preview, then Save signature." });
     } catch {
-      setSigMsg({ kind: "error", text: "Network error while pulling the Gmail signature." });
+      showError("Network error while pulling the Gmail signature.");
     } finally {
       setPulling(false);
     }
@@ -549,7 +567,7 @@ export default function SendersModal({
         removed?: RemovedCounts;
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not remove the account.");
+        showError(body.error ?? "Could not remove the account.");
         return;
       }
       setData(body);
@@ -562,7 +580,7 @@ export default function SendersModal({
       flash(`Removed ${addr}.${extra}`);
       onChanged?.();
     } catch {
-      setError("Network error while removing the account.");
+      showError("Network error while removing the account.");
     } finally {
       setBusy(false);
     }
@@ -579,14 +597,14 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not save the GitHub token.");
+        showError(body.error ?? "Could not save the GitHub token.");
         return;
       }
       setData(body);
       setGithubToken("");
       flash(token ? "GitHub token saved and verified." : "GitHub token removed.");
     } catch {
-      setError("Network error while saving the GitHub token.");
+      showError("Network error while saving the GitHub token.");
     } finally {
       setBusy(false);
     }
@@ -603,14 +621,14 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? "Could not update open tracking.");
+        showError(body.error ?? "Could not update open tracking.");
         return;
       }
       setData(body);
       setTrackingUrl("");
       flash(okText);
     } catch {
-      setError("Network error while updating open tracking.");
+      showError("Network error while updating open tracking.");
     } finally {
       setBusy(false);
     }
@@ -637,19 +655,14 @@ export default function SendersModal({
     addNameRef.current?.focus({ preventScroll: true });
   };
 
-  const messages = (error || okMsg || warnMsg) && (
+  const messages = (okMsg || warnMsg) && (
     <div className="flex flex-col gap-2">
-      {error && (
-        <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-rose-200">
-          {error}
-        </p>
-      )}
-      {okMsg && !error && (
+      {okMsg && (
         <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-200">
           {okMsg}
         </p>
       )}
-      {warnMsg && !error && (
+      {warnMsg && (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-amber-200">
           {warnMsg}
         </p>
@@ -1403,7 +1416,7 @@ export default function SendersModal({
                             id={`sig-${key}`}
                             autoFocus
                             value={sigDraft}
-                            onChange={(e) => setSigDraft(e.target.value)}
+                            onChange={(e) => updateSigDraft(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Escape") {
                                 e.stopPropagation();
@@ -1451,20 +1464,17 @@ export default function SendersModal({
                           </div>
                         )}
 
-                        {(sigMsg || sigTooLong) && (
+                        {sigMsg && (
                           <p
-                            role={sigMsg?.kind === "error" ? "alert" : "status"}
+                            role="status"
                             className={
                               "rounded-lg border px-3.5 py-2.5 text-xs leading-relaxed " +
-                              (sigMsg?.kind === "error"
-                                ? "border-rose-500/30 bg-rose-500/10 text-rose-200"
-                                : sigMsg?.kind === "ok"
-                                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                                  : "border-amber-500/30 bg-amber-500/10 text-amber-200")
+                              (sigMsg.kind === "ok"
+                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                                : "border-amber-500/30 bg-amber-500/10 text-amber-200")
                             }
                           >
-                            {sigMsg?.text ??
-                              `This signature is ${sigDraft.trim().length.toLocaleString()} characters; the limit is ${SIG_MAX.toLocaleString()} (Gmail's own). Embedded images make pulled signatures long. Host the image instead, or shorten it.`}
+                            {sigMsg.text}
                           </p>
                         )}
 
