@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { Portal } from "@/components/ui/portal";
 import HistoryModal from "@/components/HistoryModal";
 import GmailAvatar from "@/components/GmailAvatar";
 import { CountryFlag } from "@/components/CountryFlag";
@@ -1833,6 +1834,7 @@ export default function Page() {
       )}
 
       {directSaveOpen && (
+        <Portal>
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-4"
           onMouseDown={(e) => {
@@ -1895,6 +1897,7 @@ export default function Page() {
             </div>
           </div>
         </div>
+        </Portal>
       )}
 
     </>
@@ -2852,6 +2855,7 @@ function SendModal({
   };
 
   return (
+    <Portal>
     <div
       className="fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => {
@@ -3290,6 +3294,7 @@ function SendModal({
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 

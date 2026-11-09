@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Portal } from "@/components/ui/portal";
 import { toast } from "sonner";
 import { Spinner } from "@/components/ui/spinner";
 import type { SavedContact } from "@/lib/contacts-store";
@@ -162,6 +163,7 @@ export default function ContactFormModal({
   };
 
   return (
+    <Portal>
     <div
       className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
@@ -233,5 +235,6 @@ export default function ContactFormModal({
         </div>
       </form>
     </div>
+    </Portal>
   );
 }

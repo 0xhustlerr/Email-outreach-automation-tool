@@ -526,8 +526,11 @@ export default function ReplyNotificationsBell({
     };
   }, [open, updatePanelPos]);
 
+  const customTabDialogOpen = customTabDialog !== null;
   useEffect(() => {
-    if (!open) return;
+    // The custom-tab dialog is portaled to <body>, outside rootRef — while it's
+    // up, clicks belong to it and must not close the panel behind it.
+    if (!open || customTabDialogOpen) return;
     const onDoc = (e: MouseEvent) => {
       const t = e.target as Node;
       if (rootRef.current?.contains(t) || panelRef.current?.contains(t)) return;
@@ -535,7 +538,7 @@ export default function ReplyNotificationsBell({
     };
     document.addEventListener("click", onDoc);
     return () => document.removeEventListener("click", onDoc);
-  }, [open]);
+  }, [open, customTabDialogOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

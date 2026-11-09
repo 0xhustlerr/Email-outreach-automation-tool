@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Portal } from "@/components/ui/portal";
 import { Spinner } from "@/components/ui/spinner";
 import { useSpin } from "@/hooks/useSpin";
 import { toast } from "sonner";
@@ -1549,6 +1550,7 @@ export default function QueueModal({
       </Card>
 
       {draft && settingsOpen && (
+        <Portal>
         <div
           className="fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4"
           onMouseDown={(e) => {
@@ -2123,6 +2125,7 @@ export default function QueueModal({
             </div>
           </div>
         </div>
+        </Portal>
       )}
     </PageBody>
   );

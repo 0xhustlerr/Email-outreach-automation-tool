@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Portal } from "@/components/ui/portal";
 import { TAB_ICON_PRESETS } from "@/lib/reply-custom-tabs";
 
 type Props = {
@@ -26,6 +27,7 @@ export default function ReplyCustomTabDialog({
   if (!open) return null;
 
   return (
+    <Portal>
     <div
       className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4"
       onMouseDown={(e) => {
@@ -91,5 +93,6 @@ export default function ReplyCustomTabDialog({
         </div>
       </div>
     </div>
+    </Portal>
   );
 }

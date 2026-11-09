@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Portal } from "@/components/ui/portal";
 import { toast } from "sonner";
 
 // Per-account reply-sync setup, opened from an account's "Reply sync" button in
@@ -112,6 +113,7 @@ export default function ReplySyncModal({
   };
 
   return (
+    <Portal>
     <div
       className="fade-in fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4"
       onMouseDown={(e) => {
@@ -323,6 +325,7 @@ export default function ReplySyncModal({
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
