@@ -221,6 +221,49 @@ function ensureSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_bounce_events_sender_day
       ON bounce_events (sender, day_key);
     CREATE INDEX IF NOT EXISTS idx_bounce_events_seen ON bounce_events (seen_at);
+
+    -- Placement tests: a Sender mails seed inboxes so we can see whether its
+    -- outreach lands in Inbox, a Gmail tab, or Spam. Test sends go through
+    -- sendMail directly and are NEVER in send_log (ADR-0004).
+    CREATE TABLE IF NOT EXISTS placement_tests (
+      id          TEXT PRIMARY KEY,
+      sender      TEXT NOT NULL,              -- lowercased sending account
+      provider    TEXT NOT NULL,              -- 'seeds' | 'glockapps'
+      template_id TEXT NOT NULL DEFAULT '',
+      subject     TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL,              -- 'sending' | 'running' | 'done' | 'failed'
+      external_id TEXT NOT NULL DEFAULT '',   -- provider's test id (GlockApps testId)
+      error       TEXT NOT NULL DEFAULT '',
+      created_at  TEXT NOT NULL,
+      sent_at     TEXT,
+      finished_at TEXT,
+      checked_at  TEXT                        -- last time results were collected
+    );
+    CREATE INDEX IF NOT EXISTS idx_placement_tests_sender
+      ON placement_tests (sender, created_at);
+
+    -- One row per seed address in a placement test.
+    CREATE TABLE IF NOT EXISTS placement_results (
+      test_id       TEXT NOT NULL,
+      seed          TEXT NOT NULL,            -- lowercased seed address
+      seed_provider TEXT NOT NULL DEFAULT '', -- 'gmail', 'outlook', 'yahoo', ...
+      message_id    TEXT NOT NULL DEFAULT '', -- RFC Message-ID of the test send
+      placement     TEXT NOT NULL,            -- see Placement in lib/placement/types.ts
+      detail        TEXT NOT NULL DEFAULT '', -- e.g. 'Promotions', or the send error
+      checked_at    TEXT,
+      PRIMARY KEY (test_id, seed)
+    );
+
+    -- Extra Gmail inboxes that only RECEIVE placement tests. Read with the
+    -- same read-only OAuth as a Sender, but deliberately kept out of
+    -- parseGmailAccounts() so reply sync and bounce watch never scan them.
+    CREATE TABLE IF NOT EXISTS seed_inboxes (
+      email               TEXT PRIMARY KEY,   -- lowercased address
+      oauth_refresh_token TEXT NOT NULL,
+      oauth_client_id     TEXT NOT NULL DEFAULT '',
+      oauth_client_secret TEXT NOT NULL DEFAULT '',
+      created_at          TEXT NOT NULL
+    );
   `);
 
   // Template kind: 'opener' (message 1) or 'followup' (message 2). Drives the

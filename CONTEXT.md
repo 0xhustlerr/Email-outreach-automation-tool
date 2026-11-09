@@ -53,3 +53,17 @@ _Avoid_: pause, suspension
 **Signature**:
 A Sender's name-and-details block, plain text or HTML (often pulled from Gmail), appended at send time from whichever Sender actually sends. It goes on every email, or on Openers only (never a threaded Pitch, Bump or reply).
 _Avoid_: footer, sign-off (that's the template's closing line)
+
+### Deliverability
+
+**Placement test**:
+One check of where a Sender's email lands: the Sender sends a real Opener (with its Signature) to Seed inboxes, and the app reads where each copy arrived. Started by hand from the Spam check page; never part of a Sequence and never in the send log.
+_Avoid_: spam test, warm-up, seed test (as the name of the feature)
+
+**Seed inbox**:
+A mailbox a Placement test is sent to and read from — another Sender with reply sync, a Gmail inbox added only for tests, or an address on a paid seed service's list. The Sender being tested is never its own Seed inbox.
+_Avoid_: test account, monitor inbox
+
+**Placement**:
+Where one Seed inbox's copy landed: Inbox, a tab (Promotions, Social, Updates, Forums), Spam, another folder, or Missing (never arrived within the window). Until it is known it is Waiting; it is Unreadable when the Seed inbox itself couldn't be read, and Send failed when the test never reached that seed — neither says anything about the Sender's reputation.
+_Avoid_: delivery (an email can be delivered straight to Spam), inboxing

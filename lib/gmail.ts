@@ -8,7 +8,7 @@ import type { InboxScanError } from "@/lib/reply-alerts";
 
 type TokenCache = { accessToken: string; expiresAt: number };
 
-type GmailAccountOAuth = {
+export type GmailAccountOAuth = {
   clientId: string;
   clientSecret: string;
   refreshToken: string;
@@ -261,7 +261,17 @@ export async function getAccessToken(senderEmail: string): Promise<string | null
   const key = senderEmail.toLowerCase();
   const account = parseGmailAccounts()[key];
   if (!account) return null;
+  return cachedAccessToken(key, account);
+}
 
+/** Access token for any read-only mailbox — a Sender's (via parseGmailAccounts)
+ *  or an explicit credential set such as a seed inbox's. Shares the token
+ *  cache, keyed by the lowercased address. Throws when the exchange fails. */
+export async function cachedAccessToken(
+  email: string,
+  account: GmailAccountOAuth,
+): Promise<string> {
+  const key = email.toLowerCase();
   const cached = tokenCache.get(key);
   if (cached && cached.expiresAt > Date.now() + 60_000) {
     return cached.accessToken;

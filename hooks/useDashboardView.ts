@@ -11,6 +11,7 @@ export const DASHBOARD_VIEWS = [
   "import",
   "templates",
   "accounts",
+  "placement",
   "integrations",
 ] as const;
 

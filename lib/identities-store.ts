@@ -3,6 +3,7 @@
 // production build can gain new Gmail senders without editing .env.local.
 
 import { db } from "./db";
+import { deleteTestsForSender } from "./placement/store";
 import { isSignatureScope, type SignatureScope } from "./types";
 
 export type StoredIdentity = {
@@ -274,6 +275,44 @@ export function setGithubToken(token: string): void {
   setMeta("github_token", token.trim());
 }
 
+// --- GlockApps (paid placement-test provider) ---------------------------------
+
+export type GlockAppsSettings = {
+  apiKey: string;
+  projectId: string;
+  /** Provider groups to test against (GlockApps providerGroupIds). Empty =
+   *  every group the project has. */
+  providerGroupIds: string[];
+};
+
+export function getGlockAppsSettings(): GlockAppsSettings | null {
+  const apiKey = getMeta("glockapps_api_key")?.trim() ?? "";
+  const projectId = getMeta("glockapps_project_id")?.trim() ?? "";
+  if (!apiKey || !projectId) return null;
+  let providerGroupIds: string[] = [];
+  try {
+    const raw = JSON.parse(getMeta("glockapps_provider_groups") ?? "[]");
+    if (Array.isArray(raw)) {
+      providerGroupIds = raw.map((v) => String(v).trim()).filter(Boolean);
+    }
+  } catch {
+    // malformed: test every group
+  }
+  return { apiKey, projectId, providerGroupIds };
+}
+
+export function setGlockAppsSettings(s: GlockAppsSettings): void {
+  setMeta("glockapps_api_key", s.apiKey.trim());
+  setMeta("glockapps_project_id", s.projectId.trim());
+  setMeta("glockapps_provider_groups", JSON.stringify(s.providerGroupIds));
+}
+
+export function clearGlockAppsSettings(): void {
+  setMeta("glockapps_api_key", "");
+  setMeta("glockapps_project_id", "");
+  setMeta("glockapps_provider_groups", "[]");
+}
+
 // --- one-time seed from the environment -------------------------------------
 // Moves MAIL_IDENTITIES (and the SMTP_USER fallback) from .env into the database
 // exactly once, so the accounts that shipped in the environment become editable
@@ -364,6 +403,11 @@ export function deleteSenderData(email: string): {
     // the same day doesn't resurrect yesterday's pause.
     db.prepare(`DELETE FROM sender_blocks WHERE sender = ?`).run(e);
     db.prepare(`DELETE FROM bounce_events WHERE inbox = ? OR sender = ?`).run(e, e);
+  } catch {
+    // ignore
+  }
+  try {
+    deleteTestsForSender(e);
   } catch {
     // ignore
   }

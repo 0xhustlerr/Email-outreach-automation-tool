@@ -31,6 +31,7 @@ import ContactsModal from "@/components/ContactsModal";
 import QueueModal from "@/components/QueueModal";
 import ImportCsvModal from "@/components/ImportCsvModal";
 import SendersModal from "@/components/SendersModal";
+import PlacementPage, { ShieldIcon } from "@/components/PlacementPage";
 import { useDashboardView, type DashboardView } from "@/hooks/useDashboardView";
 import { Card, EmptyState, PageBody, PageHeader, StatCard } from "@/components/ui/dashboard";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -1033,6 +1034,13 @@ export default function Page() {
       extra: { badge: senders.length },
     },
     {
+      key: "placement",
+      group: "Setup",
+      label: "Spam check",
+      icon: <ShieldIcon className="h-4 w-4" />,
+      extra: { title: "Check whether each Sender lands in Inbox or Spam" },
+    },
+    {
       key: "integrations",
       group: "Setup",
       label: "Integrations",
@@ -1149,6 +1157,8 @@ export default function Page() {
         );
       case "templates":
         return <TemplatesModal asPage onClose={() => navigate("scanner")} />;
+      case "placement":
+        return <PlacementPage />;
       case "accounts":
       case "integrations":
         return (

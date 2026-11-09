@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { MailIdentity, SignatureScope } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
+import PlacementSummaryBadge from "@/components/PlacementSummaryBadge";
+import { useDashboardView } from "@/hooks/useDashboardView";
+import type { PlacementTestView } from "@/lib/placement/types";
 import { renderSignature, textToEmailHtml } from "@/lib/mail-html";
 import { EmailFrame } from "@/components/ui/email-frame";
 import {
@@ -152,6 +155,9 @@ export default function SendersModal({
   // could not be verified because outbound SMTP is blocked here). Amber and
   // separate from okMsg: a green "ready to send" would be a plain lie.
   const [warnMsg, setWarnMsg] = useState<string | null>(null);
+  // Latest Spam check per Sender (badge links to the Spam check page).
+  const [placement, setPlacement] = useState<Record<string, PlacementTestView | null>>({});
+  const [, goToView] = useDashboardView();
 
   // The Integrations page focuses the token field on open; the Accounts page's
   // header "Add account" button jumps to the add form.
@@ -166,7 +172,20 @@ export default function SendersModal({
     } catch {
       // ignore — keep last known state
     }
-  }, []);
+    if (focusSection === "github") return;
+    // Latest Spam check per Sender, for the badge. Stored results only — the
+    // Spam check page is what collects fresh ones.
+    try {
+      const res = await fetch("/api/placement?refresh=0");
+      if (!res.ok) return;
+      const body = (await res.json()) as {
+        senders?: { email: string; latest: PlacementTestView | null }[];
+      };
+      setPlacement(Object.fromEntries((body.senders ?? []).map((s) => [s.email, s.latest])));
+    } catch {
+      // ignore — badge just stays as it was
+    }
+  }, [focusSection]);
 
   useEffect(() => {
     void refresh();
@@ -1069,6 +1088,16 @@ export default function SendersModal({
                               with several at once stays inside its column. */}
                           <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
                             <HealthBadge health={hp} checking={checking === id.email} />
+                            {placement[id.email.toLowerCase()] && (
+                              <button
+                                type="button"
+                                onClick={() => goToView("placement")}
+                                className="shrink-0"
+                                aria-label={`Spam check results for ${id.email}`}
+                              >
+                                <PlacementSummaryBadge test={placement[id.email.toLowerCase()] ?? null} />
+                              </button>
+                            )}
                             {syncErr ? (
                               <span
                                 title={

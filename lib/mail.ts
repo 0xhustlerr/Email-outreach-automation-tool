@@ -398,6 +398,12 @@ export async function sendMail(args: {
   isReply?: boolean;
   /** When set, adds this open-tracking pixel to the HTML part. */
   trackPixelUrl?: string;
+  /** Blind copies. Only placement tests use this (a paid seed service wants
+   *  one message to its whole seed list); outreach is always one-to-one. */
+  bcc?: string[];
+  /** Extra headers (e.g. a paid seed service's campaign id). Never overrides
+   *  the threading headers set from inReplyTo/references. */
+  headers?: Record<string, string>;
 }): Promise<{ messageId: string }> {
   if (isSendingDisabled()) {
     console.warn(`[mail] blocked send to ${args.to} — sending is disabled`);
@@ -422,7 +428,7 @@ export async function sendMail(args: {
   // to a different account than the one chosen when the email was composed.
   const sender = { name: displayName || identity.name || identity.email, email: identity.email };
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(args.headers ?? {}) };
   if (args.inReplyTo?.trim()) headers["In-Reply-To"] = args.inReplyTo.trim();
   if (args.references?.trim()) headers.References = args.references.trim();
 
@@ -439,10 +445,12 @@ export async function sendMail(args: {
   });
 
   const cc = args.cc?.trim();
+  const bcc = (args.bcc ?? []).map((b) => b.trim()).filter(Boolean);
   const mail: SendMailOptions = {
     from: fromHeader,
     to: args.to,
     ...(cc ? { cc } : {}),
+    ...(bcc.length > 0 ? { bcc } : {}),
     subject: composed.subject,
     text: composed.text,
     html: composed.html,
