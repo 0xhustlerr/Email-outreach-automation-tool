@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { MailIdentity, SignatureScope } from "@/lib/types";
 import ReplySyncModal from "@/components/ReplySyncModal";
 import { renderSignature, textToEmailHtml } from "@/lib/mail-html";
+import { EmailFrame } from "@/components/ui/email-frame";
 import {
   Card,
   EmptyState,
@@ -1836,32 +1837,10 @@ function AccountAvatar({ name, email }: { name: string; email: string }) {
 }
 
 /** The signature as recipients will see it, placeholders filled with this
- *  Sender, rendered by the same code the send path uses. Sandboxed: pasted
- *  HTML can't run scripts in the app, and its styles stay inside the frame.
- *  Same-origin (still without scripts) only so the frame can be sized to its
- *  content. Always white, like an email client. */
+ *  Sender, rendered by the same code the send path uses. */
 function SignaturePreview({ signature, sender }: { signature: string; sender: MailIdentity }) {
-  const ref = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(48);
   const html = textToEmailHtml("", undefined, renderSignature(signature, sender).html);
-  const fit = () => {
-    const doc = ref.current?.contentDocument;
-    if (doc?.body) setHeight(Math.min(Math.max(doc.body.scrollHeight, 24), 400));
-  };
-  return (
-    // The padding sits on the frame element, outside the rendered email.
-    <div className="mt-1.5 rounded-lg border border-white/10 bg-white px-3.5 py-3">
-      <iframe
-        ref={ref}
-        title="Signature preview"
-        sandbox="allow-same-origin"
-        srcDoc={html}
-        onLoad={fit}
-        style={{ height }}
-        className="block w-full border-0 bg-white"
-      />
-    </div>
-  );
+  return <EmailFrame html={html} title="Signature preview" className="mt-1.5" />;
 }
 
 type IconProps = { className?: string };

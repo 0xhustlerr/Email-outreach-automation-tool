@@ -65,6 +65,10 @@ export function useTemplates() {
   // Built-in defaults render instantly; the DB copy replaces them right after.
   const [templates, setTemplates] = useState<UiTemplate[]>(BUILTIN_UI);
   const [loaded, setLoaded] = useState(false);
+  // The last load from the database failed. The built-in defaults stay in
+  // `templates` (the Send modal can still use them); the Templates page, which
+  // must only edit real rows, shows this and offers a retry.
+  const [loadFailed, setLoadFailed] = useState(false);
   const saveTimerRef = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -77,9 +81,13 @@ export function useTemplates() {
       if (res.ok && data.ok && data.templates?.length) {
         setTemplates(data.templates);
         setLoaded(true);
+        setLoadFailed(false);
+      } else {
+        setLoadFailed(true);
       }
     } catch {
       // Defaults keep working; next refresh retries.
+      setLoadFailed(true);
     }
   }, []);
 
@@ -177,6 +185,7 @@ export function useTemplates() {
     openers,
     followups,
     templatesLoaded: loaded,
+    templatesLoadFailed: loadFailed,
     refreshTemplates: refresh,
     saveContentDebounced,
     saveTemplate,

@@ -1,7 +1,7 @@
 import nodemailer, { type SendMailOptions, type Transporter } from "nodemailer";
 import type { MailIdentity, SignatureScope } from "./types";
 import { listStoredIdentities } from "./identities-store";
-import { fillSenderVars, renderSignature, textToEmailHtml } from "./mail-html";
+import { composeEmail } from "./mail-html";
 
 export type { MailIdentity };
 
@@ -421,37 +421,31 @@ export async function sendMail(args: {
   // immediate sends, queued sends, and follow-ups even when the queue rotates
   // to a different account than the one chosen when the email was composed.
   const sender = { name: displayName || identity.name || identity.email, email: identity.email };
-  const resolveSender = (t: string) => fillSenderVars(t, sender);
 
   const headers: Record<string, string> = {};
   if (args.inReplyTo?.trim()) headers["In-Reply-To"] = args.inReplyTo.trim();
   if (args.references?.trim()) headers.References = args.references.trim();
 
-  const finalSubject = resolveSender(args.subject);
-  const finalBody = resolveSender(args.body);
-  const pixel = args.trackPixelUrl?.trim();
-
   // The Signature of the account that is actually sending. An Openers-only one
   // stays off Pitches, Bumps and replies.
-  const isReply = !!args.isReply || !!args.inReplyTo?.trim();
-  const sig =
-    identity.signatureScope === "openers" && isReply
-      ? { html: "", text: "" }
-      : renderSignature(identity.signature ?? "", sender);
-  const textPart = sig.text
-    ? [finalBody.trimEnd(), sig.text].filter(Boolean).join("\n\n")
-    : finalBody;
+  const composed = composeEmail({
+    subject: args.subject,
+    body: args.body,
+    sender,
+    signature: identity.signature,
+    signatureScope: identity.signatureScope,
+    isReply: !!args.isReply || !!args.inReplyTo?.trim(),
+    pixelUrl: args.trackPixelUrl?.trim() || undefined,
+  });
 
   const cc = args.cc?.trim();
   const mail: SendMailOptions = {
     from: fromHeader,
     to: args.to,
     ...(cc ? { cc } : {}),
-    subject: finalSubject,
-    // Always multipart text+HTML: plain-text-only mail is not safe either —
-    // Outlook's default "remove extra line breaks" joins its lines together.
-    text: textPart,
-    html: textToEmailHtml(finalBody, pixel || undefined, sig.html),
+    subject: composed.subject,
+    text: composed.text,
+    html: composed.html,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   };
 

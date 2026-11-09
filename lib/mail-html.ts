@@ -1,3 +1,5 @@
+import type { SignatureScope } from "./types";
+
 // HTML twin of a plain-text email body, built to lay out the same in every
 // client. Outlook desktop and Windows Mail render HTML with Word, which ignores
 // `white-space: pre-wrap` — so line breaks must be real <p>/<br> structure, and
@@ -144,6 +146,44 @@ export function renderSignature(
   return {
     html: `<div class="gmail_signature" style="${SIG_STYLE}">${textToParagraphs(text).join("\n")}</div>`,
     text,
+  };
+}
+
+// --- The finished email ---------------------------------------------------------
+
+/** Whether a Sender's Signature goes on this email: an Openers-only one stays
+ *  off Pitches, Bumps and replies. */
+export function signatureApplies(scope: SignatureScope | undefined, isReply?: boolean): boolean {
+  return !(scope === "openers" && isReply);
+}
+
+/** Everything a send puts on the wire, from the template-filled subject and
+ *  body plus the Sender that is actually sending. Pure and client-safe: sendMail
+ *  uses it, and so does the Templates page preview, so the two cannot drift. */
+export function composeEmail(args: {
+  subject: string;
+  body: string;
+  sender: SenderVars;
+  /** The Sender's Signature, plain text or HTML ('' = none). */
+  signature?: string;
+  signatureScope?: SignatureScope;
+  /** A Pitch, Bump or manual reply. Keeps an Openers-only Signature off it. */
+  isReply?: boolean;
+  /** Open-tracking pixel for the HTML part. */
+  pixelUrl?: string;
+}): { subject: string; text: string; html: string } {
+  const fill = (t: string) => fillSenderVars(t, args.sender);
+  const body = fill(args.body);
+  const sig = signatureApplies(args.signatureScope, args.isReply)
+    ? renderSignature(args.signature ?? "", args.sender)
+    : { html: "", text: "" };
+  const text = sig.text ? [body.trimEnd(), sig.text].filter(Boolean).join("\n\n") : body;
+  return {
+    subject: fill(args.subject),
+    // Always multipart text+HTML: plain-text-only mail is not safe either —
+    // Outlook's default "remove extra line breaks" joins its lines together.
+    text,
+    html: textToEmailHtml(body, args.pixelUrl, sig.html),
   };
 }
 

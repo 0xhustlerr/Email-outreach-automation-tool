@@ -10,6 +10,7 @@
 import { db } from "./db";
 import { resolveLocation } from "./country";
 import { getStoredIdentity } from "./identities-store";
+import { displayName, senderVars, substitute, urlVars } from "./template-vars";
 
 // Legacy follow-up delay, in minutes. The timed pitch was retired (the worker
 // never imports claimDueFollowup), and with it the user-facing delay controls.
@@ -1064,8 +1065,6 @@ export function rotateQueuedOpeners(
     username: string;
   }[];
 
-  const sub = (t: string, vars: Record<string, string>) =>
-    t.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
   const upd = db.prepare(
     `UPDATE sequences SET op_subject = ?, op_body = ? WHERE id = ?`,
   );
@@ -1082,57 +1081,11 @@ export function rotateQueuedOpeners(
           username: r.username,
         }),
       };
-      upd.run(sub(op.subject, vars), sub(op.body, vars), r.id);
+      upd.run(substitute(op.subject, vars), substitute(op.body, vars), r.id);
     });
   });
   tx();
   return rows.length;
-}
-
-/** Template vars that keep the sender placeholders INTACT when a body is
- *  rendered at queue time. The mailer is the single choke point that fills
- *  them (from the account that actually sends), so anything that renders a
- *  template before the send must map them back to themselves — otherwise
- *  `substitute` treats them as unknown and blanks them, and the email goes out
- *  signed with nothing. */
-export function senderVars(): Record<string, string> {
-  return { sender: "{{sender}}", sender_email: "{{sender_email}}" };
-}
-
-/** Template vars for the URL placeholders. {{url}} stays an alias of the
- *  Upwork link (pre-existing templates keep working); {{url_github}} falls
- *  back to the profile URL derived from the GitHub username. */
-export function urlVars(links: {
-  upwork?: string;
-  linkedin?: string;
-  github?: string;
-  username?: string;
-}): Record<string, string> {
-  const upwork = (links.upwork ?? "").trim();
-  const github =
-    (links.github ?? "").trim() ||
-    ((links.username ?? "").trim()
-      ? `https://github.com/${(links.username ?? "").trim()}`
-      : "");
-  return {
-    url: upwork,
-    url_upwork: upwork,
-    url_linkedin: (links.linkedin ?? "").trim(),
-    url_github: github,
-  };
-}
-
-/** A safe first name for {{name}}: falls back to "there" when the stored name
- *  is missing or is actually a URL/email/handle that leaked into the field
- *  (so an opener never reads "Hi https://upwork.com/…"). */
-export function displayName(raw: string | null | undefined): string {
-  const n = (raw ?? "").trim();
-  if (!n) return "there";
-  if (/^https?:|:\/\/|www\.|@|\.(com|net|io|org|dev|co|me)\b/i.test(n)) {
-    return "there";
-  }
-  if (n.length > 40) return "there";
-  return n;
 }
 
 /** Per-address sequence status for the History ticks. */

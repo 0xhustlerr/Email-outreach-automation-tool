@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Spinner } from "@/components/ui/spinner";
-import { useTemplates, type UiTemplate } from "@/hooks/useTemplates";
+import { useTemplates, type TemplateKind, type UiTemplate } from "@/hooks/useTemplates";
 import { Card, PageBody, PageHeader, Segmented } from "@/components/ui/dashboard";
+import { TemplatePreviewCard } from "@/components/EmailPreview";
 
 // Manage Templates: edit existing templates or add new ones. Saved to the
 // database via /api/templates and applied to all future sends.
@@ -52,12 +53,25 @@ export default function TemplatesModal(_props: {
   onClose: () => void;
   asPage?: boolean;
 }) {
-  const { templates, templatesLoaded, saveTemplate, deleteTemplate } =
-    useTemplates();
+  const {
+    templates: allTemplates,
+    templatesLoaded,
+    templatesLoadFailed,
+    refreshTemplates,
+    saveTemplate,
+    deleteTemplate,
+  } = useTemplates();
+  // Only the database's own rows. Until they land, useTemplates holds built-in
+  // bridge templates whose ids may not exist in the database — editing one and
+  // pressing Save would create it as a new template in the send rotation.
+  const templates = useMemo(
+    () => (templatesLoaded ? allTemplates : []),
+    [templatesLoaded, allTemplates],
+  );
 
   // null = nothing picked yet (auto-select pending); "new" = the user
   // clicked "+ New template"; otherwise the id of the template being edited.
-  const [tab, setTab] = useState<"opener" | "followup">("opener");
+  const [tab, setTab] = useState<TemplateKind>("opener");
   const [selection, setSelection] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [subject, setSubject] = useState("");
@@ -70,6 +84,8 @@ export default function TemplatesModal(_props: {
   const isNew = selection === "new";
   const selectedId = !isNew ? selection : null;
   const tabTemplates = templates.filter((t) => t.kind === tab);
+  // What a Pitch's "Re: …" subject is previewed against.
+  const openerSubject = templates.find((t) => t.kind === "opener")?.subject ?? "";
 
   const loadIntoEditor = (t: UiTemplate | null) => {
     setSelection(t?.id ?? "new");
@@ -80,14 +96,24 @@ export default function TemplatesModal(_props: {
     setFeedback(null);
   };
 
-  // Auto-pick the first template of the active tab.
+  // A failed load leaves nothing to edit, so say so.
   useEffect(() => {
-    if (selection !== null || tabTemplates.length === 0) return;
+    if (templatesLoadFailed && !templatesLoaded) {
+      toast.error("Could not load your templates. Retry from the template list.", {
+        id: "templates-load",
+      });
+    }
+  }, [templatesLoadFailed, templatesLoaded]);
+
+  // Auto-pick the first template of the active tab, once the database copy
+  // has landed (see `templates` above).
+  useEffect(() => {
+    if (!templatesLoaded || selection !== null || tabTemplates.length === 0) return;
     loadIntoEditor(tabTemplates[0]);
-  }, [tabTemplates, selection]);
+  }, [templatesLoaded, tabTemplates, selection]);
 
   // Switching tabs resets the editor to that tab's first template.
-  const switchTab = (next: "opener" | "followup") => {
+  const switchTab = (next: TemplateKind) => {
     if (next === tab) return;
     setTab(next);
     setSelection(null);
@@ -99,7 +125,10 @@ export default function TemplatesModal(_props: {
   };
 
   // When the database copy lands, refresh the untouched editor so it shows
-  // the saved content rather than the built-in defaults.
+  // the saved content rather than the built-in defaults. If the open template
+  // isn't in the database list (a bridge default clicked before it loaded, or
+  // one deleted elsewhere), drop back to "nothing picked" so the auto-select
+  // above moves the editor to a real one.
   useEffect(() => {
     if (!templatesLoaded || dirty || !selectedId) return;
     const t = templates.find((x) => x.id === selectedId);
@@ -107,6 +136,8 @@ export default function TemplatesModal(_props: {
       setLabel(t.label);
       setSubject(t.subject);
       setBody(t.body);
+    } else {
+      setSelection(null);
     }
   }, [templatesLoaded, templates, dirty, selectedId]);
 
@@ -211,15 +242,41 @@ export default function TemplatesModal(_props: {
         />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      {/* List | editor | preview side by side on wide screens; below that the
+          preview drops under the editor, and on narrow ones everything stacks. */}
+      <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_minmax(0,1fr)]">
         {/* Template list (current tab) */}
         <Card
           title="Templates"
-          description={`${tabTemplates.length} ${tab === "opener" ? "opener" : "follow-up"} template${tabTemplates.length === 1 ? "" : "s"}`}
+          description={
+            templatesLoaded
+              ? `${tabTemplates.length} ${tab === "opener" ? "opener" : "follow-up"} template${tabTemplates.length === 1 ? "" : "s"}`
+              : templatesLoadFailed
+                ? "Could not load"
+                : "Loading…"
+          }
           flush
           className="self-start"
         >
-          <ul className="flex flex-col gap-1 p-2">
+          {!templatesLoaded && (
+            <div className="flex items-center gap-2 px-4 py-3 text-xs text-slate-400">
+              {templatesLoadFailed ? (
+                <button
+                  type="button"
+                  onClick={() => void refreshTemplates()}
+                  className="btn btn-secondary btn-sm"
+                >
+                  Retry
+                </button>
+              ) : (
+                <>
+                  <Spinner />
+                  Loading templates…
+                </>
+              )}
+            </div>
+          )}
+          <ul className="flex flex-col gap-1 p-2 empty:hidden">
             {tabTemplates.map((t) => {
               const active = selectedId === t.id;
               return (
@@ -296,7 +353,8 @@ export default function TemplatesModal(_props: {
           }
         >
           <div className="flex flex-col gap-5">
-            <div className="grid gap-5 md:grid-cols-2">
+            {/* Stacked at xl, where the preview column narrows the editor. */}
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
               <div>
                 <label htmlFor="tpl-label" className="field-label">
                   Template name
@@ -374,6 +432,14 @@ export default function TemplatesModal(_props: {
             )}
           </div>
         </Card>
+
+        <TemplatePreviewCard
+          subject={subject}
+          body={body}
+          kind={tab}
+          openerSubject={openerSubject}
+          className="self-start lg:col-start-2 xl:col-start-auto"
+        />
       </div>
     </PageBody>
   );

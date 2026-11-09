@@ -44,6 +44,7 @@ import {
   saveSelectedTemplateIdRaw,
   useTemplates,
 } from "@/hooks/useTemplates";
+import { substitute } from "@/lib/template-vars";
 import type {
   DiscoveryResult,
   MailIdentity,
@@ -2382,13 +2383,6 @@ function ContactAvatar({ contact }: { contact: Contact }) {
 function trimUrlAtQuery(url: string): string {
   const q = url.indexOf("?");
   return q >= 0 ? url.slice(0, q) : url;
-}
-
-function substitute(
-  template: string,
-  vars: Record<string, string>,
-): string {
-  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
 }
 
 function isValidEmail(s: string): boolean {

@@ -1,12 +1,8 @@
 import { NextResponse } from "next/server";
 import { markUserActivity } from "@/lib/avatar-prefetch";
 import { getSettings } from "@/lib/queue-settings-store";
-import {
-  displayName,
-  enqueueSequence,
-  senderVars,
-  urlVars,
-} from "@/lib/sequences-store";
+import { enqueueSequence } from "@/lib/sequences-store";
+import { displayName, senderVars, substitute, urlVars } from "@/lib/template-vars";
 import {
   candidatesForEmails,
   listHistoryCandidates,
@@ -15,10 +11,6 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function substitute(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
-}
 
 // Preview: how many unique contacts match the range + filter.
 export async function GET(req: Request) {

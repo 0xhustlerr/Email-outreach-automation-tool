@@ -8,12 +8,8 @@ import { decideCountry, isTargetRegion } from "@/lib/country";
 import { GitHubError, parseGitHubUsername } from "@/lib/github";
 import { discoverLeadEmails } from "@/lib/lead-discovery";
 import { getSettings } from "@/lib/queue-settings-store";
-import {
-  displayName,
-  enqueueSequence,
-  senderVars,
-  urlVars,
-} from "@/lib/sequences-store";
+import { enqueueSequence } from "@/lib/sequences-store";
+import { displayName, senderVars, substitute, urlVars } from "@/lib/template-vars";
 import type { CsvLead } from "@/lib/csv";
 
 export const runtime = "nodejs";
@@ -60,10 +56,6 @@ type Body = {
   /** '' (default) lets the queue worker rotate senders. */
   fromEmail?: string;
 };
-
-function substitute(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "");
-}
 
 function jsonError(status: number, message: string) {
   return new Response(JSON.stringify({ ok: false, error: message }), {

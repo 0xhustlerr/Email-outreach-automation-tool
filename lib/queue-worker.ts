@@ -77,6 +77,7 @@ import {
   sentTodayBySender,
   type Sequence,
 } from "./sequences-store";
+import { replySubject } from "./template-vars";
 
 const MAX_ATTEMPTS = 3;
 
@@ -214,11 +215,6 @@ function nextBumpBody(name: string): string | null {
   if (r.body === null) return null;
   const who = (name || "").trim() || "there";
   return r.body.replace(/\{\{\s*name\s*\}\}/gi, who);
-}
-
-function replySubject(openerSubject: string): string {
-  const s = openerSubject.trim();
-  return /^re:/i.test(s) ? s : `Re: ${s}`;
 }
 
 // --- the attempt Lanes as data ----------------------------------------------

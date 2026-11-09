@@ -5,6 +5,7 @@ import {
   isGmailReplySyncConfigured,
 } from "@/lib/gmail";
 import { isSendConfigured, listIdentities, sendMail } from "@/lib/mail";
+import { replySubject } from "@/lib/template-vars";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,13 +22,6 @@ type Body = {
 
 function isValidEmail(s: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
-}
-
-function replySubject(subject: string): string {
-  const s = subject.trim();
-  if (!s) return "Re:";
-  if (/^re:\s*/i.test(s)) return s;
-  return `Re: ${s}`;
 }
 
 export async function POST(req: Request) {
