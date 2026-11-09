@@ -261,3 +261,46 @@ describe("refreshPlacementTest", () => {
     expect(t.counts.missing).toBe(2);
   });
 });
+
+describe("checked seed inboxes", () => {
+  it("lists every possible seed, checked by default", async () => {
+    const { listSeedOptions } = await import("./seeds");
+    expect(listSeedOptions()).toEqual([
+      { email: "ann@example.com", kind: "sender", enabled: true },
+      { email: "bob@example.com", kind: "sender", enabled: true },
+      { email: "seed@gmail.com", kind: "extra", enabled: true },
+    ]);
+  });
+
+  it("sends only to checked seeds", async () => {
+    store.setSeedEnabled("Seed@Gmail.com", false);
+    try {
+      const [view] = run.startPlacementTests({ senders: ["ann@example.com"], provider: "seeds", templateId: openerId });
+      await settled(view.id);
+      expect(h.sendMail.mock.calls.map(([a]) => a.to)).toEqual(["bob@example.com"]);
+    } finally {
+      store.setSeedEnabled("seed@gmail.com", true);
+    }
+  });
+
+  it("refuses to start when no checked seed is left for that Sender", () => {
+    store.setSeedEnabled("bob@example.com", false);
+    store.setSeedEnabled("seed@gmail.com", false);
+    try {
+      expect(() =>
+        run.startPlacementTests({ senders: ["ann@example.com"], provider: "seeds", templateId: openerId }),
+      ).toThrow(/Check one under Seed inboxes/);
+      expect(h.sendMail).not.toHaveBeenCalled();
+    } finally {
+      store.setSeedEnabled("bob@example.com", true);
+      store.setSeedEnabled("seed@gmail.com", true);
+    }
+  });
+
+  it("a removed seed inbox comes back checked when re-added", () => {
+    store.setSeedEnabled("seed@gmail.com", false);
+    expect(store.deleteSeedInbox("seed@gmail.com")).toBe(true);
+    expect(store.disabledSeeds().has("seed@gmail.com")).toBe(false);
+    store.upsertSeedInbox({ email: "seed@gmail.com", refreshToken: "1//seed" });
+  });
+});

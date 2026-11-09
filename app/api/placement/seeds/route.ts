@@ -3,7 +3,13 @@ import { cachedAccessToken, clearGmailTokenCache, verifyGmailOAuth } from "@/lib
 import { getGmailClient } from "@/lib/identities-store";
 import { listIdentities } from "@/lib/mail";
 import { gmailProfileEmail } from "@/lib/placement/gmail-placement";
-import { deleteSeedInbox, publicSeedInboxes, upsertSeedInbox } from "@/lib/placement/store";
+import { listSeedOptions } from "@/lib/placement/seeds";
+import {
+  deleteSeedInbox,
+  publicSeedInboxes,
+  setSeedEnabled,
+  upsertSeedInbox,
+} from "@/lib/placement/store";
 
 // Extra Gmail inboxes that only receive placement tests. Tokens are verified
 // on save and never returned.
@@ -86,6 +92,25 @@ export async function PUT(req: Request) {
 
   upsertSeedInbox({ email, refreshToken, clientId: ownId, clientSecret: ownSecret });
   return NextResponse.json({ ok: true, seedInboxes: publicSeedInboxes() });
+}
+
+/** Check or uncheck a seed inbox for future tests. Body: { email, enabled }. */
+export async function PATCH(req: Request) {
+  let body: { email?: string; enabled?: unknown } = {};
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: "Invalid request." }, { status: 400 });
+  }
+  const email = (body.email ?? "").trim().toLowerCase();
+  if (typeof body.enabled !== "boolean") {
+    return NextResponse.json({ ok: false, error: "Say whether the seed inbox is on or off." }, { status: 400 });
+  }
+  if (!listSeedOptions().some((s) => s.email === email)) {
+    return NextResponse.json({ ok: false, error: `${email || "That address"} isn't a seed inbox.` }, { status: 404 });
+  }
+  setSeedEnabled(email, body.enabled);
+  return NextResponse.json({ ok: true, seedOptions: listSeedOptions() });
 }
 
 /** Remove a seed inbox. Body: { email }. */

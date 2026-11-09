@@ -6,7 +6,7 @@ import { cachedAccessToken, getAccessToken, parseGmailAccounts } from "@/lib/gma
 import { getGmailClient } from "@/lib/identities-store";
 import { listIdentities } from "@/lib/mail";
 import { findPlacement } from "./gmail-placement";
-import { getSeedInbox, listSeedInboxes } from "./store";
+import { disabledSeeds, getSeedInbox, listSeedInboxes } from "./store";
 import {
   sentAtMs,
   type PlacementProvider,
@@ -18,21 +18,37 @@ import {
 /** How long a seed copy may take to show up before it counts as Missing. */
 export const SEED_MISSING_AFTER_MS = 15 * 60_000;
 
-/** Every address we can read for a test from `sender`: other Senders with a
- *  Gmail token, then the extra seed inboxes. Never the Sender itself — mail to
- *  yourself skips spam filtering entirely. */
-export function seedAddressesFor(sender: string): string[] {
-  const self = sender.trim().toLowerCase();
+export type SeedOption = {
+  email: string;
+  /** 'sender' = a Sender with reply sync; 'extra' = added only for tests. */
+  kind: "sender" | "extra";
+  /** Checked on the Spam check page: receives tests. */
+  enabled: boolean;
+};
+
+/** Every inbox that COULD be a seed (other Senders with a Gmail token, then
+ *  the extra seed inboxes), with whether it is checked to receive tests. */
+export function listSeedOptions(): SeedOption[] {
   const tokens = parseGmailAccounts();
-  const out = new Set<string>();
+  const off = disabledSeeds();
+  const out = new Map<string, SeedOption>();
   for (const id of listIdentities()) {
     const e = id.email.toLowerCase();
-    if (e !== self && tokens[e]) out.add(e);
+    if (tokens[e]) out.set(e, { email: e, kind: "sender", enabled: !off.has(e) });
   }
   for (const s of listSeedInboxes()) {
-    if (s.email !== self) out.add(s.email);
+    if (!out.has(s.email)) out.set(s.email, { email: s.email, kind: "extra", enabled: !off.has(s.email) });
   }
-  return [...out];
+  return [...out.values()];
+}
+
+/** The checked seed inboxes a test from `sender` goes to. Never the Sender
+ *  itself — mail to yourself skips spam filtering entirely. */
+export function seedAddressesFor(sender: string): string[] {
+  const self = sender.trim().toLowerCase();
+  return listSeedOptions()
+    .filter((s) => s.enabled && s.email !== self)
+    .map((s) => s.email);
 }
 
 /** Access token for a seed: a Sender's reply-sync token, else the seed inbox's
@@ -52,7 +68,7 @@ export async function seedAccessToken(email: string): Promise<string> {
 }
 
 const NO_SEEDS =
-  "No seed inboxes to send to. Turn on reply sync for another Sender, or add a Gmail seed inbox.";
+  "No seed inboxes to send to. Check one under Seed inboxes, turn on reply sync for another Sender, or add a Gmail seed inbox.";
 
 export const seedsProvider: PlacementProvider = {
   id: "seeds",

@@ -207,6 +207,36 @@ export function toView(test: PlacementTestRow, results = listResults(test.id)): 
   };
 }
 
+// --- which seed inboxes receive tests -------------------------------------------
+// Stored as the UNCHECKED set, so a newly connected Sender or a newly added
+// seed inbox receives tests from the start.
+
+const DISABLED_SEEDS_KEY = "placement_disabled_seeds";
+
+export function disabledSeeds(): Set<string> {
+  try {
+    const row = db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(DISABLED_SEEDS_KEY) as
+      | { value: string }
+      | undefined;
+    const list = JSON.parse(row?.value ?? "[]");
+    return new Set(Array.isArray(list) ? list.map((e) => String(e).toLowerCase()) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Check or uncheck a seed inbox for future tests. */
+export function setSeedEnabled(email: string, enabled: boolean): void {
+  const e = email.trim().toLowerCase();
+  const set = disabledSeeds();
+  if (enabled) set.delete(e);
+  else set.add(e);
+  db.prepare(
+    `INSERT INTO app_meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(DISABLED_SEEDS_KEY, JSON.stringify([...set].sort()));
+}
+
 // --- seed inboxes --------------------------------------------------------------
 
 export type SeedInbox = {
@@ -280,8 +310,9 @@ export function upsertSeedInbox(s: {
 }
 
 export function deleteSeedInbox(email: string): boolean {
-  return (
-    db.prepare(`DELETE FROM seed_inboxes WHERE email = ?`).run(email.trim().toLowerCase())
-      .changes > 0
-  );
+  const e = email.trim().toLowerCase();
+  const removed = db.prepare(`DELETE FROM seed_inboxes WHERE email = ?`).run(e).changes > 0;
+  // Re-adding it later starts checked, like any new seed inbox.
+  if (removed) setSeedEnabled(e, true);
+  return removed;
 }

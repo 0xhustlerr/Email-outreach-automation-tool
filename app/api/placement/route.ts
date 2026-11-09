@@ -7,7 +7,7 @@ import {
   refreshRunningTests,
   startPlacementTests,
 } from "@/lib/placement/run";
-import { seedAddressesFor } from "@/lib/placement/seeds";
+import { listSeedOptions, seedAddressesFor } from "@/lib/placement/seeds";
 import { listRecentTests, publicSeedInboxes, toView } from "@/lib/placement/store";
 import { isProviderId, type PlacementTestView } from "@/lib/placement/types";
 import { listTemplates } from "@/lib/templates-store";
@@ -44,6 +44,7 @@ function snapshot() {
       };
     }),
     seedInboxes: publicSeedInboxes(),
+    seedOptions: listSeedOptions(),
     glockapps: glockAppsPublicSettings(),
     templates: listTemplates("opener").map((t) => ({ id: t.id, label: t.label })),
   };

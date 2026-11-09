@@ -26,6 +26,7 @@ type Snapshot = {
     history: PlacementTestView[];
   }[];
   seedInboxes: { email: string; createdAt: string }[];
+  seedOptions: { email: string; kind: "sender" | "extra"; enabled: boolean }[];
   glockapps: { configured: boolean; projectId: string; providerGroupIds: string[] };
   templates: { id: string; label: string }[];
 };
@@ -338,7 +339,7 @@ export default function PlacementPage() {
           disabledReason={
             runDisabledReason ||
             (provider === "seeds" && s.seeds.length === 0
-              ? "No seed inbox to send to: add one below, or turn on reply sync for another Sender."
+              ? "No checked seed inbox to send to: check one below, add one, or turn on reply sync for another Sender."
               : "")
           }
           onRun={() => void start([s.email])}
@@ -347,7 +348,7 @@ export default function PlacementPage() {
 
       {data && (
         <div id="placement-setup-seeds" className="scroll-mt-6">
-          <SeedInboxesCard data={data} onChanged={() => void load()} />
+          <SeedInboxesCard data={data} onChanged={load} />
         </div>
       )}
       {data && (
@@ -487,20 +488,46 @@ function SenderCard({
   );
 }
 
-function SeedInboxesCard({ data, onChanged }: { data: Snapshot; onChanged: () => void }) {
+function SeedInboxesCard({ data, onChanged }: { data: Snapshot; onChanged: () => Promise<void> }) {
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [ownClient, setOwnClient] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Checkbox changes waiting on the server, shown immediately.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
 
-  const senderSeeds = useMemo(() => {
-    const all = new Set<string>();
-    const extras = new Set(data.seedInboxes.map((s) => s.email));
-    for (const s of data.senders) for (const seed of s.seeds) if (!extras.has(seed)) all.add(seed);
-    return [...all];
-  }, [data]);
+  const options = data.seedOptions;
+  const isChecked = (s: { email: string; enabled: boolean }) => pending[s.email] ?? s.enabled;
+  const checkedCount = options.filter(isChecked).length;
+
+  const toggle = async (seed: string, enabled: boolean) => {
+    setPending((p) => ({ ...p, [seed]: enabled }));
+    try {
+      const res = await fetch("/api/placement/seeds", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: seed, enabled }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        toast.error(body.error ?? "Could not update the seed inbox.");
+        return;
+      }
+      // Reload so the per-Sender seed counts follow; the reloaded snapshot
+      // carries the saved state, so the optimistic value can go after it.
+      await onChanged();
+    } catch {
+      toast.error("Network error while updating the seed inbox.");
+    } finally {
+      setPending((p) => {
+        const next = { ...p };
+        delete next[seed];
+        return next;
+      });
+    }
+  };
 
   const add = async () => {
     setBusy(true);
@@ -524,7 +551,7 @@ function SeedInboxesCard({ data, onChanged }: { data: Snapshot; onChanged: () =>
       setToken("");
       setClientId("");
       setClientSecret("");
-      onChanged();
+      void onChanged();
     } catch {
       toast.error("Network error while adding the seed inbox.");
     } finally {
@@ -544,7 +571,7 @@ function SeedInboxesCard({ data, onChanged }: { data: Snapshot; onChanged: () =>
         toast.error(body.error ?? "Could not remove the seed inbox.");
         return;
       }
-      onChanged();
+      void onChanged();
     } catch {
       toast.error("Network error while removing the seed inbox.");
     }
@@ -553,27 +580,45 @@ function SeedInboxesCard({ data, onChanged }: { data: Snapshot; onChanged: () =>
   return (
     <Card
       title="Seed inboxes"
-      description="Gmail inboxes the test is sent to and read from (read-only). A personal Gmail you never send outreach from gives the most honest result."
+      description="Checked inboxes receive the test and are read (read-only) to see where it landed. A Sender is never sent its own test. A personal Gmail you never send outreach from gives the most honest result."
+      actions={
+        options.length > 0 ? (
+          <span className="text-xs text-slate-400">
+            {checkedCount} of {options.length} checked
+          </span>
+        ) : undefined
+      }
     >
       <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1.5 text-sm">
-          {senderSeeds.map((s) => (
-            <div key={s} className="flex items-center justify-between gap-3">
-              <span className="font-mono text-xs text-slate-300">{s}</span>
-              <span className="badge badge-neutral" title="A Sender with reply sync. Manage it on the Accounts page.">
-                Sender
-              </span>
-            </div>
-          ))}
-          {data.seedInboxes.map((s) => (
+        <div className="flex flex-col gap-1 text-sm">
+          {options.map((s) => (
             <div key={s.email} className="flex items-center justify-between gap-3">
-              <span className="font-mono text-xs text-slate-300">{s.email}</span>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void remove(s.email)}>
-                Remove
-              </button>
+              <label className="flex min-w-0 cursor-pointer items-center gap-2.5 py-0.5">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 shrink-0 cursor-pointer accent-cyan-400"
+                  checked={isChecked(s)}
+                  onChange={(e) => void toggle(s.email, e.target.checked)}
+                  aria-label={`Send test emails to ${s.email}`}
+                />
+                <span
+                  className={`truncate font-mono text-xs ${isChecked(s) ? "text-slate-300" : "text-slate-500 line-through"}`}
+                >
+                  {s.email}
+                </span>
+              </label>
+              {s.kind === "sender" ? (
+                <span className="badge badge-neutral shrink-0" title="A Sender with reply sync. Manage it on the Accounts page.">
+                  Sender
+                </span>
+              ) : (
+                <button type="button" className="btn btn-ghost btn-sm shrink-0" onClick={() => void remove(s.email)}>
+                  Remove
+                </button>
+              )}
             </div>
           ))}
-          {senderSeeds.length === 0 && data.seedInboxes.length === 0 && (
+          {options.length === 0 && (
             <p className="text-xs text-slate-500">
               None yet. Turn on reply sync for a second Sender, or add a Gmail inbox here.
             </p>
@@ -688,7 +733,7 @@ function GlockAppsCard({ data, onChanged }: { data: Snapshot; onChanged: () => v
       }
       toast.success("GlockApps is set up.");
       setApiKey("");
-      onChanged();
+      void onChanged();
     } catch {
       toast.error("Network error while saving GlockApps settings.");
     } finally {
@@ -706,7 +751,7 @@ function GlockAppsCard({ data, onChanged }: { data: Snapshot; onChanged: () => v
         return;
       }
       setProjects(null);
-      onChanged();
+      void onChanged();
     } catch {
       toast.error("Network error while removing GlockApps settings.");
     } finally {
