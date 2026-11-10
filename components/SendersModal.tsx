@@ -141,20 +141,10 @@ export default function SendersModal({
   const [sigDraft, setSigDraft] = useState("");
   const [sigScope, setSigScope] = useState<SignatureScope>("all");
   const [pulling, setPulling] = useState(false);
-  // Shown inside the editor: the page-level messages sit above the account
-  // list, usually scrolled out of view from the row being edited. Errors go
-  // to a toast instead, like every other error.
-  const [sigMsg, setSigMsg] = useState<{ kind: "warn" | "ok"; text: string } | null>(null);
 
   const [replyFor, setReplyFor] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
-  // A caveat the server attached to an otherwise successful save — the account
-  // was stored but may not actually be able to send (e.g. its app password
-  // could not be verified because outbound SMTP is blocked here). Amber and
-  // separate from okMsg: a green "ready to send" would be a plain lie.
-  const [warnMsg, setWarnMsg] = useState<string | null>(null);
   // Latest Spam check per Sender (badge links to the Spam check page).
   const [placement, setPlacement] = useState<Record<string, PlacementTestView | null>>({});
   const [, goToView] = useDashboardView();
@@ -220,22 +210,6 @@ export default function SendersModal({
   const trackingEnabled = !!data?.tracking?.enabled;
   const trackingCurrentUrl = data?.tracking?.url ?? "";
 
-  const clearMsgs = () => {
-    setOkMsg(null);
-    setWarnMsg(null);
-  };
-
-  const flash = (msg: string) => {
-    clearMsgs();
-    setOkMsg(msg);
-  };
-
-  // Errors are toasts, so they show wherever the page is scrolled.
-  const showError = (msg: string) => {
-    clearMsgs();
-    toast.error(msg);
-  };
-
   // Typing or pulling past the limit says so once, as it crosses; the counter
   // stays amber and Save stays disabled until it's back under, which clears it.
   const updateSigDraft = (next: string) => {
@@ -251,7 +225,6 @@ export default function SendersModal({
   };
 
   const addAccount = async () => {
-    clearMsgs();
     setBusy(true);
     try {
       const payload: Record<string, unknown> = { name, email, appPassword };
@@ -272,7 +245,7 @@ export default function SendersModal({
         warning?: string;
       };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not add the account.");
+        toast.error(body.error ?? "Could not add the account.");
         return;
       }
       setData(body);
@@ -284,14 +257,14 @@ export default function SendersModal({
       // The account is saved either way, but only claim it can send when the
       // server actually reached the SMTP server and signed in.
       if (body.warning) {
-        clearMsgs();
-        setWarnMsg(`Added ${added}. ${body.warning}`);
+        // Long caveat — kept up longer than a plain notice so it can be read.
+        toast.warning(`Added ${added}. ${body.warning}`, { duration: 10_000 });
       } else {
-        flash(`Added ${added} — verified and ready to send.`);
+        toast.success(`Added ${added} — verified and ready to send.`);
       }
       onChanged?.();
     } catch {
-      showError("Network error while adding the account.");
+      toast.error("Network error while adding the account.");
     } finally {
       setBusy(false);
     }
@@ -314,7 +287,6 @@ export default function SendersModal({
   // with one, `probe` also tries the other standard port when the account's
   // own one can't be reached, so a blocked 465 has an obvious fix.
   const recheck = async (addr?: string) => {
-    clearMsgs();
     setSuggestion(null);
     setChecking(addr ?? "*");
     try {
@@ -333,7 +305,7 @@ export default function SendersModal({
         replySync?: { checked: number; broken: number };
       };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not check the connection.");
+        toast.error(body.error ?? "Could not check the connection.");
         return;
       }
       const results = body.results ?? [];
@@ -352,36 +324,38 @@ export default function SendersModal({
           : replyBroken === 0
             ? ` Reply sync verified on ${replyChecked} inbox(es).`
             : ` Reply sync is broken on ${replyBroken} of ${replyChecked} inbox(es) — hover its badge for the reason.`;
+      // One id so repeated checks replace the last result instead of stacking.
+      const checkToastOpts = { id: "senders-check" };
       if (failed.length === 0 && replyBroken === 0) {
-        flash(
+        toast.success(
           addr
             ? `${addr} — connected and signed in.`
             : `All ${results.length} account(s) connected and signed in.${replyNote}`,
+          checkToastOpts,
         );
       } else if (body.suggestion) {
-        clearMsgs();
-        setWarnMsg(
+        toast.warning(
           `Port ${body.suggestion.port} works for ${body.suggestion.email} — apply it below to reconnect.`,
+          checkToastOpts,
         );
       } else {
-        clearMsgs();
-        setWarnMsg(
+        toast.warning(
           addr
             ? `${addr} — ${failed[0]?.error || "could not connect"}`
             : failed.length > 0
               ? `${failed.length} of ${results.length} account(s) could not connect. Open Reconnect on each to fix it.${replyNote}`
               : `All ${results.length} account(s) connected and signed in.${replyNote}`,
+          checkToastOpts,
         );
       }
     } catch {
-      showError("Network error while checking the connection.");
+      toast.error("Network error while checking the connection.");
     } finally {
       setChecking(null);
     }
   };
 
   const openRenew = (addr: string) => {
-    clearMsgs();
     setSuggestion(null);
     setPendingRemove(null);
     const cur = smtpByEmail[addr.toLowerCase()];
@@ -397,7 +371,6 @@ export default function SendersModal({
   // field keeps the stored one — this flow is usually about the port or host,
   // not the credentials.
   const saveRenew = async (addr: string) => {
-    clearMsgs();
     setBusy(true);
     try {
       const port = Number(renewPort) || 465;
@@ -419,29 +392,27 @@ export default function SendersModal({
         warning?: string;
       };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not update the connection.");
+        toast.error(body.error ?? "Could not update the connection.");
         return;
       }
       setData(body);
       setRenewPass("");
       setSuggestion(null);
       if (body.warning) {
-        clearMsgs();
-        setWarnMsg(`Updated ${addr}. ${body.warning}`);
+        toast.warning(`Updated ${addr}. ${body.warning}`, { duration: 10_000 });
       } else {
         setRenewFor(null);
-        flash(`Reconnected ${addr} — verified and ready to send.`);
+        toast.success(`Reconnected ${addr} — verified and ready to send.`);
       }
       onChanged?.();
     } catch {
-      showError("Network error while updating the connection.");
+      toast.error("Network error while updating the connection.");
     } finally {
       setBusy(false);
     }
   };
 
   const openRename = (addr: string, current: string) => {
-    clearMsgs();
     setPendingRemove(null);
     setRenameValue(current);
     setRenameFor(addr);
@@ -451,14 +422,13 @@ export default function SendersModal({
   const saveRename = async (addr: string, current: string) => {
     const next = renameValue.trim();
     if (!next) {
-      showError("Enter a display name.");
+      toast.error("Enter a display name.");
       return;
     }
     if (next === current) {
       setRenameFor(null);
       return;
     }
-    clearMsgs();
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -468,29 +438,27 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not rename the account.");
+        toast.error(body.error ?? "Could not rename the account.");
         return;
       }
       setData(body);
       setRenameFor(null);
-      flash(`Renamed ${addr} to “${next}”.`);
+      toast.success(`Renamed ${addr} to “${next}”.`);
       onChanged?.();
     } catch {
-      showError("Network error while renaming the account.");
+      toast.error("Network error while renaming the account.");
     } finally {
       setBusy(false);
     }
   };
 
   const openSignature = (addr: string) => {
-    clearMsgs();
     setPendingRemove(null);
     setRenewFor(null);
     setSuggestion(null);
     const cur = sigByEmail[addr.toLowerCase()];
     setSigDraft(cur?.signature ?? "");
     setSigScope(cur?.scope ?? "all");
-    setSigMsg(null);
     setSigFor(addr);
   };
 
@@ -501,8 +469,6 @@ export default function SendersModal({
     signature: string,
     signatureScope: SignatureScope = "all",
   ) => {
-    clearMsgs();
-    setSigMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -515,19 +481,19 @@ export default function SendersModal({
         error?: string;
       };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? `Could not save the signature (HTTP ${res.status}).`);
+        toast.error(body.error ?? `Could not save the signature (HTTP ${res.status}).`);
         return;
       }
       setData(body as SendersState);
       setSigFor(null);
-      flash(
+      toast.success(
         signature.trim()
           ? `Saved the signature for ${addr}.`
           : `Removed the signature from ${addr}.`,
       );
       onChanged?.();
     } catch {
-      showError("Network error while saving the signature.");
+      toast.error("Network error while saving the signature.");
     } finally {
       setBusy(false);
     }
@@ -535,8 +501,6 @@ export default function SendersModal({
 
   // Fetch the signature set in Gmail into the draft, for review before Save.
   const pullSignature = async (addr: string) => {
-    clearMsgs();
-    setSigMsg(null);
     setPulling(true);
     try {
       const res = await fetch("/api/senders/signature", {
@@ -551,7 +515,7 @@ export default function SendersModal({
         needsReauth?: boolean;
       };
       if (!res.ok || !body.ok) {
-        showError(
+        toast.error(
           (body.error ?? `Could not pull the Gmail signature (HTTP ${res.status}).`) +
             (body.needsReauth ? " Reconnect Reply sync for this account." : ""),
         );
@@ -559,20 +523,23 @@ export default function SendersModal({
       }
       const sig = (body.signature ?? "").trim();
       if (!sig) {
-        setSigMsg({ kind: "warn", text: "This Gmail account has no signature set." });
+        toast.warning("This Gmail account has no signature set.");
         return;
       }
       updateSigDraft(sig);
-      setSigMsg({ kind: "ok", text: "Pulled from Gmail — not saved yet. Check the preview, then Save signature." });
+      // Over the limit, updateSigDraft's error toast already says why Save is
+      // disabled; a "then Save signature" success beside it would contradict it.
+      if (sig.length <= SIG_MAX) {
+        toast.success("Pulled from Gmail — not saved yet. Check the preview, then Save signature.");
+      }
     } catch {
-      showError("Network error while pulling the Gmail signature.");
+      toast.error("Network error while pulling the Gmail signature.");
     } finally {
       setPulling(false);
     }
   };
 
   const removeAccount = async (addr: string) => {
-    clearMsgs();
     setBusy(true);
     setPendingRemove(null);
     try {
@@ -587,7 +554,7 @@ export default function SendersModal({
         removed?: RemovedCounts;
       };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not remove the account.");
+        toast.error(body.error ?? "Could not remove the account.");
         return;
       }
       setData(body);
@@ -597,17 +564,16 @@ export default function SendersModal({
           (r.sequences ? `, ${r.sequences} sequence${r.sequences === 1 ? "" : "s"}` : "") +
           "."
         : "";
-      flash(`Removed ${addr}.${extra}`);
+      toast.success(`Removed ${addr}.${extra}`);
       onChanged?.();
     } catch {
-      showError("Network error while removing the account.");
+      toast.error("Network error while removing the account.");
     } finally {
       setBusy(false);
     }
   };
 
   const saveGithubToken = async (token: string) => {
-    clearMsgs();
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -617,21 +583,20 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not save the GitHub token.");
+        toast.error(body.error ?? "Could not save the GitHub token.");
         return;
       }
       setData(body);
       setGithubToken("");
-      flash(token ? "GitHub token saved and verified." : "GitHub token removed.");
+      toast.success(token ? "GitHub token saved and verified." : "GitHub token removed.");
     } catch {
-      showError("Network error while saving the GitHub token.");
+      toast.error("Network error while saving the GitHub token.");
     } finally {
       setBusy(false);
     }
   };
 
   const putTracking = async (payload: Record<string, unknown>, okText: string) => {
-    clearMsgs();
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -641,14 +606,14 @@ export default function SendersModal({
       });
       const body = (await res.json()) as SendersState & { ok: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        showError(body.error ?? "Could not update open tracking.");
+        toast.error(body.error ?? "Could not update open tracking.");
         return;
       }
       setData(body);
       setTrackingUrl("");
-      flash(okText);
+      toast.success(okText);
     } catch {
-      showError("Network error while updating open tracking.");
+      toast.error("Network error while updating open tracking.");
     } finally {
       setBusy(false);
     }
@@ -674,21 +639,6 @@ export default function SendersModal({
     addCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     addNameRef.current?.focus({ preventScroll: true });
   };
-
-  const messages = (okMsg || warnMsg) && (
-    <div className="flex flex-col gap-2">
-      {okMsg && (
-        <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-200">
-          {okMsg}
-        </p>
-      )}
-      {warnMsg && (
-        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-xs leading-relaxed text-amber-200">
-          {warnMsg}
-        </p>
-      )}
-    </div>
-  );
 
   const replyDialog = replyFor && (
     <ReplySyncModal
@@ -716,8 +666,6 @@ export default function SendersModal({
             description="Services that power scanning and tracking"
             icon={<PlugIcon className="h-5 w-5" />}
           />
-
-          {messages}
 
           <div className="grid items-start gap-6 lg:grid-cols-2">
             {/* GitHub token */}
@@ -983,8 +931,6 @@ export default function SendersModal({
           </StatGrid>
         )}
 
-        {messages}
-
         {/* Current accounts */}
         <Card
           flush
@@ -1219,10 +1165,7 @@ export default function SendersModal({
                         ) : (
                           <button
                             type="button"
-                            onClick={() => {
-                              clearMsgs();
-                              setPendingRemove(id.email);
-                            }}
+                            onClick={() => setPendingRemove(id.email)}
                             disabled={busy}
                             className="btn btn-sm btn-danger"
                           >
@@ -1492,20 +1435,6 @@ export default function SendersModal({
                             <div className="field-label">Preview</div>
                             <SignaturePreview signature={sigDraft} sender={id} />
                           </div>
-                        )}
-
-                        {sigMsg && (
-                          <p
-                            role="status"
-                            className={
-                              "rounded-lg border px-3.5 py-2.5 text-xs leading-relaxed " +
-                              (sigMsg.kind === "ok"
-                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                                : "border-amber-500/30 bg-amber-500/10 text-amber-200")
-                            }
-                          >
-                            {sigMsg.text}
-                          </p>
                         )}
 
                         <div className="flex flex-col gap-3 border-t border-white/5 pt-4 sm:flex-row sm:items-center sm:justify-between">

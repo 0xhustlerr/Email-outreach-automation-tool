@@ -200,7 +200,6 @@ export default function Page() {
   const { templates: pageTemplates } = useTemplates();
   const [directSaveOpen, setDirectSaveOpen] = useState(false);
   const [directSaveUrl, setDirectSaveUrl] = useState("");
-  const [directSaveDone, setDirectSaveDone] = useState(false);
   const sheetHistory = useSheetHistory(sheetsConfigured === true);
   const replyCustomTabs = useReplyCustomTabs();
   const newReplies = useNewReplies(
@@ -1851,7 +1850,6 @@ export default function Page() {
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) {
               setDirectSaveOpen(false);
-              setDirectSaveDone(false);
             }
           }}
         >
@@ -1883,24 +1881,18 @@ export default function Page() {
                     direct: true,
                     attachedUrl: directSaveUrl.trim() || undefined,
                   });
-                  setDirectSaveDone(true);
-                  window.setTimeout(() => {
-                    setDirectSaveOpen(false);
-                    setDirectSaveDone(false);
-                    setDirectSaveUrl("");
-                  }, 1200);
+                  toast.success("Saved to contacts.");
+                  setDirectSaveOpen(false);
+                  setDirectSaveUrl("");
                 }}
                 data-ripple
                 className="btn-press rounded-full border border-amber-400/40 bg-amber-500/15 px-4 py-1.5 text-sm font-medium text-amber-100 transition hover:border-amber-300 hover:bg-amber-400/25 hover:text-white"
               >
-                {directSaveDone ? "✓ Saved" : "☆ Save contact"}
+                ☆ Save contact
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setDirectSaveOpen(false);
-                  setDirectSaveDone(false);
-                }}
+                onClick={() => setDirectSaveOpen(false)}
                 className="rounded-full px-3 py-1.5 text-sm text-slate-400 transition hover:text-white"
               >
                 Cancel
@@ -2596,8 +2588,9 @@ function SendModal({
 
   const [showPreview, setShowPreview] = useState(false);
   const [sending, setSending] = useState(false);
-  // Success only; failures are toasts.
-  const [result, setResult] = useState<{ message: string } | null>(null);
+  // Set once a send/queue succeeded and the auto-close timer is running, so a
+  // second click in that window can't send the same email twice.
+  const [done, setDone] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
 
   // In single mode the Message-1 dropdown lists ALL templates (pick any as the
@@ -2734,7 +2727,8 @@ function SendModal({
     isValidEmail(recipientEmail) &&
     !!renderedSubject.trim() &&
     !!renderedBody.trim() &&
-    !sending;
+    !sending &&
+    !done;
 
   const send = async () => {
     if (!canSend) return;
@@ -2747,7 +2741,6 @@ function SendModal({
       : senders.find((s) => s.email === fromEmail);
     if (!picked) return;
     setSending(true);
-    setResult(null);
     try {
       const res = await fetch("/api/send", {
         method: "POST",
@@ -2780,12 +2773,13 @@ function SendModal({
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? `Send failed (${res.status}).`);
       }
-      setResult({
-        message: data.followUpScheduled
-          ? `Opener sent. The pitch goes out when they reply. Closing…`
-          : `Email sent successfully. Closing in 3s…`,
-      });
+      toast.success(
+        data.followUpScheduled
+          ? "Opener sent. The Pitch goes out when they reply."
+          : "Email sent.",
+      );
       onSent?.(recipientEmail, cleanUrl);
+      setDone(true);
       closeTimerRef.current = window.setTimeout(() => {
         onClose();
       }, 3000);
@@ -2809,7 +2803,6 @@ function SendModal({
       return;
     }
     setSending(true);
-    setResult(null);
     try {
       const res = await fetch("/api/queue", {
         method: "POST",
@@ -2842,13 +2835,14 @@ function SendModal({
       if (!res.ok || !data.ok) throw new Error("Failed to add to queue.");
       const added = data.added ?? 0;
       if (added > 0) {
-        setResult({ message: "Added to queue. Closing in 2s…" });
+        toast.success("Added to queue.");
         onQueued?.(recipientEmail);
       } else {
         const reason = data.skipped?.[0]?.reason ?? "already sent or queued";
         toast.error(`Not queued — ${reason}.`);
       }
       if (added > 0) {
+        setDone(true);
         closeTimerRef.current = window.setTimeout(() => onClose(), 2000);
       }
     } catch (err) {
@@ -3247,12 +3241,6 @@ function SendModal({
               <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-slate-100">
                 {renderedBody}
               </pre>
-            </div>
-          )}
-
-          {result && (
-            <div className="fade-in rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">
-              {result.message}
             </div>
           )}
         </div>

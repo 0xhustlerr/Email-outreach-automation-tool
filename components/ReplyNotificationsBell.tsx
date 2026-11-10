@@ -424,7 +424,6 @@ export default function ReplyNotificationsBell({
   const [replyFrom, setReplyFrom] = useState("");
   const [replyBody, setReplyBody] = useState("");
   const [sending, setSending] = useState(false);
-  const [sendOk, setSendOk] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const bellRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -578,7 +577,6 @@ export default function ReplyNotificationsBell({
       setSelectedKey(key);
       setSelectedRow(row);
       setMsgError(null);
-      setSendOk(false);
       setReplyBody("");
       setReplyFrom(pickDefaultSender(row));
 
@@ -671,7 +669,6 @@ export default function ReplyNotificationsBell({
     }
 
     setSending(true);
-    setSendOk(false);
     try {
       const res = await fetch("/api/send-reply", {
         method: "POST",
@@ -689,7 +686,7 @@ export default function ReplyNotificationsBell({
         throw new Error(data.error ?? "Failed to send reply.");
       }
       setReplyBody("");
-      setSendOk(true);
+      toast.success("Reply sent.");
       const conv = await loadConversation(selectedRow, true);
       if (conv?.thread) applyConversation(conv.thread);
     } catch (err) {
@@ -1166,9 +1163,6 @@ export default function ReplyNotificationsBell({
                     <span className="text-[10px] text-slate-600">
                       Enter to send · Shift+Enter for a new line
                     </span>
-                    {sendOk && (
-                      <span className="text-[11px] text-emerald-400">Sent ✓</span>
-                    )}
                   </div>
                 </div>
               )}

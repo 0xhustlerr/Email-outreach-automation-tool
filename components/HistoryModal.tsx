@@ -816,7 +816,6 @@ export default function HistoryModal({
   const [datePreset, setDatePreset] = useState<DatePresetId>("today");
   const [rangeFrom, setRangeFrom] = useState(initial.from);
   const [rangeTo, setRangeTo] = useState(initial.to);
-  const [copiedToast, setCopiedToast] = useState(false);
   // Keeps the reload icon turning long enough to be seen on a fast reload.
   const refreshSpin = useSpin();
   const [searchQuery, setSearchQuery] = useState("");
@@ -828,7 +827,6 @@ export default function HistoryModal({
   // history, ignoring the date filter) so a bulk selection like
   // "Select non-replied (782)" is actually reviewable before you send.
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
-  const copyTimerRef = useRef<number | null>(null);
 
   const toggleEmail = (email: string) => {
     setSelectedEmails((prev) => {
@@ -921,16 +919,9 @@ export default function HistoryModal({
       document.execCommand("copy");
       document.body.removeChild(ta);
     }
-    setCopiedToast(true);
-    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = window.setTimeout(() => setCopiedToast(false), 1800);
+    // One id, so copying several cells in a row doesn't stack toasts.
+    toast.success("Copied to clipboard.", { id: "history-copy" });
   };
-
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
-    };
-  }, []);
 
   const dateFilteredRows = useMemo(() => {
     const fromMs = rangeFrom.getTime();
@@ -1339,15 +1330,6 @@ export default function HistoryModal({
 
   return (
     <PageBody>
-      {copiedToast && (
-        <div
-          className="badge badge-info pointer-events-none fixed bottom-6 left-1/2 z-50 h-8 -translate-x-1/2 px-3 text-xs shadow-lg shadow-black/40"
-          role="status"
-        >
-          Copied to clipboard
-        </div>
-      )}
-
       <PageHeader
         title="History"
         description="Every email sent, logged to your Google Sheet. Click a name to send, any other cell to copy."

@@ -37,10 +37,6 @@ export default function ReplySyncModal({
   const [refreshToken, setRefreshToken] = useState("");
   const [showGuide, setShowGuide] = useState(!clientConfigured);
   const [busy, setBusy] = useState(false);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
-  // The save succeeded but broke something else — e.g. a replaced OAuth client
-  // that invalidates other accounts' refresh tokens. Amber, not green.
-  const [warnMsg, setWarnMsg] = useState<string | null>(null);
   const [clientDone, setClientDone] = useState(clientConfigured);
 
   useEffect(() => {
@@ -52,8 +48,6 @@ export default function ReplySyncModal({
   }, [onClose]);
 
   const saveClient = async () => {
-    setOkMsg(null);
-    setWarnMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -74,9 +68,11 @@ export default function ReplySyncModal({
       setClientSecret("");
       setClientDone(true);
       if (body.warning) {
-        setWarnMsg(`Client saved — but: ${body.warning}`);
+        // The save succeeded but broke something else — e.g. a replaced OAuth
+        // client that invalidates other accounts' refresh tokens. Amber, not green.
+        toast.warning(`Client saved — but: ${body.warning}`, { duration: 10_000 });
       } else {
-        setOkMsg("Client saved. Now paste this account's refresh token below.");
+        toast.success("Client saved. Now paste this account's refresh token below.");
       }
       onChanged?.(body);
     } catch {
@@ -87,8 +83,6 @@ export default function ReplySyncModal({
   };
 
   const saveToken = async (token: string) => {
-    setOkMsg(null);
-    setWarnMsg(null);
     setBusy(true);
     try {
       const res = await fetch("/api/senders", {
@@ -102,7 +96,7 @@ export default function ReplySyncModal({
         return;
       }
       onChanged?.(body);
-      setOkMsg(token ? `Reply sync is on for ${email}.` : `Reply sync turned off for ${email}.`);
+      toast.success(token ? `Reply sync is on for ${email}.` : `Reply sync turned off for ${email}.`);
       setRefreshToken("");
       if (token) window.setTimeout(onClose, 900);
     } catch {
@@ -142,17 +136,6 @@ export default function ReplySyncModal({
               <CloseIcon className="h-4 w-4" />
             </button>
           </div>
-
-          {okMsg && (
-            <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-200">
-              {okMsg}
-            </p>
-          )}
-          {warnMsg && (
-            <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-              {warnMsg}
-            </p>
-          )}
 
           {/* Step 1: shared OAuth client */}
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">

@@ -78,8 +78,6 @@ export default function TemplatesModal(_props: {
   const [body, setBody] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Success notices only; errors are toasts.
-  const [feedback, setFeedback] = useState<string | null>(null);
 
   const isNew = selection === "new";
   const selectedId = !isNew ? selection : null;
@@ -93,7 +91,6 @@ export default function TemplatesModal(_props: {
     setSubject(t?.subject ?? "");
     setBody(t?.body ?? "");
     setDirty(false);
-    setFeedback(null);
   };
 
   // A failed load leaves nothing to edit, so say so.
@@ -121,7 +118,6 @@ export default function TemplatesModal(_props: {
     setSubject("");
     setBody("");
     setDirty(false);
-    setFeedback(null);
   };
 
   // When the database copy lands, refresh the untouched editor so it shows
@@ -144,7 +140,6 @@ export default function TemplatesModal(_props: {
   const onSave = async () => {
     if (busy) return;
     setBusy(true);
-    setFeedback(null);
     const res = await saveTemplate({
       id: selectedId ?? undefined,
       label: label.trim(),
@@ -156,7 +151,7 @@ export default function TemplatesModal(_props: {
     if (res.ok) {
       setDirty(false);
       if (res.id) setSelection(res.id);
-      setFeedback("Saved - will be used for future messages.");
+      toast.success("Saved — will be used for future messages.");
     } else {
       toast.error(res.error ?? "Failed to save.");
     }
@@ -182,7 +177,7 @@ export default function TemplatesModal(_props: {
         setSelection(null);
         setDirty(false);
       }
-      setFeedback("Template deleted.");
+      toast.success("Template deleted.");
     } else {
       toast.error(res.error ?? "Failed to delete.");
     }
@@ -202,7 +197,7 @@ export default function TemplatesModal(_props: {
         description="The opener and follow-up messages used for every future send."
         icon={<FileTextIcon className="h-5 w-5" />}
         meta={
-          dirty && !feedback ? (
+          dirty ? (
             <span className="badge badge-warning">Unsaved changes</span>
           ) : undefined
         }
@@ -424,12 +419,6 @@ export default function TemplatesModal(_props: {
                 </span>
               </div>
             </div>
-
-            {feedback && (
-              <p className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                {feedback}
-              </p>
-            )}
           </div>
         </Card>
 
