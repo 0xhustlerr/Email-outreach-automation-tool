@@ -382,6 +382,22 @@ function PauseIcon({ className }: { className?: string }) {
   );
 }
 
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M7 4.5v15a1 1 0 0 0 1.52.85l12-7.5a1 1 0 0 0 0-1.7l-12-7.5A1 1 0 0 0 7 4.5Z" />
+    </svg>
+  );
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+    </svg>
+  );
+}
+
 function RetryIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -666,18 +682,6 @@ export default function QueueModal({
       .join("  ·  ");
   }, [settings, senders, status]);
 
-  // Immediate save — only for controls outside the settings modal (the
-  // Running/Paused toggle). Everything inside the modal edits `draft` instead.
-  const patchSettings = async (patch: Partial<QueueSettings>) => {
-    setSettings((s) => (s ? { ...s, ...patch } : s));
-    await fetch("/api/queue", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }).catch(() => {});
-    void refresh();
-  };
-
   // Edit the working copy. Nothing leaves the browser until OK.
   const editDraft = (patch: Partial<QueueSettings>) =>
     setDraft((d) => (d ? { ...d, ...patch } : d));
@@ -736,7 +740,7 @@ export default function QueueModal({
 
   // Only the fields the user actually changed — a patch merges over the stored
   // row, so sending the whole draft would also re-write untouched fields (and
-  // `enabled`, which the Running/Paused toggle owns).
+  // `enabled`, which the Run/Stop toggle owns).
   //
   // The diff is against `baseline` (the snapshot taken when the modal opened),
   // NOT the live 5s-polled `settings`: another window editing the same local
@@ -924,6 +928,60 @@ export default function QueueModal({
 
   const num = (v: string) => (counts[v] ?? 0);
 
+  // Run/Stop the whole queue — the one control outside the settings modal that
+  // saves immediately. Confirmed both ways: running releases real email, and
+  // stopping holds every Opener and Bump until someone runs it again. The
+  // worker re-reads settings each tick, so a send already underway finishes.
+  const [togglingQueue, setTogglingQueue] = useState(false);
+  const toggleQueue = async () => {
+    if (!settings || togglingQueue) return;
+    const run = !settings.enabled;
+    const queued = num("queued");
+    const startsLater =
+      !!settings.startAt && new Date(settings.startAt) > new Date();
+    const message = run
+      ? [
+          "Run the queue?",
+          queued > 0
+            ? `${queued} queued opener(s) will start sending from your Senders.`
+            : "Nothing is queued yet — openers you add will send on your schedule.",
+          startsLater
+            ? `Sending begins ${new Date(settings.startAt!).toLocaleString()}.`
+            : "",
+          settingsSummary ? `Schedule: ${settingsSummary}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : [
+          "Stop the queue?",
+          `No openers or bumps will send until you run it again${
+            queued > 0 ? ` — ${queued} queued opener(s) stay in the queue` : ""
+          }.`,
+          "Pitches to contacts who replied still go out. An email already being sent will finish.",
+        ].join("\n\n");
+    if (!window.confirm(message)) return;
+
+    setTogglingQueue(true);
+    try {
+      const res = await fetch("/api/queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: run }),
+      });
+      const data = (await res.json()) as { ok?: boolean; settings?: QueueSettings };
+      if (!res.ok || !data.ok || !data.settings) throw new Error("save failed");
+      setSettings(data.settings);
+      toast.success(run ? "Queue running." : "Queue stopped.", { id: "queue-toggle" });
+    } catch {
+      toast.error(run ? "Couldn't run the queue." : "Couldn't stop the queue.", {
+        id: "queue-toggle",
+      });
+    } finally {
+      setTogglingQueue(false);
+      void refresh();
+    }
+  };
+
   // Lift a Gmail block early. The server keeps the resume for the rest of the
   // local day, so this can't flap back on the next bounce.
   const resumeSender = async (email: string) => {
@@ -1068,7 +1126,7 @@ export default function QueueModal({
             status.retryInSec ? ` in ${fmtCountdown(status.retryInSec)}` : ""
           } · nothing lost`
         : !status.enabled
-          ? "Paused"
+          ? "Stopped — click Run queue to start sending"
           : status.allSendersBlocked
             ? `Paused — Gmail block · resumes ${resumeAt(blocks[0]?.until ?? "")}`
             : !plan
@@ -1130,16 +1188,8 @@ export default function QueueModal({
         icon={<MailIcon className="h-5 w-5" />}
         meta={
           settings && (
-            <button
-              type="button"
-              onClick={() => void patchSettings({ enabled: settings.enabled })}
-              title={settings.enabled ? "Click to pause sending" : "Click to resume sending"}
-              className={
-                "badge cursor-pointer transition " +
-                (settings.enabled
-                  ? "badge-success hover:bg-emerald-500/20"
-                  : "badge-neutral hover:bg-white/10")
-              }
+            <span
+              className={"badge " + (settings.enabled ? "badge-success" : "badge-neutral")}
             >
               {settings.enabled ? (
                 <>
@@ -1148,15 +1198,38 @@ export default function QueueModal({
                 </>
               ) : (
                 <>
-                  <PauseIcon className="h-3 w-3" />
-                  Paused
+                  <StopIcon className="h-2.5 w-2.5" />
+                  Stopped
                 </>
               )}
-            </button>
+            </span>
           )
         }
         actions={
           <>
+            {settings && (
+              <button
+                type="button"
+                onClick={() => void toggleQueue()}
+                disabled={togglingQueue}
+                aria-pressed={settings.enabled}
+                title={
+                  settings.enabled
+                    ? "Stop sending openers and bumps (asks first)"
+                    : "Start sending queued openers (asks first)"
+                }
+                className={"btn " + (settings.enabled ? "btn-danger" : "btn-primary")}
+              >
+                {togglingQueue ? (
+                  <Spinner className="h-4 w-4" />
+                ) : settings.enabled ? (
+                  <StopIcon className="h-3.5 w-3.5" />
+                ) : (
+                  <PlayIcon className="h-3.5 w-3.5" />
+                )}
+                {settings.enabled ? "Stop queue" : "Run queue"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void refreshSpin.run(refresh())}
